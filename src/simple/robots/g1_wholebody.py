@@ -5,6 +5,7 @@ Copyright (c) 2025 Songlin Wei and Contributors
 Licensed under the terms in LICENSE file.
 """
 import os
+import copy
 from simple.core.robot import Robot
 from simple.core.controller import Controller
 # from simple.robots.controllers import PDJointPosControllerCfg
@@ -118,7 +119,9 @@ class G1Wholebody(CuRoboMixin,Humanoid,Robot,HeadCamMountable,HasDexterousHand):
     def __init__(self):
         super().__init__(self.uid, self.dof)
         self.joint_names = self.joints_names
-        self.amo_policy = AMO_Policy(robot_type="g1_dex3_wholebody", device="cuda",joint_names=self.joint_names)
+        self.amo_policy = AMO_Policy(
+            robot_type="g1_dex3_wholebody", device="cuda", joint_names=self.joint_names
+        )
 
         self.stiffness = np.array([
                 150, 150, 150, 300, 80, 20,
@@ -163,7 +166,7 @@ class G1Wholebody(CuRoboMixin,Humanoid,Robot,HeadCamMountable,HasDexterousHand):
 
     def reset(self):
         self.joint_names = self.joints_names
-        self.amo_policy = AMO_Policy(robot_type="g1_dex3_wholebody", device="cuda",joint_names=self.joint_names)
+        self.amo_policy.reset_state()
         self.count = 0
         self.sim_decimation = 1
         self.command = None
@@ -175,6 +178,41 @@ class G1Wholebody(CuRoboMixin,Humanoid,Robot,HeadCamMountable,HasDexterousHand):
         self.height = None
         self._debug_ctrl_err = {}
         self.last_target_hand_qpos = None
+
+    def get_runtime_state(self):
+        """Capture mutable tracker state alongside a MuJoCo state snapshot."""
+        fields = (
+            "count",
+            "sim_decimation",
+            "command",
+            "desired_robot_pose",
+            "is_replay",
+            "is_eval",
+            "target_waist_qpos",
+            "target_hand_qpos",
+            "height",
+            "_debug_ctrl_err",
+            "_last_target_yaw",
+            "last_target_hand_qpos",
+            "pd_target",
+            "output_joint_names",
+            "target_qpos",
+            "waist_qpos",
+        )
+        return {
+            "robot": {
+                name: copy.deepcopy(getattr(self, name))
+                for name in fields
+                if hasattr(self, name)
+            },
+            "amo_policy": self.amo_policy.get_runtime_state(),
+        }
+
+    def set_runtime_state(self, state):
+        """Restore mutable tracker state without reloading policy weights."""
+        for name, value in state["robot"].items():
+            setattr(self, name, copy.deepcopy(value))
+        self.amo_policy.set_runtime_state(state["amo_policy"])
 
     def update_ee_link(self,hand_uid):
         if "left" in hand_uid:

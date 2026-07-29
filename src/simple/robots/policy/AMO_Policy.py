@@ -1,4 +1,5 @@
 import types
+import copy
 import numpy as np
 import mujoco
 import glfw
@@ -230,6 +231,109 @@ class AMO_Policy:
         self._last_target_yaw = 0.0
         self._last_commands = np.zeros((8,), dtype=np.float32)
         # self._init_yaw = None
+
+    def reset_state(self):
+        """Reset episode state without reloading the frozen TorchScript models.
+
+        ``G1Wholebody.reset`` used to reconstruct ``AMO_Policy`` on every
+        episode, creating a new CUDA context allocation and re-reading three
+        checkpoint files.  RL workers reset frequently, so keep immutable model
+        weights and normalization tensors resident and only clear recurrent
+        bookkeeping here.
+        """
+        self.arm_action = self.default_dof_pos[self.arm_input_joint_indices].copy()
+        self.prev_arm_action = self.arm_action.copy()
+        self.quat = np.zeros(4, dtype=np.float32)
+        self.ang_vel = np.zeros(3, dtype=np.float32)
+        self.last_action = np.zeros(self.nj, dtype=np.float32)
+        self.last_action_for_policy = self.last_action[self.action_joint_indices].copy()
+
+        self.demo_obs_template = np.zeros((self._n_demo_dof + 9,), dtype=np.float32)
+        self.demo_obs_template[: self._n_demo_dof] = self.arm_action
+        self.demo_obs_template[self._n_demo_dof + 6 : self._n_demo_dof + 9] = 0.75
+        self.target_yaw = 0.0
+        self.obs_target_yaw = np.zeros(1, dtype=np.float32)
+        self.obs_command = np.array(
+            [0, 0, 0, 0, -0.15, 0, 0.75, 0.75, 0.75], dtype=np.float32
+        )
+        self.obs_turning_flag = np.zeros(1, dtype=np.float32)
+        self._in_place_stand_flag = True
+        self.gait_cycle = np.array([0.25, 0.25], dtype=np.float32)
+
+        self.proprio_history_buf.clear()
+        self.extra_history_buf.clear()
+        for _ in range(self.history_len):
+            self.proprio_history_buf.append(np.zeros(self.n_proprio, dtype=np.float32))
+        for _ in range(self.extra_history_len):
+            self.extra_history_buf.append(np.zeros(self.n_proprio, dtype=np.float32))
+
+        self.adapter_input = torch.zeros((1, 12), device=self.device, dtype=torch.float32)
+        self.adapter_output = torch.zeros((1, 15), device=self.device, dtype=torch.float32)
+        self._initial_quat = None
+        self._last_target_yaw = 0.0
+        self._last_commands = np.zeros(8, dtype=np.float32)
+
+    def get_runtime_state(self):
+        """Copy the mutable controller state needed for an exact simulator reset."""
+        array_fields = (
+            "arm_action",
+            "prev_arm_action",
+            "quat",
+            "ang_vel",
+            "last_action",
+            "last_action_for_policy",
+            "demo_obs_template",
+            "obs_command",
+            "obs_turning_flag",
+            "gait_cycle",
+            "adapter_input",
+            "adapter_output",
+            "_last_commands",
+            "_initial_quat",
+            "dof_pos",
+            "dof_vel",
+            "obs_rpy",
+            "obs_target_yaw",
+            "obs_prop",
+            "obs",
+        )
+        state = {}
+        for name in array_fields:
+            if not hasattr(self, name):
+                continue
+            value = getattr(self, name)
+            if isinstance(value, np.ndarray):
+                state[name] = value.copy()
+            elif isinstance(value, torch.Tensor):
+                state[name] = value.detach().clone()
+            else:
+                state[name] = copy.deepcopy(value)
+        for name in ("target_yaw", "_in_place_stand_flag", "_last_target_yaw"):
+            state[name] = copy.deepcopy(getattr(self, name))
+        state["proprio_history_buf"] = [value.copy() for value in self.proprio_history_buf]
+        state["extra_history_buf"] = [value.copy() for value in self.extra_history_buf]
+        return state
+
+    def set_runtime_state(self, state):
+        """Restore a state produced by :meth:`get_runtime_state`."""
+        for name, value in state.items():
+            if name in {"proprio_history_buf", "extra_history_buf"}:
+                continue
+            if isinstance(value, np.ndarray):
+                value = value.copy()
+            elif isinstance(value, torch.Tensor):
+                value = value.detach().clone()
+            else:
+                value = copy.deepcopy(value)
+            setattr(self, name, value)
+        self.proprio_history_buf.clear()
+        self.proprio_history_buf.extend(
+            value.copy() for value in state["proprio_history_buf"]
+        )
+        self.extra_history_buf.clear()
+        self.extra_history_buf.extend(
+            value.copy() for value in state["extra_history_buf"]
+        )
 
 
     def get_observation(self, joints, actuators, mjdata, commands):

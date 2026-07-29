@@ -23,6 +23,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+grasp-rl = [
+    "pyarrow>=15",
+    "rsl-rl-lib==5.2.0",
+    "tensorboard>=2.15",
+]
 rlds = [
     "dm-env>=1.6",
     "envlogger[tfds]>=1.2",
@@ -129,6 +134,7 @@ datagen = "simple.cli.datagen:typer_main"
 replay = "simple.cli.replay:typer_main"
 plan = "simple.cli.plan:typer_main"
 control = "simple.cli.control:typer_main"
+grasp-rl = "simple.grasp_rl.cli:main"
 render = "simple.cli.render:typer_main"
 teleop-decoupled-wbc = "simple.cli.teleop_decoupled_wbc:typer_main"
 render-decoupled-wbc = "simple.cli.render_decoupled_wbc:typer_main"
