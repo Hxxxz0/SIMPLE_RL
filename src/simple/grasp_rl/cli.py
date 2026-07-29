@@ -25,6 +25,12 @@ from simple.grasp_rl.render import render_saved_trajectory
 from simple.grasp_rl.prepare import prepare_dataset
 from simple.grasp_rl.reward_audit import AUDIT_SCENARIOS, audit_reward
 from simple.grasp_rl.train import PpoTrainConfig, train_ppo
+from simple.grasp_rl.task_spec import (
+    DEFAULT_TASK,
+    get_task_spec,
+    task_from_manifest,
+    task_names,
+)
 
 
 DEFAULT_DATASET = Path("data/simple/G1WholebodyTabletopGraspMP-v0")
@@ -47,17 +53,30 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="grasp-rl")
     commands = parser.add_subparsers(dest="command", required=True)
 
+    list_tasks = commands.add_parser("list-tasks")
+    list_tasks.set_defaults(task=DEFAULT_TASK)
+
+    def task_argument(command: argparse.ArgumentParser) -> None:
+        command.add_argument(
+            "--task",
+            default=DEFAULT_TASK,
+            help=f"Task adapter ({', '.join(task_names())})",
+        )
+
     prepare = commands.add_parser("prepare")
+    task_argument(prepare)
     prepare.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     prepare.add_argument("--output", type=Path, default=DEFAULT_PROCESSED)
     prepare.add_argument("--workers", type=int, default=8)
 
     prepare_bc = commands.add_parser("prepare-bc")
+    task_argument(prepare_bc)
     prepare_bc.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     prepare_bc.add_argument("--processed", type=Path, default=DEFAULT_PROCESSED)
     prepare_bc.add_argument("--workers", type=int, default=7)
 
     audit = commands.add_parser("audit-reward")
+    task_argument(audit)
     audit.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     audit.add_argument("--processed", type=Path, default=DEFAULT_PROCESSED)
     audit.add_argument("--output", type=Path, default=DEFAULT_OUTPUT / "reward_audit")
@@ -75,6 +94,7 @@ def _parser() -> argparse.ArgumentParser:
     audit.add_argument("--task-reward-weight", type=float, default=0.02)
 
     pretrain_actor = commands.add_parser("pretrain-actor")
+    task_argument(pretrain_actor)
     pretrain_actor.add_argument("--processed", type=Path, default=DEFAULT_PROCESSED)
     pretrain_actor.add_argument(
         "--output", type=Path, default=DEFAULT_OUTPUT / "bc_actor"
@@ -96,6 +116,12 @@ def _parser() -> argparse.ArgumentParser:
         help="Condition the full-command actor on ten GRAIL-style future references",
     )
     pretrain_actor.add_argument(
+        "--plan-conditioned",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Predict a residual around the first complete plan command",
+    )
+    pretrain_actor.add_argument(
         "--recurrent", action=argparse.BooleanOptionalAction, default=False
     )
     pretrain_actor.add_argument("--sequence-batch-size", type=int, default=8)
@@ -104,12 +130,14 @@ def _parser() -> argparse.ArgumentParser:
     pretrain_actor.add_argument("--right-arm-weight", type=float, default=2.0)
 
     build_knn = commands.add_parser("build-knn")
+    task_argument(build_knn)
     build_knn.add_argument("--processed", type=Path, default=DEFAULT_PROCESSED)
     build_knn.add_argument("--output", type=Path, required=True)
     build_knn.add_argument("--sources", default="bc")
     build_knn.add_argument("--splits", default="train,val,test")
 
     dagger = commands.add_parser("collect-dagger")
+    task_argument(dagger)
     dagger.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     dagger.add_argument("--processed", type=Path, default=DEFAULT_PROCESSED)
     dagger.add_argument("--checkpoint", type=Path, required=True)
@@ -121,6 +149,7 @@ def _parser() -> argparse.ArgumentParser:
     dagger.add_argument("--initialization-prefix", type=int)
 
     pretrain = commands.add_parser("pretrain")
+    task_argument(pretrain)
     pretrain.add_argument("--processed", type=Path, default=DEFAULT_PROCESSED)
     pretrain.add_argument("--output", type=Path, default=DEFAULT_OUTPUT / "diffusion")
     pretrain.add_argument("--epochs", type=int, default=5000)
@@ -129,6 +158,7 @@ def _parser() -> argparse.ArgumentParser:
     pretrain.add_argument("--resume", type=Path)
 
     train = commands.add_parser("train")
+    task_argument(train)
     train.add_argument("--processed", type=Path, default=DEFAULT_PROCESSED)
     train.add_argument("--output", type=Path, required=True)
     train.add_argument("--diffusion", type=Path)
@@ -242,8 +272,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     train.add_argument("--rnn-hidden-dim", type=int, default=256)
     train.add_argument("--max-grad-norm", type=float, default=0.1)
+    train.add_argument(
+        "--reward-audit",
+        type=Path,
+        help="Passing expert/counterfactual audit required for new tasks",
+    )
 
     evaluate = commands.add_parser("evaluate")
+    task_argument(evaluate)
     evaluate.add_argument("--checkpoint", type=Path, required=True)
     evaluate.add_argument("--processed", type=Path, default=DEFAULT_PROCESSED)
     evaluate.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
@@ -272,6 +308,12 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Use the Nth nearest complete plan for randomized-target evaluation",
+    )
+    evaluate.add_argument(
+        "--reference-base-episode",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use the current dataset scene's plan after moving its target",
     )
     evaluate.add_argument("--reach-extension-threshold", type=float)
     evaluate.add_argument(
@@ -302,6 +344,7 @@ def _parser() -> argparse.ArgumentParser:
     evaluate_initialization.add_argument("--initialization-phase", type=float)
 
     render = commands.add_parser("render")
+    task_argument(render)
     render.add_argument("--trajectory", type=Path, required=True)
     render.add_argument("--processed", type=Path, default=DEFAULT_PROCESSED)
     render.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
@@ -315,6 +358,7 @@ def _parser() -> argparse.ArgumentParser:
     render.add_argument("--context-start", type=int)
 
     collect = commands.add_parser("collect-policy")
+    task_argument(collect)
     collect.add_argument("--checkpoint", type=Path, required=True)
     collect.add_argument("--processed", type=Path, default=DEFAULT_PROCESSED)
     collect.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
@@ -325,6 +369,11 @@ def _parser() -> argparse.ArgumentParser:
     collect.add_argument("--target-position-jitter-xy", default="task")
     collect.add_argument("--target-yaw-jitter", type=float, default=0.15)
     collect.add_argument("--reference-ranks", default="0,1")
+    collect.add_argument(
+        "--base-reference-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     collect.add_argument("--seed", type=int, default=20260729)
     collect.add_argument("--device", default="cuda:0")
     return parser
@@ -332,11 +381,49 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _parser().parse_args()
-    if args.command == "prepare":
-        result = prepare_dataset(args.dataset, args.output, num_workers=args.workers)
+    task_spec = get_task_spec(args.task)
+    # Preserve old commands while making `--task bend_pick` useful without
+    # repeating the conventional dataset/processed paths on every command.
+    if task_spec.name != DEFAULT_TASK:
+        if hasattr(args, "dataset") and args.dataset == DEFAULT_DATASET:
+            args.dataset = task_spec.dataset_path()
+        if hasattr(args, "processed") and args.processed == DEFAULT_PROCESSED:
+            args.processed = task_spec.processed_path()
+        if args.command == "prepare" and args.output == DEFAULT_PROCESSED:
+            args.output = task_spec.processed_path()
+        task_output = DEFAULT_OUTPUT / task_spec.name
+        conventional_outputs = {
+            "audit-reward": (DEFAULT_OUTPUT / "reward_audit", task_output / "reward_audit"),
+            "pretrain-actor": (DEFAULT_OUTPUT / "bc_actor", task_output / "bc_actor"),
+            "pretrain": (DEFAULT_OUTPUT / "diffusion", task_output / "diffusion"),
+        }
+        if args.command in conventional_outputs:
+            old_default, task_default = conventional_outputs[args.command]
+            if args.output == old_default:
+                args.output = task_default
+    if hasattr(args, "processed") and (args.processed / "manifest.json").exists():
+        processed_task = task_from_manifest(args.processed)
+        if processed_task.name != task_spec.name:
+            raise ValueError(
+                f"Processed data is for {processed_task.name}, not {task_spec.name}"
+            )
+    if args.command == "list-tasks":
+        result = {
+            name: get_task_spec(name).metadata() for name in task_names()
+        }
+    elif args.command == "prepare":
+        result = prepare_dataset(
+            args.dataset,
+            args.output,
+            num_workers=args.workers,
+            task=task_spec,
+        )
     elif args.command == "prepare-bc":
         result = prepare_bc_dataset(
-            args.dataset, args.processed, num_workers=args.workers
+            args.dataset,
+            args.processed,
+            num_workers=args.workers,
+            task=task_spec,
         )
     elif args.command == "audit-reward":
         result = audit_reward(
@@ -357,6 +444,7 @@ def main() -> None:
                 if value.strip()
             ),
             task_weight=args.task_reward_weight,
+            task=task_spec,
         )
     elif args.command == "pretrain-actor":
         result = train_bc_actor(
@@ -376,6 +464,7 @@ def main() -> None:
                     if value.strip()
                 ),
                 reference_conditioning=args.reference_conditioning,
+                plan_conditioned=args.plan_conditioned,
                 recurrent=args.recurrent,
                 sequence_batch_size=args.sequence_batch_size,
                 rnn_hidden_dim=args.rnn_hidden_dim,
@@ -405,6 +494,7 @@ def main() -> None:
             teacher_checkpoint=args.teacher_checkpoint,
             teacher_rollout_blend=args.teacher_rollout_blend,
             teacher_rollout_probability=args.teacher_rollout_probability,
+            task=task_spec,
         )
     elif args.command == "pretrain":
         result = train_diffusion(
@@ -423,6 +513,10 @@ def main() -> None:
             args.output,
             args.diffusion,
             PpoTrainConfig(
+                task=task_spec.name,
+                reward_audit=(
+                    str(args.reward_audit) if args.reward_audit else None
+                ),
                 num_envs=args.num_envs,
                 iterations=args.iterations,
                 seed=args.seed,
@@ -535,6 +629,7 @@ def main() -> None:
             reference_reward_weight=args.reference_reward_weight,
             reference_action_override=args.reference_action_override,
             reference_rank=args.reference_rank,
+            reference_base_episode=args.reference_base_episode,
             reach_extension_threshold=args.reach_extension_threshold,
             reach_extension_velocity=args.reach_extension_velocity,
             randomize_target=args.randomize_target,
@@ -542,6 +637,7 @@ def main() -> None:
                 args.target_position_jitter_xy
             ),
             target_yaw_jitter=args.target_yaw_jitter,
+            task=task_spec,
         )
     elif args.command == "render":
         result = render_saved_trajectory(
@@ -556,6 +652,7 @@ def main() -> None:
             camera_fovy=args.camera_fovy,
             expert=args.expert,
             context_start=args.context_start,
+            task=task_spec,
         )
     elif args.command == "collect-policy":
         result = collect_policy_dataset(
@@ -576,12 +673,26 @@ def main() -> None:
                 for value in args.reference_ranks.split(",")
                 if value.strip()
             ),
+            base_reference_fallback=args.base_reference_fallback,
             seed=args.seed,
             device=args.device,
+            task=task_spec,
         )
     else:
         raise AssertionError(args.command)
-    print(json.dumps({"result": str(result)}, indent=2))
+    if isinstance(result, dict):
+        # Full per-episode/audit details are already persisted by each command.
+        # Keep stdout valid and concise so long evaluations do not dump hundreds
+        # of kilobytes of a Python-dict string into experiment logs.
+        omitted = {"results", "episodes_detail", "task_metadata"}
+        result_payload = {
+            key: value for key, value in result.items() if key not in omitted
+        }
+        if hasattr(args, "output"):
+            result_payload["output"] = str(args.output)
+    else:
+        result_payload = str(result)
+    print(json.dumps({"result": result_payload}, indent=2, default=str))
 
 
 if __name__ == "__main__":

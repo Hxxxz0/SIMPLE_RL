@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 
 import numpy as np
+import pytest
 import torch
 from tensordict import TensorDict
 
@@ -29,7 +30,16 @@ from simple.grasp_rl.schema import (
     REFERENCE_CONTEXT_DIM,
 )
 from simple.grasp_rl.train import PpoTrainConfig, rsl_config
-from simple.grasp_rl.tracker import ActionTransform, upper_joints_from_tracker
+from simple.grasp_rl.tracker import (
+    ActionTransform,
+    compute_action_transform,
+    upper_joints_from_tracker,
+)
+from simple.grasp_rl.task_spec import (
+    checkpoint_task_metadata,
+    get_task_spec,
+    validate_task_metadata,
+)
 
 
 def test_schema_dimensions_are_frozen() -> None:
@@ -40,6 +50,42 @@ def test_schema_dimensions_are_frozen() -> None:
     assert len(JOINT_NAMES) == 43
     assert (MOTION_WINDOW, MOTION_FRAME_DIM, MOTION_FEATURE_DIM) == (10, 80, 82)
     assert MAX_EPISODE_STEPS == 192
+
+
+def test_bend_pick_adapter_preserves_policy_contract_and_native_goal() -> None:
+    task = get_task_spec("bend_pick")
+    metadata = task.metadata()
+    assert task.registry_uid == "g1_wholebody_bend_pick_mp"
+    assert task.reward.success_lift == 0.09
+    assert task.reward.min_pelvis_height == 0.50
+    assert task.reward.stalled_grasp_steps is None
+    assert task.max_episode_steps == 300
+    assert metadata["actor_observation_dim"] == ACTOR_OBS_DIM
+    assert metadata["reference_actor_observation_dim"] == REFERENCE_ACTOR_OBS_DIM
+    assert metadata["action_dim"] == ACTION_DIM
+
+
+def test_checkpoint_metadata_rejects_cross_task_and_transform(tmp_path) -> None:
+    transform_a = tmp_path / "a.npz"
+    transform_b = tmp_path / "b.npz"
+    transform_a.write_bytes(b"a")
+    transform_b.write_bytes(b"b")
+    payload = {
+        "task_metadata": checkpoint_task_metadata(
+            "bend_pick", transform_a
+        )
+    }
+    validate_task_metadata(
+        payload, "bend_pick", action_transform=transform_a
+    )
+    with pytest.raises(ValueError, match="task mismatch"):
+        validate_task_metadata(payload, "tabletop_grasp")
+    with pytest.raises(ValueError, match="action-transform"):
+        validate_task_metadata(
+            payload, "bend_pick", action_transform=transform_b
+        )
+    with pytest.raises(ValueError, match="no task metadata"):
+        validate_task_metadata({}, "bend_pick")
 
 
 def test_tracker_mapping_matches_simple_act_g1_order() -> None:
@@ -66,6 +112,22 @@ def test_piecewise_action_decoder_and_slew_limit() -> None:
     np.testing.assert_array_equal(limited[:18], np.full(18, 0.25))
     np.testing.assert_array_equal(limited[18:], np.full(18, -0.25))
     np.testing.assert_allclose(transform.decode(transform.encode(decoded)), decoded)
+
+
+def test_non_tabletop_transform_preserves_bending_command_range() -> None:
+    episode = np.zeros((31, ACTION_DIM), dtype=np.float32)
+    episode[:, 31] = np.linspace(0.45, 0.75, len(episode))
+    transform = compute_action_transform(
+        [episode, episode.copy()],
+        legacy_tabletop_locomotion_bounds=False,
+    )
+    assert transform.low[31] <= np.float32(0.45)
+    assert transform.high[31] >= np.float32(0.75)
+    np.testing.assert_allclose(
+        transform.decode(transform.encode(episode[-1])),
+        episode[-1],
+        atol=1e-6,
+    )
 
 
 def test_motion_features_are_finite_and_final_xy_is_anchored() -> None:
@@ -350,6 +412,27 @@ def test_cli_forwards_normalized_evaluation_phase(monkeypatch, tmp_path) -> None
     assert captured["randomize_target"] is True
     assert captured["target_position_jitter_xy"] == (0.03, 0.04)
     assert captured["target_yaw_jitter"] == 0.2
+
+
+def test_cli_selects_task_scoped_dataset_defaults(monkeypatch) -> None:
+    from simple.grasp_rl import cli
+
+    captured = {}
+
+    def fake_prepare(dataset, output, **kwargs):
+        captured.update(dataset=dataset, output=output, **kwargs)
+        return output
+
+    monkeypatch.setattr(cli, "prepare_dataset", fake_prepare)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["grasp-rl", "prepare", "--task", "bend_pick", "--workers", "1"],
+    )
+    cli.main()
+    assert captured["dataset"] == get_task_spec("bend_pick").dataset_path()
+    assert captured["output"] == get_task_spec("bend_pick").processed_path()
+    assert captured["task"].name == "bend_pick"
 
 
 def test_reference_context_contains_future_full_commands_and_contact() -> None:

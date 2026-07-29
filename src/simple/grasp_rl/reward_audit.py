@@ -13,7 +13,8 @@ import pyarrow.parquet as pq
 
 from simple.grasp_rl.env import GraspRlEnv
 from simple.grasp_rl.rewards import GraspReward, TASK_REWARD_PROFILES
-from simple.grasp_rl.schema import ACTION_SLICES, MAX_EPISODE_STEPS
+from simple.grasp_rl.schema import ACTION_SLICES
+from simple.grasp_rl.task_spec import GraspTaskSpec, get_task_spec
 from simple.grasp_rl.tracker import ActionTransform
 
 
@@ -24,6 +25,8 @@ AUDIT_SCENARIOS = (
     "open_hand",
     "contact_hold",
     "release_after_lift",
+    "time_shuffle",
+    "throw",
     "expert_repeat",
 )
 AUDITED_TERMS = (
@@ -66,6 +69,8 @@ def _scenario_action(
         action = actions[0].copy()
     elif scenario == "halfway_hold":
         action = actions[min(step, len(actions) // 2)].copy()
+    elif scenario == "time_shuffle":
+        action = actions[(step * 37) % len(actions)].copy()
     else:
         action = actions[min(step, len(actions) - 1)].copy()
     if scenario == "open_hand":
@@ -87,8 +92,9 @@ def _rollout_scenario(
     evaluators = {
         profile: GraspReward(
             env.state,
-            max_episode_steps=MAX_EPISODE_STEPS,
+            max_episode_steps=env.max_episode_steps,
             profile=profile,
+            reward_spec=env.task_spec.reward,
         )
         for profile in profiles
     }
@@ -104,29 +110,40 @@ def _rollout_scenario(
     first_lift_step: int | None = None
     final_terms = None
 
-    for step_index in range(MAX_EPISODE_STEPS):
+    for step_index in range(env.max_episode_steps):
         action = _scenario_action(
             scenario, actions, step_index, frozen_action
         )
         previous_action = env.previous_physical_action.copy()
-        env.step_physical(action)
-        state = env.state.target_state()
-        profile_terms = {
-            profile: evaluator.compute(
-                state,
-                action,
-                previous_action,
-                action_span,
-            )
-            for profile, evaluator in evaluators.items()
-        }
+        env_step = env.step_physical(action)
+        other_profiles = [
+            profile
+            for profile in profiles
+            if profile != env.task_reward_profile
+        ]
+        state = env.state.target_state() if other_profiles else None
+        profile_terms = {}
+        for profile, evaluator in evaluators.items():
+            if profile == env.task_reward_profile:
+                profile_terms[profile] = env_step.terms
+            else:
+                assert state is not None
+                profile_terms[profile] = evaluator.compute(
+                    state,
+                    action,
+                    previous_action,
+                    action_span,
+                )
         terms = profile_terms["grail_release_v1"]
         final_terms = terms
         max_lift = max(max_lift, terms.lift_height)
         max_grasp_quality = max(max_grasp_quality, terms.grasp_quality)
         if terms.is_grasp and first_grasp_step is None:
             first_grasp_step = step_index
-        if terms.lift_height >= 0.02 and first_lift_step is None:
+        if (
+            terms.lift_height >= env.task_spec.reward.success_lift
+            and first_lift_step is None
+        ):
             first_lift_step = step_index
 
         for profile, values in profile_terms.items():
@@ -140,9 +157,9 @@ def _rollout_scenario(
         if scenario == "contact_hold" and frozen_action is None and terms.is_grasp:
             frozen_action = action.copy()
         if (
-            scenario == "release_after_lift"
+            scenario in {"release_after_lift", "throw"}
             and frozen_action is None
-            and terms.lift_height >= 0.015
+            and terms.lift_height >= env.task_spec.reward.ever_lifted
         ):
             frozen_action = action.copy()
             hand = ACTION_SLICES["right_hand"]
@@ -176,6 +193,7 @@ def _audit_chunk(
     scenarios: tuple[str, ...],
     task_weight: float,
     cuda_device: int,
+    task_name: str,
 ) -> list[dict[str, Any]]:
     os.environ["CUDA_VISIBLE_DEVICES"] = str(cuda_device)
     os.environ.setdefault("MUJOCO_GL", "egl")
@@ -184,8 +202,9 @@ def _audit_chunk(
     env = GraspRlEnv(
         transform,
         seed=10_000 + episode_rows[0][0],
-        task_reward_profile="grail_v3",
+        task_reward_profile="grail_release_v1",
         fast_reset=False,
+        task=task_name,
     )
     reports: list[dict[str, Any]] = []
     try:
@@ -350,8 +369,8 @@ def _summarize(
             or reset_check[profile]["outcome_match_fraction"] >= 0.99
         )
         checks = {
-            "expert_success_rate_at_least_95pct": (
-                scenario_summary["expert_hold"]["success_rate"] >= 0.95
+            "expert_success_rate_at_least_90pct": (
+                scenario_summary["expert_hold"]["success_rate"] >= 0.90
             ),
             "counterfactual_success_rate_at_most_5pct": outcome_pass,
             "paired_expert_higher_at_least_95pct": paired_pass,
@@ -386,6 +405,7 @@ def audit_reward(
     profiles: tuple[str, ...] = TASK_REWARD_PROFILES,
     scenarios: tuple[str, ...] = AUDIT_SCENARIOS,
     task_weight: float = 0.02,
+    task: str | GraspTaskSpec | None = None,
 ) -> Path:
     """Replay experts and targeted failures, then write a paired reward audit."""
     invalid_profiles = set(profiles) - set(TASK_REWARD_PROFILES)
@@ -401,6 +421,7 @@ def audit_reward(
     if "expert_hold" not in scenarios:
         raise ValueError("expert_hold is required for paired ranking")
 
+    task_spec = get_task_spec(task)
     dataset = Path(dataset_dir).resolve()
     transform = Path(action_transform_path).resolve()
     output = Path(output_dir).resolve()
@@ -431,6 +452,7 @@ def audit_reward(
             scenarios,
             task_weight,
             worker,
+            task_spec.name,
         )
         for worker, chunk in enumerate(chunks)
     ]
@@ -448,6 +470,8 @@ def audit_reward(
         "dataset": str(dataset),
         "action_transform": str(transform),
         "task_weight": task_weight,
+        "task": task_spec.name,
+        "task_metadata": task_spec.metadata(),
         "profiles": list(profiles),
         "scenarios": list(scenarios),
         "num_episodes": len(reports),

@@ -21,7 +21,8 @@ from simple.grasp_rl.rewards import (
     TASK_REWARD_PROFILES,
     compose_reward,
 )
-from simple.grasp_rl.schema import ACTION_DIM, MAX_EPISODE_STEPS
+from simple.grasp_rl.schema import ACTION_DIM
+from simple.grasp_rl.task_spec import DEFAULT_TASK, get_task_spec
 from simple.grasp_rl.tracker import ActionTransform
 
 
@@ -44,6 +45,7 @@ def _worker(
     reference_processed: str | None,
     reference_source: str,
     reference_splits: tuple[str, ...],
+    task_name: str,
 ) -> None:
     try:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(cuda_device)
@@ -55,8 +57,8 @@ def _worker(
         env = GraspRlEnv(
             transform,
             seed=seed,
-            max_episode_steps=MAX_EPISODE_STEPS,
             task_reward_profile=task_reward_profile,
+            task=task_name,
         )
         rsi_rows = None
         rsi_action_cache: dict[int, np.ndarray] = {}
@@ -322,10 +324,12 @@ class DistributedGraspVecEnv(VecEnv):
         reference_source: str = "bc",
         reference_splits: tuple[str, ...] = ("train", "val", "test"),
         reference_reward_weight: float = 0.0,
+        task: str = DEFAULT_TASK,
     ):
+        task_spec = get_task_spec(task)
         self.num_envs = num_envs
         self.num_actions = ACTION_DIM
-        self.max_episode_length = MAX_EPISODE_STEPS
+        self.max_episode_length = task_spec.max_episode_steps
         self.device = torch.device(device)
         self.cfg = {
             "num_envs": num_envs,
@@ -344,6 +348,7 @@ class DistributedGraspVecEnv(VecEnv):
             "target_position_jitter_xy": target_position_jitter_xy,
             "target_yaw_jitter": target_yaw_jitter,
             "seed": seed,
+            "task": task_spec.name,
         }
         if not worker_devices:
             raise ValueError("worker_devices must contain at least one CUDA device")
@@ -388,6 +393,7 @@ class DistributedGraspVecEnv(VecEnv):
         self.episode_length_buf = torch.zeros(num_envs, dtype=torch.long, device=self.device)
         self._episode_return = torch.zeros(num_envs, device=self.device)
         self._episode_success = torch.zeros(num_envs, device=self.device)
+        self._episode_native_success = torch.zeros(num_envs, device=self.device)
         self._episode_max_grasp_quality = torch.zeros(num_envs, device=self.device)
         self._episode_max_lift = torch.full(
             (num_envs,), -torch.inf, device=self.device
@@ -424,6 +430,7 @@ class DistributedGraspVecEnv(VecEnv):
                     ),
                     reference_source,
                     reference_splits,
+                    task_spec.name,
                 ),
                 daemon=True,
             )
@@ -545,6 +552,14 @@ class DistributedGraspVecEnv(VecEnv):
                 dtype=torch.float32,
             ),
         )
+        self._episode_native_success = torch.maximum(
+            self._episode_native_success,
+            torch.tensor(
+                [row["native_success"] for row in term_rows],
+                device=self.device,
+                dtype=torch.float32,
+            ),
+        )
         step_grasp_quality = torch.tensor(
             [row["grasp_quality"] for row in term_rows], device=self.device
         )
@@ -583,6 +598,7 @@ class DistributedGraspVecEnv(VecEnv):
             # not silently omit episode metrics when the first transition is
             # non-terminal. Empty tensors contribute no samples.
             "success": torch.empty(0, device=self.device),
+            "native_success": torch.empty(0, device=self.device),
             "success_rsi": torch.empty(0, device=self.device),
             "success_full_start": torch.empty(0, device=self.device),
             "return": torch.empty(0, device=self.device),
@@ -592,6 +608,9 @@ class DistributedGraspVecEnv(VecEnv):
         }
         if finished.numel():
             log["success"] = self._episode_success[finished].mean().reshape(1)
+            log["native_success"] = (
+                self._episode_native_success[finished].mean().reshape(1)
+            )
             rsi_finished = finished[self._episode_is_rsi[finished]]
             full_finished = finished[~self._episode_is_rsi[finished]]
             if rsi_finished.numel():
@@ -628,6 +647,7 @@ class DistributedGraspVecEnv(VecEnv):
             )
             self._episode_return[finished] = 0
             self._episode_success[finished] = 0
+            self._episode_native_success[finished] = 0
             self._episode_max_grasp_quality[finished] = 0
             self._episode_max_lift[finished] = -torch.inf
             self.episode_length_buf[finished] = 0

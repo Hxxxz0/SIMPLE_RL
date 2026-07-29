@@ -133,7 +133,11 @@ class ActionTransform:
         return np.clip(raw, -1.0, 1.0).astype(np.float32)
 
 
-def compute_action_transform(actions: list[np.ndarray]) -> ActionTransform:
+def compute_action_transform(
+    actions: list[np.ndarray],
+    *,
+    legacy_tabletop_locomotion_bounds: bool = True,
+) -> ActionTransform:
     """Derive safe physical action bounds from complete demonstration episodes."""
     if not actions:
         raise ValueError("No action episodes supplied")
@@ -150,16 +154,27 @@ def compute_action_transform(actions: list[np.ndarray]) -> ActionTransform:
     low -= 0.1 * span
     high += 0.1 * span
 
-    # Dataset fields 31:36 are constant for this tabletop task. Give the policy
-    # narrow, physically meaningful ranges while keeping a complete 36-D output.
-    low[31:36] = np.array([0.70, -0.10, -0.10, 0.0, -0.15], dtype=np.float32)
-    high[31:36] = np.array([0.80, 0.10, 0.10, 0.49, 0.15], dtype=np.float32)
-    center[31:36] = np.array([0.75, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    if legacy_tabletop_locomotion_bounds:
+        # Preserve exact scaling for existing tabletop checkpoints.  This
+        # cannot be applied to BendPick: its torso-height command spans
+        # 0.45..0.75 and clipping it to 0.70 makes bending impossible.
+        low[31:36] = np.array(
+            [0.70, -0.10, -0.10, 0.0, -0.15], dtype=np.float32
+        )
+        high[31:36] = np.array(
+            [0.80, 0.10, 0.10, 0.49, 0.15], dtype=np.float32
+        )
+        center[31:36] = np.array(
+            [0.75, 0.0, 0.0, 0.0, 0.0], dtype=np.float32
+        )
 
     deltas = np.concatenate([np.abs(np.diff(x, axis=0)) for x in arrays], axis=0)
     max_delta = np.quantile(deltas, 0.99, axis=0).astype(np.float32)
     floors = np.full(ACTION_DIM, 0.01, dtype=np.float32)
-    floors[31:36] = np.array([0.005, 0.03, 0.03, 0.1, 0.03], dtype=np.float32)
+    if legacy_tabletop_locomotion_bounds:
+        floors[31:36] = np.array(
+            [0.005, 0.03, 0.03, 0.1, 0.03], dtype=np.float32
+        )
     max_delta = np.maximum(max_delta, floors)
 
     tiny = high - low < 1e-4

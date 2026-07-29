@@ -8,7 +8,6 @@ from typing import Any
 import mujoco
 import numpy as np
 
-import simple.tasks  # noqa: F401 -- registers task classes
 from simple.engines.mujoco import MujocoSimulator
 from simple.grasp_rl.motion import MotionFrameExtractor
 from simple.grasp_rl.rewards import (
@@ -16,10 +15,9 @@ from simple.grasp_rl.rewards import (
     GraspReward,
     RewardTerms,
 )
-from simple.grasp_rl.schema import MAX_EPISODE_STEPS
 from simple.grasp_rl.state import MujocoStateExtractor
+from simple.grasp_rl.task_spec import GraspTaskAdapter, GraspTaskSpec
 from simple.grasp_rl.tracker import ActionTransform, stand_command, tracker_action_to_cmd
-from simple.tasks.registry import TaskRegistry
 
 
 @dataclass
@@ -37,26 +35,33 @@ class GraspRlEnv:
         self,
         action_transform: ActionTransform,
         seed: int = 0,
-        target_object: str = "graspnet1b:10",
+        target_object: str | None = None,
         warmup_steps: int = 60,
-        max_episode_steps: int = MAX_EPISODE_STEPS,
-        fast_reset: bool = True,
+        max_episode_steps: int | None = None,
+        fast_reset: bool | None = None,
         task_reward_profile: str = DEFAULT_TASK_REWARD_PROFILE,
+        task: str | GraspTaskSpec | None = None,
+        enable_renderers: bool = False,
     ) -> None:
-        task_cls = TaskRegistry._registry["g1_wholebody_tabletop_grasp_mp"]
-        self.task = task_cls(
-            target_object=target_object,
+        self.task_adapter = GraspTaskAdapter(task)
+        self.task_spec = self.task_adapter.spec
+        self.task = self.task_adapter.make_task(target_object)
+        self.sim = MujocoSimulator(
+            self.task,
             render_hz=50,
             physics_dt=0.002,
-            dr_level=0,
-            split="train",
+            headless=True,
+            enable_renderers=enable_renderers,
         )
-        self.sim = MujocoSimulator(self.task, render_hz=50, physics_dt=0.002, headless=True)
         self.action_transform = action_transform
         self.seed = seed
         self.warmup_steps = warmup_steps
-        self.max_episode_steps = max_episode_steps
-        self.fast_reset = fast_reset
+        self.max_episode_steps = (
+            self.task_spec.max_episode_steps
+            if max_episode_steps is None
+            else max_episode_steps
+        )
+        self.fast_reset = self.task_spec.fast_reset if fast_reset is None else fast_reset
         self.task_reward_profile = task_reward_profile
         self.episode_index = 0
         self.rng = np.random.default_rng(seed)
@@ -89,6 +94,13 @@ class GraspRlEnv:
         state_dict: dict[str, Any] | None = None,
         target_object: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
+        if state_dict is not None:
+            state_uid = state_dict.get("uid")
+            if state_uid != self.task_spec.registry_uid:
+                raise ValueError(
+                    f"Environment state belongs to {state_uid!r}, not "
+                    f"task {self.task_spec.registry_uid!r}"
+                )
         can_fast_reset = (
             self.fast_reset
             and self._data_snapshot is not None
@@ -114,7 +126,13 @@ class GraspRlEnv:
             if self.fast_reset and state_dict is None:
                 self._capture_snapshot()
 
-        self.state = MujocoStateExtractor(self.sim, self.previous_physical_action)
+        self.state = MujocoStateExtractor(
+            self.sim,
+            self.previous_physical_action,
+            goal_lift=self.task_spec.reward.goal_lift,
+            target_role=self.task_spec.target_role,
+            support_role=self.task_spec.support_role,
+        )
         if can_fast_reset and not self._fast_reset_randomize_target:
             assert self._initial_object_pos_snapshot is not None
             assert self._goal_pos_snapshot is not None
@@ -125,6 +143,7 @@ class GraspRlEnv:
             self.state,
             max_episode_steps=self.max_episode_steps,
             profile=self.task_reward_profile,
+            reward_spec=self.task_spec.reward,
         )
         observation, _ = self.state.actor_observation()
         frame = self.motion.extract()
@@ -150,10 +169,14 @@ class GraspRlEnv:
             self._initial_object_pos_snapshot = self.state.initial_object_pos.copy()
             self._goal_pos_snapshot = self.state.goal_pos.copy()
         else:
-            current = data.body(self.sim.mj_objects["target"].id).xpos.copy()
+            current = data.body(
+                self.sim.mj_objects[self.task_spec.target_role].id
+            ).xpos.copy()
             self._initial_object_pos_snapshot = current
-            self._goal_pos_snapshot = current + np.array([0.0, 0.0, 0.025])
-        target_body_id = self.sim.mj_objects["target"].id
+            self._goal_pos_snapshot = current + np.array(
+                [0.0, 0.0, self.task_spec.reward.goal_lift]
+            )
+        target_body_id = self.sim.mj_objects[self.task_spec.target_role].id
         joint_id = int(self.sim.mjModel.body_jntadr[target_body_id])
         if joint_id < 0 or self.sim.mjModel.jnt_type[joint_id] != mujoco.mjtJoint.mjJNT_FREE:
             raise RuntimeError("The grasp target must have a free joint for fast reset")
@@ -222,8 +245,12 @@ class GraspRlEnv:
             address = self._target_qpos_adr
             if self._fast_reset_position_jitter_xy is None:
                 # Preserve the original task distribution for legacy callers.
-                data.qpos[address] = self.rng.uniform(-0.67, -0.62)
-                data.qpos[address + 1] = self.rng.uniform(-0.03, 0.03)
+                data.qpos[address] = self.rng.uniform(
+                    *self.task_spec.native_target_x
+                )
+                data.qpos[address + 1] = self.rng.uniform(
+                    *self.task_spec.native_target_y
+                )
             else:
                 jitter_x, jitter_y = self._fast_reset_position_jitter_xy
                 data.qpos[address] = self._target_base_position[0] + self.rng.uniform(
@@ -233,7 +260,7 @@ class GraspRlEnv:
                     -jitter_y, jitter_y
                 )
             yaw_jitter = (
-                0.15
+                self.task_spec.native_yaw_jitter
                 if self._fast_reset_yaw_jitter is None
                 else self._fast_reset_yaw_jitter
             )
@@ -278,7 +305,13 @@ class GraspRlEnv:
         self.sim.mjData.qpos[address : address + 3] = position
         self.sim.mjData.qpos[address + 3 : address + 7] = quaternion / norm
         mujoco.mj_forward(self.sim.mjModel, self.sim.mjData)
-        self.state = MujocoStateExtractor(self.sim, self.previous_physical_action)
+        self.state = MujocoStateExtractor(
+            self.sim,
+            self.previous_physical_action,
+            goal_lift=self.task_spec.reward.goal_lift,
+            target_role=self.task_spec.target_role,
+            support_role=self.task_spec.support_role,
+        )
         self.motion = MotionFrameExtractor(
             self.sim.mjModel, self.sim.mjData, self.task.robot
         )
@@ -286,6 +319,7 @@ class GraspRlEnv:
             self.state,
             max_episode_steps=self.max_episode_steps,
             profile=self.task_reward_profile,
+            reward_spec=self.task_spec.reward,
         )
         observation, _ = self.state.actor_observation()
         return observation, self.motion.extract()

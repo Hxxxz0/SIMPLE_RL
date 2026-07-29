@@ -14,7 +14,8 @@ from simple.grasp_rl.env import GraspRlEnv
 from simple.grasp_rl.policy import add_optional_phase, load_actor
 from simple.grasp_rl.reference import ReferenceLibrary, ReferenceTracker
 from simple.grasp_rl.rewards import DEFAULT_TASK_REWARD_PROFILE
-from simple.grasp_rl.schema import MAX_EPISODE_STEPS, REFERENCE_ACTOR_OBS_DIM
+from simple.grasp_rl.schema import REFERENCE_ACTOR_OBS_DIM
+from simple.grasp_rl.task_spec import GraspTaskSpec, get_task_spec
 from simple.grasp_rl.tracker import ActionTransform
 
 
@@ -35,8 +36,10 @@ def collect_policy_dataset(
     reference_source: str = "bc",
     reference_splits: tuple[str, ...] = ("train", "val", "test"),
     reference_ranks: tuple[int, ...] = (0, 1),
+    base_reference_fallback: bool = True,
     seed: int = 20260729,
     device: str = "cuda:0",
+    task: str | GraspTaskSpec | None = None,
 ) -> dict:
     """Collect exactly ``num_successes`` random-target successful rollouts.
 
@@ -63,6 +66,7 @@ def collect_policy_dataset(
             "target_position_jitter_xy must contain two non-negative values"
         )
 
+    task_spec = get_task_spec(task)
     output = Path(output_dir)
     trajectory_dir = output / "trajectories"
     trajectory_dir.mkdir(parents=True, exist_ok=True)
@@ -75,7 +79,12 @@ def collect_policy_dataset(
     rng = np.random.default_rng(seed)
     scene_order = rng.permutation(len(rows))
     transform = ActionTransform.from_npz(action_transform_path)
-    actor = load_actor(checkpoint, device)
+    actor = load_actor(
+        checkpoint,
+        device,
+        expected_task=task_spec,
+        action_transform=action_transform_path,
+    )
     observation_dim = int(getattr(actor, "grasp_observation_dim", 192))
     reference = (
         ReferenceTracker(
@@ -92,6 +101,7 @@ def collect_policy_dataset(
         transform,
         seed=seed,
         task_reward_profile=task_reward_profile,
+        task=task_spec,
     )
     manifest: list[dict] = []
     successes = 0
@@ -102,11 +112,16 @@ def collect_policy_dataset(
         observation: np.ndarray,
         initial_frame: np.ndarray,
         reference_rank: int,
+        exact_reference_episode: int | None = None,
     ) -> dict:
         if hasattr(actor, "reset"):
             actor.reset()
         if reference is not None:
-            reference.reset(observation, rank=reference_rank)
+            reference.reset(
+                observation,
+                exact_episode=exact_reference_episode,
+                rank=reference_rank if exact_reference_episode is None else 0,
+            )
             reference_episode = reference.episode
         else:
             reference_episode = None
@@ -121,7 +136,7 @@ def collect_policy_dataset(
             "penalties": [],
         }
         final_terms = None
-        for policy_step in range(MAX_EPISODE_STEPS):
+        for policy_step in range(task_spec.max_episode_steps):
             policy_observation = (
                 reference.augment(observation)
                 if reference is not None
@@ -215,6 +230,34 @@ def collect_policy_dataset(
                 )
                 if terms.success:
                     break
+            if (
+                not rollout["terms"].success
+                and base_reference_fallback
+                and all(
+                    item["reference_episode"] != base_episode
+                    for item in rollout_attempts
+                )
+            ):
+                observation, initial_frame = env.reset_to_target_pose(
+                    target_position, target_quaternion
+                )
+                rollout = run_rollout(
+                    observation,
+                    initial_frame,
+                    reference_rank=-1,
+                    exact_reference_episode=base_episode,
+                )
+                terms = rollout["terms"]
+                rollout_attempts.append(
+                    {
+                        "reference_rank": -1,
+                        "reference_episode": rollout["reference_episode"],
+                        "success": bool(terms.success),
+                        "failure": bool(terms.failure),
+                        "timeout": bool(terms.timeout),
+                        "length": len(rollout["arrays"]["raw_actions"]),
+                    }
+                )
             assert rollout is not None
             final_terms = rollout["terms"]
             arrays = rollout["arrays"]
@@ -288,6 +331,8 @@ def collect_policy_dataset(
     attempts = len(manifest)
     summary = {
         "checkpoint": str(Path(checkpoint).resolve()),
+        "task": task_spec.name,
+        "task_metadata": task_spec.metadata(),
         "dataset": str(Path(dataset_dir).resolve()),
         "processed": str(Path(processed_dir).resolve()),
         "requested_successes": num_successes,
@@ -299,6 +344,7 @@ def collect_policy_dataset(
         "successful_trajectories_per_second": successes / max(elapsed, 1e-6),
         "scene_hold_attempts": scene_hold_attempts,
         "reference_ranks": list(reference_ranks),
+        "base_reference_fallback": base_reference_fallback,
         "plan_rollouts": sum(
             len(row["plan_attempts"]) for row in manifest
         ),

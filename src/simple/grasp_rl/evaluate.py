@@ -16,7 +16,8 @@ from simple.grasp_rl.motion import BatchedMotionBuffer
 from simple.grasp_rl.policy import add_optional_phase, load_actor
 from simple.grasp_rl.reference import ReferenceLibrary, ReferenceTracker
 from simple.grasp_rl.rewards import DEFAULT_TASK_REWARD_PROFILE, compose_reward
-from simple.grasp_rl.schema import MAX_EPISODE_STEPS, REFERENCE_ACTOR_OBS_DIM
+from simple.grasp_rl.schema import REFERENCE_ACTOR_OBS_DIM
+from simple.grasp_rl.task_spec import GraspTaskSpec, get_task_spec
 from simple.grasp_rl.tracker import ActionTransform
 
 
@@ -42,12 +43,15 @@ def evaluate_policy(
     reference_reward_weight: float = 0.0,
     reference_action_override: str = "none",
     reference_rank: int = 0,
+    reference_base_episode: bool = False,
     reach_extension_threshold: float | None = None,
     reach_extension_velocity: float = 0.0,
     randomize_target: bool = False,
     target_position_jitter_xy: tuple[float, float] | None = (0.025, 0.03),
     target_yaw_jitter: float = 0.15,
+    task: str | GraspTaskSpec | None = None,
 ) -> dict:
+    task_spec = get_task_spec(task)
     output = Path(output_dir)
     trajectory_dir = output / "trajectories"
     trajectory_dir.mkdir(parents=True, exist_ok=True)
@@ -87,7 +91,12 @@ def evaluate_policy(
         )
     rows = all_rows[episode_offset : episode_offset + num_episodes]
     transform = ActionTransform.from_npz(action_transform_path)
-    actor = load_actor(checkpoint, device)
+    actor = load_actor(
+        checkpoint,
+        device,
+        expected_task=task_spec,
+        action_transform=action_transform_path,
+    )
     actor_observation_dim = int(getattr(actor, "grasp_observation_dim", 192))
     needs_reference = (
         actor_observation_dim == REFERENCE_ACTOR_OBS_DIM
@@ -110,7 +119,10 @@ def evaluate_policy(
     )
     guidance = Guidance(diffusion_checkpoint, device) if diffusion_checkpoint else None
     env = GraspRlEnv(
-        transform, seed=1234, task_reward_profile=task_reward_profile
+        transform,
+        seed=1234,
+        task_reward_profile=task_reward_profile,
+        task=task_spec,
     )
     results = []
     try:
@@ -130,6 +142,7 @@ def evaluate_policy(
                 observation, frame = env.reset()
                 assert env.state is not None
             target_position = env.state.initial_object_pos.copy()
+            _, target_quaternion = env.target_freejoint_pose()
             target_offset = target_position - reference_target_position
             if initialization_prefix is not None or initialization_phase is not None:
                 # Mirror the training worker exactly: cache the configured scene,
@@ -157,6 +170,11 @@ def evaluate_policy(
                 frame = initialized.motion_frame
                 assert env.reward is not None
                 env.reward.reset()
+            # Preserve the exact randomized physical initial state so a saved
+            # evaluation can be rerun closed-loop and rendered, rather than
+            # silently falling back to the dataset's original object pose.
+            initial_qpos = env.sim.mjData.qpos.copy()
+            initial_qvel = env.sim.mjData.qvel.copy()
             policy_step = (
                 0
                 if initialization_prefix is None and initialization_phase is None
@@ -165,9 +183,17 @@ def evaluate_policy(
             if reference is not None:
                 reference.reset(
                     observation,
-                    exact_episode=None if randomize_target else episode,
+                    exact_episode=(
+                        episode
+                        if reference_base_episode or not randomize_target
+                        else None
+                    ),
                     start_index=policy_step,
-                    rank=reference_rank if randomize_target else 0,
+                    rank=(
+                        reference_rank
+                        if randomize_target and not reference_base_episode
+                        else 0
+                    ),
                 )
                 selected_reference_episode = reference.episode
             else:
@@ -181,7 +207,8 @@ def evaluate_policy(
             grasp_steps = 0
             used_reach_extension = False
             final_terms = None
-            for _ in range(MAX_EPISODE_STEPS):
+            native_success_any = False
+            for _ in range(task_spec.max_episode_steps):
                 policy_observation = (
                     reference.augment(observation)
                     if reference is not None
@@ -263,6 +290,7 @@ def evaluate_policy(
                 grasp_steps += int(step.terms.is_grasp)
                 observation = step.actor_observation
                 final_terms = step.terms
+                native_success_any |= step.terms.native_success
                 if step.done:
                     break
             assert final_terms is not None
@@ -274,8 +302,19 @@ def evaluate_policy(
                 raw_reference_reward=np.asarray(
                     reference_rewards, dtype=np.float32
                 ),
+                initial_qpos=initial_qpos,
+                initial_qvel=initial_qvel,
                 target_position=target_position.astype(np.float32),
+                target_quaternion=target_quaternion.astype(np.float32),
                 reference_target_position=reference_target_position.astype(np.float32),
+                base_episode=np.asarray(episode, dtype=np.int64),
+                reference_episode=np.asarray(
+                    -1
+                    if selected_reference_episode is None
+                    else selected_reference_episode,
+                    dtype=np.int64,
+                ),
+                reference_rank=np.asarray(reference_rank, dtype=np.int64),
             )
             results.append(
                 {
@@ -283,6 +322,7 @@ def evaluate_policy(
                     "reference_episode": selected_reference_episode,
                     "used_reach_extension": used_reach_extension,
                     "success": bool(final_terms.success),
+                    "native_success": bool(native_success_any),
                     "failure": bool(final_terms.failure),
                     "timeout": bool(final_terms.timeout),
                     "length": len(actions),
@@ -292,6 +332,7 @@ def evaluate_policy(
                     "max_grasp_quality": float(max_grasp_quality),
                     "grasp_steps": grasp_steps,
                     "target_position": target_position.tolist(),
+                    "target_quaternion": target_quaternion.tolist(),
                     "reference_target_position": reference_target_position.tolist(),
                     "target_offset": target_offset.tolist(),
                     "mean_raw_smp_mse": float(np.mean(raw_errors[9:])) if len(raw_errors) > 9 else 0.0,
@@ -304,6 +345,8 @@ def evaluate_policy(
         env.close()
     summary = {
         "checkpoint": str(Path(checkpoint).resolve()),
+        "task": task_spec.name,
+        "task_metadata": task_spec.metadata(),
         "initialization_prefix": initialization_prefix,
         "initialization_phase": initialization_phase,
         "episode_offset": episode_offset,
@@ -316,6 +359,7 @@ def evaluate_policy(
         "reference_reward_weight": reference_reward_weight,
         "reference_action_override": reference_action_override,
         "reference_rank": reference_rank,
+        "reference_base_episode": reference_base_episode,
         "reach_extension_threshold": reach_extension_threshold,
         "reach_extension_velocity": reach_extension_velocity,
         "randomize_target": randomize_target,
@@ -327,13 +371,21 @@ def evaluate_policy(
         "target_yaw_jitter": target_yaw_jitter,
         "episodes": len(results),
         "success_rate": float(np.mean([row["success"] for row in results])),
+        "native_success_rate": float(
+            np.mean([row["native_success"] for row in results])
+        ),
         "failure_rate": float(np.mean([row["failure"] for row in results])),
         "timeout_rate": float(np.mean([row["timeout"] for row in results])),
         "contact_rate": float(
             np.mean([row["max_grasp_quality"] > 0.0 for row in results])
         ),
-        "lift_2cm_rate": float(
-            np.mean([row["max_lift"] >= 0.02 for row in results])
+        "goal_lift_rate": float(
+            np.mean(
+                [
+                    row["max_lift"] >= task_spec.reward.success_lift
+                    for row in results
+                ]
+            )
         ),
         "mean_return": float(np.mean([row["return"] for row in results])),
         "mean_max_lift": float(np.mean([row["max_lift"] for row in results])),

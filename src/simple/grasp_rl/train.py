@@ -22,6 +22,12 @@ from simple.grasp_rl.schema import (
     REFERENCE_ACTOR_OBS_DIM,
 )
 from simple.grasp_rl.vec_env import DistributedGraspVecEnv
+from simple.grasp_rl.task_spec import (
+    DEFAULT_TASK,
+    checkpoint_task_metadata,
+    get_task_spec,
+    validate_task_metadata,
+)
 
 
 def _load_ancestor_critic(
@@ -150,11 +156,18 @@ def _install_teacher_anchor(
     checkpoint: str,
     weight: float,
     device: str,
+    task: str,
+    action_transform: str | Path,
 ) -> None:
     """Add stateless teacher supervision on each current PPO minibatch."""
     if weight <= 0.0:
         raise ValueError("teacher anchor weight must be positive")
-    teacher = load_actor(checkpoint, device)
+    teacher = load_actor(
+        checkpoint,
+        device,
+        expected_task=task,
+        action_transform=action_transform,
+    )
     actor = runner.alg.get_policy()
     optimizer = runner.alg.optimizer
     base_step = optimizer.step
@@ -223,6 +236,8 @@ def _install_teacher_anchor(
 
 @dataclass
 class PpoTrainConfig:
+    task: str = DEFAULT_TASK
+    reward_audit: str | None = None
     num_envs: int = 56
     iterations: int = 1500
     seed: int = 42
@@ -312,7 +327,7 @@ def rsl_config(config: PpoTrainConfig) -> dict:
         "save_interval": config.save_interval,
         "logger": "tensorboard",
         "run_name": (
-            f"grasp-{config.reward_variant}-{config.task_reward_profile}"
+            f"{config.task}-grasp-{config.reward_variant}-{config.task_reward_profile}"
             f"-seed{config.seed}"
         ),
         "obs_groups": {"actor": ["actor"], "critic": ["critic"]},
@@ -352,6 +367,23 @@ def train_ppo(
     config: PpoTrainConfig | None = None,
 ) -> Path:
     config = config or PpoTrainConfig()
+    task_spec = get_task_spec(config.task)
+    config.task = task_spec.name
+    if task_spec.name != DEFAULT_TASK:
+        if config.reward_audit is None:
+            raise ValueError(
+                f"{task_spec.name} training requires --reward-audit from expert replay"
+            )
+        audit = json.loads(Path(config.reward_audit).read_text())
+        if audit.get("task") != task_spec.name:
+            raise ValueError(
+                f"Reward audit is for {audit.get('task')!r}, not {task_spec.name!r}"
+            )
+        acceptance = audit.get("acceptance", {}).get(config.task_reward_profile, {})
+        if not acceptance.get("passed", False):
+            raise ValueError(
+                f"Reward audit did not pass for {config.task_reward_profile}; refusing PPO"
+            )
     checkpoint_modes = [config.resume, config.warm_start, config.actor_warm_start]
     if sum(value is not None for value in checkpoint_modes) > 1:
         raise ValueError(
@@ -367,6 +399,12 @@ def train_ppo(
     if architecture_checkpoint is not None:
         architecture_data = torch.load(
             architecture_checkpoint, map_location="cpu", weights_only=False
+        )
+        validate_task_metadata(
+            architecture_data,
+            task_spec,
+            checkpoint=architecture_checkpoint,
+            action_transform=action_transform,
         )
         state = architecture_data.get("actor_state_dict", {})
         checkpoint_recurrent = "rnn.rnn.weight_ih_l0" in state
@@ -416,9 +454,20 @@ def train_ppo(
         reference_source=config.reference_source,
         reference_splits=config.reference_splits,
         reference_reward_weight=config.reference_reward_weight,
+        task=task_spec.name,
     )
     try:
         runner = OnPolicyRunner(env, rsl_config(config), log_dir=str(output), device=config.device)
+        base_algorithm_save = runner.alg.save
+
+        def save_with_task_metadata():
+            payload = base_algorithm_save()
+            payload["task_metadata"] = checkpoint_task_metadata(
+                task_spec, action_transform
+            )
+            return payload
+
+        runner.alg.save = save_with_task_metadata
         if config.resume:
             runner.load(config.resume)
         elif config.warm_start:
@@ -508,6 +557,8 @@ def train_ppo(
                 config.teacher_anchor_checkpoint,
                 config.teacher_anchor_weight,
                 config.device,
+                config.task,
+                action_transform,
             )
         if not (config.resume or config.warm_start or config.actor_warm_start):
             final_layers = [module for module in actor.mlp.modules() if isinstance(module, nn.Linear)]

@@ -594,3 +594,85 @@ H.264/yuv420p）；同名JSON记录`closed_loop=true`和`success=true`。
 - [ ] generated-plan或无reference full-start learned MLP/PPO >90%；retrieval分数不得替代。
 - [ ] observation/dynamics noise鲁棒性与极端reach组合>90%。
 - [ ] multi-object/unseen-object generalization。
+
+## 10. 多任务扩展：BendPick（2026-07-29）
+
+### 10.1 先做哪个任务
+
+第一个扩展任务固定为 `G1WholebodyBendPickMP-v0`（CLI 名称 `bend_pick`）。它仍使用
+G1 whole-body 的36D tracker command，数据有100条完整轨迹，且目标物体在 MuJoCo 中有
+free joint，因此无需在离线数据里额外记录 object reference trajectory：训练/评测时的目标
+位置、姿态、速度、手指到物体表面的精确距离和接触均由仿真器在线读取。
+
+扩展顺序为：task adapter与schema校验 → exact physical replay → GRAIL reward audit →
+完整轨迹BC初始化 → 随机目标PPO → 同目标rank fallback评测 → 成功轨迹批量生产。奖励审计
+未通过时，非Tabletop任务的PPO会直接拒绝启动。
+
+### 10.2 跨任务固定接口
+
+- actor base observation仍为192D：机器人q/qdot、root/wrist/hand状态、目标pose/velocity、
+  goal相对量、双手接触、精确geom surface distance、上一完整command及phase；
+- plan-conditioned observation为`192 + 10×40 + 1 = 593D`，参考块是检索/生成的未来完整
+  command计划，不是object reference trajectory；
+- policy输出始终为36D normalized complete command，经task专属`action_transform.npz`
+  解码后交给SIMPLE whole-body tracker；
+- checkpoint保存task、registry、observation/action schema和action-transform SHA256，禁止把
+  Tabletop权重或缩放静默用于BendPick。
+
+### 10.3 BendPick任务语义与奖励
+
+BendPick成功遵循原任务的`LIFT_HEIGHT=0.10, success_criteria=0.9`：目标相对初始高度提升
+至少9 cm，并保持双侧thumb-support grasp连续13个control steps。GRAIL风格的pregrasp、
+contact fraction、finger direction、contact-gated lift/stability、wrist approach speed、
+table force和action rate均保留，但物体表面距离由`mj_geomDistance`计算，不使用Tabletop
+物体半径常数。
+
+两项Tabletop termination不能照搬：有效BendPick示范会在早期接触后继续弯腰，且pelvis
+最低约0.533 m，所以本任务关闭40-step stalled-contact termination，并将fall边界设为
+0.50 m。100场景真实tracker/MuJoCo审计结果为：expert 95/100，no-motion 0/100、
+time-shuffle 0/100、throw 0/100；成功expert最低return 25.004，最高反事实return
+-0.693，global margin 25.697，repeat outcome一致率100%。审计文件为
+`outputs/grasp_rl/bend_pick/reward_audit_v3/reward_audit.json`。
+
+### 10.4 数据、动作缩放和基线
+
+处理目录为`data/grasp_rl/G1WholebodyBendPickMP-v0`，100条配置/动作去重后按80/10/10
+划分。动作缩放不再使用旧Tabletop硬编码的躯干高度范围；BendPick的第31维覆盖约
+0.42–0.78 m，否则弯腰command会被裁掉，任何policy都不可能复现示范。
+
+`outputs/grasp_rl/bend_pick/bc_plan_v1/best.pt`是当前完整轨迹初始化模型。它不是
+diffusion policy：计划提供nominal完整command，MLP输出同一36D空间的state-feedback
+修正，最终仍只执行一个完整tracker command。100个native场景确定性结果为97/100成功、
+97/100接触、平均最大提升0.1860 m。KNN temporal在BendPick只有0/10成功，因此不作为
+teacher或生产方案。
+
+### 10.5 PPO和生产验收
+
+正式PPO采用task-only GRAIL reward，加法加入`0.0002 × reference reward`和BC anchor；
+unconditional SMP diffusion保持关闭。actor LR为`5e-6`、右臂/右手探索std为0.002。
+机器上GPU 0–4已有其他大作业，因此使用GPU 5/6的14个MuJoCo/AMO worker，每轮96步；
+300轮仍为`14×96×300=403,200` transitions。无图像RL worker不再创建camera EGL
+framebuffer，只有`render`命令显式启用offscreen renderer。
+
+验收必须分别报告：native场景、未见随机目标rank-0、同一初态rank-0→rank-1 fallback、
+contact、9 cm lift和13-step held success。生产数据只保存成功轨迹，但summary必须保留
+所有失败与fallback尝试，不能用“收集到的样本100%成功”代替policy成功率。
+
+固定100随机目标评测选择`ppo_native_v1_300/model_100.pt`：rank-0为90/100，rank-1为
+87/100；rank-1救回rank-0失败的episode 72，同目标并集为91/100。rank-0的contact、
+9 cm lift、held success均为90%，包含1个failure和9个timeout。训练到150/200轮时相同
+前30目标从27/30降为26/30，因此不能因训练更久而自动选择最后checkpoint。
+完整训练最终产生`model_299.pt`并达到403,200 transitions；它在固定前30目标回到27/30。
+`model_250.pt`的完整100场景rank-0也是90/100，且成功集合与model100完全相同。因此保留
+经过rank-1和独立生产seed完整验证的model100作为发布checkpoint，继续训练没有净收益。
+
+独立seed 20260730的数据生产结果写入
+`outputs/grasp_rl/bend_pick/policy_dataset_random_100_v1`：106个随机目标成功100个，真实
+attempt success为94.34%，保存100条轨迹（约50.7 MB），共118次plan rollout；6个最终
+失败保留在manifest。本次100个成功均由rank-0产生，rank-1/base fallback没有救回失败，
+因此没有把fallback误记成提升。每条NPZ包含192D/593D observation、raw/physical 36D
+command、80D motion frame、reward/penalty、初始qpos/qvel和目标pose。
+
+三个随机目标闭环视频位于`outputs/grasp_rl/bend_pick/videos/`，文件名为
+`ppo_model100_random_episode{1,2,3}_success.mp4`；metadata均为`closed_loop=true`、
+`success=true`，最大提升17.74–19.70 cm，编码为H.264/yuv420p/640×360/50 fps。

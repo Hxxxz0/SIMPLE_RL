@@ -58,6 +58,7 @@ class TargetState:
     wrist_pos_w: np.ndarray
     wrist_lin_vel_w: np.ndarray
     distal_pos_w: np.ndarray
+    fingertip_surface_distances: np.ndarray
     table_pos_w: np.ndarray
     table_rot_w: np.ndarray
     pelvis_pos_w: np.ndarray
@@ -69,7 +70,14 @@ class TargetState:
 class MujocoStateExtractor:
     """Resolve model IDs once and expose the fixed 192-D actor observation."""
 
-    def __init__(self, simulator, previous_action: np.ndarray | None = None):
+    def __init__(
+        self,
+        simulator,
+        previous_action: np.ndarray | None = None,
+        goal_lift: float = 0.025,
+        target_role: str = "target",
+        support_role: str = "table",
+    ):
         self.sim = simulator
         self.model = simulator.mjModel
         self.data = simulator.mjData
@@ -82,8 +90,8 @@ class MujocoStateExtractor:
             self.model.body("left_ankle_roll_link").id,
             self.model.body("right_ankle_roll_link").id,
         )
-        self.table_id = self.model.body("table").id
-        self.target_id = simulator.mj_objects["target"].id
+        self.table_id = self.model.body(support_role).id
+        self.target_id = simulator.mj_objects[target_role].id
         self.contact_body_ids = tuple(
             self.model.body(name).id for name in RIGHT_CONTACT_LINK_NAMES
         )
@@ -93,6 +101,10 @@ class MujocoStateExtractor:
         self.distal_ids = tuple(
             self.model.body(name).id for name in RIGHT_DISTAL_LINK_NAMES
         )
+        self.target_geom_ids = self._subtree_geom_ids(self.target_id)
+        self.distal_geom_ids = tuple(
+            self._subtree_geom_ids(body_id) for body_id in self.distal_ids
+        )
         self.wrist_id = self.model.body("right_wrist_yaw_link").id
         self.previous_action = (
             np.zeros(36, dtype=np.float32)
@@ -100,7 +112,55 @@ class MujocoStateExtractor:
             else np.asarray(previous_action, dtype=np.float32).copy()
         )
         self.initial_object_pos = self.data.body(self.target_id).xpos.copy()
-        self.goal_pos = self.initial_object_pos + np.array([0.0, 0.0, 0.025])
+        self.goal_lift = float(goal_lift)
+        self.goal_pos = self.initial_object_pos + np.array(
+            [0.0, 0.0, self.goal_lift]
+        )
+
+    def _is_descendant(self, body_id: int, ancestor_id: int) -> bool:
+        current = int(body_id)
+        while current > 0 and current != ancestor_id:
+            current = int(self.model.body_parentid[current])
+        return current == ancestor_id
+
+    def _subtree_geom_ids(self, body_id: int) -> tuple[int, ...]:
+        return tuple(
+            geom_id
+            for geom_id in range(self.model.ngeom)
+            if self._is_descendant(int(self.model.geom_bodyid[geom_id]), body_id)
+        )
+
+    def _fingertip_surface_distances(self, distal_pos: np.ndarray) -> np.ndarray:
+        """Return exact MuJoCo geom distances, independent of object shape."""
+
+        distances = []
+        for position, finger_geoms in zip(
+            distal_pos, self.distal_geom_ids, strict=True
+        ):
+            candidates = []
+            for finger_geom in finger_geoms:
+                for target_geom in self.target_geom_ids:
+                    candidates.append(
+                        float(
+                            mujoco.mj_geomDistance(
+                                self.model,
+                                self.data,
+                                finger_geom,
+                                target_geom,
+                                1.0,
+                                None,
+                            )
+                        )
+                    )
+            if candidates:
+                distances.append(max(min(candidates), 0.0))
+            else:
+                # Models without fingertip collision geoms remain usable, but
+                # new supported tasks are expected to take the exact branch.
+                distances.append(
+                    max(float(np.linalg.norm(position - self.data.body(self.target_id).xpos)), 0.0)
+                )
+        return np.asarray(distances, dtype=np.float32)
 
     def set_previous_action(self, action: np.ndarray) -> None:
         self.previous_action = np.asarray(action, dtype=np.float32).copy()
@@ -183,6 +243,9 @@ class MujocoStateExtractor:
             wrist_pos_w=wrist_pos,
             wrist_lin_vel_w=wrist_lin,
             distal_pos_w=distal_pos,
+            fingertip_surface_distances=self._fingertip_surface_distances(
+                distal_pos
+            ),
             table_pos_w=table.xpos.copy(),
             table_rot_w=table_rot,
             pelvis_pos_w=pelvis.xpos.copy(),

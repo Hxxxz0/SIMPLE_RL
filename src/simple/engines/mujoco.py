@@ -38,7 +38,14 @@ xyzw_to_wxyz = lambda q: np.array([q[3], q[0], q[1], q[2]])
 
 class MujocoSimulator(Simulator):
 
-    def __init__(self, task:Task, render_hz:int=30, physics_dt: float = 0.002, headless=True) -> None:
+    def __init__(
+        self,
+        task: Task,
+        render_hz: int = 30,
+        physics_dt: float = 0.002,
+        headless: bool = True,
+        enable_renderers: bool = True,
+    ) -> None:
         self.task = task
         self.render_hz = task.metadata["render_hz"] if "render_hz" in self.task.metadata else render_hz
         self.physics_dt = task.metadata["physics_dt"] if "physics_dt" in self.task.metadata else physics_dt
@@ -55,6 +62,10 @@ class MujocoSimulator(Simulator):
 
         self.viewer = None
         self.headless=headless
+        # Headless does not imply renderer-free: dataset generation still needs
+        # offscreen cameras.  State-only RL workers explicitly disable them so
+        # dozens of environments do not allocate one EGL framebuffer per camera.
+        self.enable_renderers = enable_renderers
         
         self.need_gravity = self.task.metadata.get("need_gravity", False)
         self._is_sonic = None
@@ -266,12 +277,13 @@ class MujocoSimulator(Simulator):
             self.close()
 
         self.renderers = {}
-        for cname, camera in self.task.layout.cameras.items():
-            self.renderers[cname] = mujoco.Renderer(
-                self.mjModel,
-                height=camera.resolution[1],
-                width=camera.resolution[0]
-            ) # type: ignore
+        if self.enable_renderers:
+            for cname, camera in self.task.layout.cameras.items():
+                self.renderers[cname] = mujoco.Renderer(
+                    self.mjModel,
+                    height=camera.resolution[1],
+                    width=camera.resolution[0]
+                ) # type: ignore
 
         if not self._is_sonic:
             if self.viewer is not None:

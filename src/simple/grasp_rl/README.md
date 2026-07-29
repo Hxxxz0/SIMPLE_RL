@@ -9,7 +9,9 @@ frozen unconditional diffusion prior. The diffusion model is not the policy and
 does not receive object or goal conditions.
 
 The main experimental path is PPO warm-started from the real-trajectory BC/DAgger
-actor. `grail_release_v1` is the current task reward: it maps the released GRAIL
+actor. `task_spec.py` keeps scene construction, reset bounds, success semantics,
+and checkpoint compatibility task-specific while preserving the shared 192/593D
+input and complete 36D output contract. `grail_release_v1` is the current task reward: it maps the released GRAIL
 `pnp_table` grasp, finger-direction, approach-velocity, table-contact and action-rate
 terms to SIMPLE's MuJoCo signals. `dense_v1`, `progress_v2`, and `grail_v3` remain
 as explicit reward ablations.
@@ -18,6 +20,7 @@ Run the CLI from the repository root with `PYTHONPATH=src`:
 
 ```bash
 python -m simple.grasp_rl.cli --help
+python -m simple.grasp_rl.cli list-tasks
 python -m simple.grasp_rl.cli prepare --help
 python -m simple.grasp_rl.cli prepare-bc --help
 python -m simple.grasp_rl.cli audit-reward --help
@@ -28,6 +31,7 @@ python -m simple.grasp_rl.cli pretrain --help
 python -m simple.grasp_rl.cli train --help
 python -m simple.grasp_rl.cli evaluate --help
 python -m simple.grasp_rl.cli render --help
+python -m simple.grasp_rl.cli collect-policy --help
 ```
 
 The adapted GRAIL task term is evaluated at 50 Hz:
@@ -46,10 +50,29 @@ step_reward = 0.02 * (target - penalty) + terminal
 
 Finger direction uses the MuJoCo object/finger contact center, matching GRAIL's
 `use_contact_center=true`, and is gated by a simulated thumb–support grasp to avoid
-single-finger reward farming. Success is a 2 cm bilateral lift held for 13 frames;
-contact without lift for 40 frames is a failure. Run `audit-reward` before PPO to
+single-finger reward farming. Tabletop success is a 2 cm bilateral lift held for
+13 frames. BendPick success is its native 9 cm lift with the same hold; its valid
+demonstrations make early contact while bending, so it intentionally has no
+40-frame stalled-contact termination. Run `audit-reward` before PPO to
 compare exact expert replay against stationary, truncated, open-hand, stalled-grasp,
 and post-lift-release counterfactuals.
+
+For the first extension task, add `--task bend_pick` to every command. Its processed
+data lives in `data/grasp_rl/G1WholebodyBendPickMP-v0`; its passing audit is
+`outputs/grasp_rl/bend_pick/reward_audit_v3/reward_audit.json`, and its exact-plan
+complete-command BC initialization is
+`outputs/grasp_rl/bend_pick/bc_plan_v1/best.pt`. The native 100-scene BC baseline is
+97/100 at the strict 9 cm held-lift criterion. This model uses the same policy
+class as SMP-style PPO, not a diffusion-policy architecture.
+
+The selected BendPick PPO checkpoint is
+`outputs/grasp_rl/bend_pick/ppo_native_v1_300/model_100.pt`. On 100 fixed native-
+range randomized targets it achieves 90/100 with rank 0; trying rank 1 from the
+same initial target/state raises the union to 91/100. A separate production seed
+collected 100 successes in 106 target attempts (94.34%) at
+`outputs/grasp_rl/bend_pick/policy_dataset_random_100_v1`. Its manifest includes
+all six failures and all 118 plan rollouts; the trajectory directory alone must
+not be used to claim a 100% policy success rate.
 
 Training artifacts live under `outputs/grasp_rl`; processed schemas, splits and
 normalizers live under `data/grasp_rl`. Use `--resume` for an exact continuation

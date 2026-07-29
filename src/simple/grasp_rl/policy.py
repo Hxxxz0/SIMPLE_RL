@@ -21,6 +21,13 @@ from simple.grasp_rl.schema import (
     ACTOR_OBS_DIM,
     REFERENCE_ACTOR_OBS_DIM,
 )
+from simple.grasp_rl.task_spec import (
+    GraspTaskSpec,
+    checkpoint_task_metadata,
+    get_task_spec,
+    task_from_manifest,
+    validate_task_metadata,
+)
 
 
 def make_actor(
@@ -144,6 +151,7 @@ def build_knn_actor_checkpoint(
     """Package replayed state-action pairs as a nearest-neighbor expert."""
     processed = Path(processed_dir)
     manifest = json.loads((processed / "manifest.json").read_text())
+    task_spec = task_from_manifest(processed)
     observations, actions, episode_ids, step_ids = [], [], [], []
     for source_name in sources:
         source = processed / source_name
@@ -178,6 +186,9 @@ def build_knn_actor_checkpoint(
             "step_ids": torch.from_numpy(np.concatenate(step_ids)),
             "sources": sources,
             "splits": splits,
+            "task_metadata": checkpoint_task_metadata(
+                task_spec, processed / "action_transform.npz"
+            ),
         },
         output,
     )
@@ -185,9 +196,19 @@ def build_knn_actor_checkpoint(
 
 
 def load_actor(
-    checkpoint: str | Path, device: str | torch.device = "cuda:0"
+    checkpoint: str | Path,
+    device: str | torch.device = "cuda:0",
+    expected_task: str | GraspTaskSpec | None = None,
+    action_transform: str | Path | None = None,
 ) -> MLPModel | KnnBcActor:
     data = torch.load(checkpoint, map_location=device, weights_only=False)
+    if expected_task is not None:
+        validate_task_metadata(
+            data,
+            get_task_spec(expected_task),
+            checkpoint=checkpoint,
+            action_transform=action_transform,
+        )
     if data.get("policy_type") == "knn_bc_v1":
         return KnnBcActor(data, device).eval()
     recurrent = "rnn.rnn.weight_ih_l0" in data["actor_state_dict"]

@@ -8,6 +8,7 @@ import numpy as np
 
 from simple.grasp_rl.state import MujocoStateExtractor, TargetState
 from simple.grasp_rl.schema import MAX_EPISODE_STEPS
+from simple.grasp_rl.task_spec import GraspLiftRewardSpec
 
 
 REWARD_VARIANTS = (
@@ -80,6 +81,7 @@ class RewardTerms:
     penalty: float
     terminal_adjustment: float
     success: bool
+    native_success: bool
     failure: bool
     timeout: bool
     lift_height: float
@@ -96,12 +98,21 @@ class GraspReward:
         extractor: MujocoStateExtractor,
         max_episode_steps: int = MAX_EPISODE_STEPS,
         profile: str = "dense_v1",
+        reward_spec: GraspLiftRewardSpec | None = None,
     ):
         if profile not in TASK_REWARD_PROFILES:
             raise ValueError(f"Unknown task reward profile {profile}")
         self.extractor = extractor
         self.max_episode_steps = max_episode_steps
         self.profile = profile
+        self.reward_spec = reward_spec or GraspLiftRewardSpec(
+            goal_lift=0.025,
+            success_lift=0.020,
+            success_hold_steps=13,
+            ever_lifted=0.015,
+            drop_lift=0.005,
+            progress_lift=0.020,
+        )
         self.reset()
 
     def reset(self) -> None:
@@ -257,13 +268,9 @@ class GraspReward:
         initial = self.extractor.initial_object_pos
         lift_height = float(state.object_pos_w[2] - initial[2])
         distance = float(np.linalg.norm(state.hand_pos_w - state.object_pos_w))
-        fingertip_distances = np.linalg.norm(
-            state.distal_pos_w - state.object_pos_w[None, :], axis=-1
-        )
-        # Center-distance minus an approximate chips-can radius gives a smooth
-        # surface-distance curriculum.  The geometric mean requires both the
-        # thumb and at least one opposing finger to approach the object.
-        surface_distances = np.maximum(fingertip_distances - 0.05, 0.0)
+        # Exact MuJoCo geom distance makes the same task term work for the
+        # chips can, cracker box, and later arbitrary GraspNet objects.
+        surface_distances = state.fingertip_surface_distances
         thumb_near = np.exp(-10.0 * surface_distances[0])
         support_near = np.exp(-10.0 * min(surface_distances[1], surface_distances[2]))
         pregrasp = float(np.sqrt(thumb_near * support_near))
@@ -295,8 +302,12 @@ class GraspReward:
         grail_finger_direction = (2.0 * finger - 1.0) * contact_intent
         xy_error_sq = float(np.sum((state.object_pos_w[:2] - initial[:2]) ** 2))
         xy = grasp_quality * float(np.exp(-50.0 * xy_error_sq))
-        lift = grasp_quality * float(np.clip(lift_height / 0.025, 0.0, 1.0))
-        lift_gate = float(np.clip(lift_height / 0.02, 0.0, 1.0))
+        lift = grasp_quality * float(
+            np.clip(lift_height / self.reward_spec.progress_lift, 0.0, 1.0)
+        )
+        lift_gate = float(
+            np.clip(lift_height / self.reward_spec.success_lift, 0.0, 1.0)
+        )
         motion_stability = float(
             np.exp(
                 -5.0 * np.sum(state.object_lin_vel_w**2)
@@ -321,7 +332,7 @@ class GraspReward:
         # to velocity tracking: it would reject a correctly controlled upward
         # lift. Require a bilateral grasp while lifted instead. A thrown object
         # loses ``is_grasp`` and therefore cannot accumulate the hold counter.
-        success_gate = lift_height >= 0.02 and is_grasp
+        success_gate = lift_height >= self.reward_spec.success_lift and is_grasp
 
         grail_target, self.previous_progress, grail_shaping = self._grail_target(
             progress,
@@ -421,11 +432,12 @@ class GraspReward:
         )
         self.fall_count = (
             self.fall_count + 1
-            if state.pelvis_height < 0.55 or state.pelvis_rot_w[2, 2] < 0.5
+            if state.pelvis_height < self.reward_spec.min_pelvis_height
+            or state.pelvis_rot_w[2, 2] < 0.5
             else 0
         )
         self.danger_count = self.danger_count + 1 if state.contact.hand_table_force > 120.0 else 0
-        self.ever_lifted |= lift_height >= 0.015
+        self.ever_lifted |= lift_height >= self.reward_spec.ever_lifted
         self.grasp_attempt_started |= is_grasp
         if lift_height >= 0.005:
             self.grasp_without_lift_count = 0
@@ -434,12 +446,22 @@ class GraspReward:
             # briefly must not reset the stalled-grasp timer and enable farming.
             self.grasp_without_lift_count += 1
 
-        success = self.hold_count >= 13
-        dropped = self.ever_lifted and lift_height < 0.005 and not is_grasp
-        workspace_exit = np.linalg.norm(state.object_pos_w[:2] - initial[:2]) > 0.30
+        success = self.hold_count >= self.reward_spec.success_hold_steps
+        native_success = lift_height >= self.reward_spec.success_lift
+        dropped = (
+            self.ever_lifted
+            and lift_height < self.reward_spec.drop_lift
+            and not is_grasp
+        )
+        workspace_exit = (
+            np.linalg.norm(state.object_pos_w[:2] - initial[:2])
+            > self.reward_spec.workspace_radius
+        )
         stalled_grasp = (
             self.profile == "grail_release_v1"
-            and self.grasp_without_lift_count >= 40
+            and self.reward_spec.stalled_grasp_steps is not None
+            and self.grasp_without_lift_count
+            >= self.reward_spec.stalled_grasp_steps
         )
         failure = bool(
             self.fall_count >= 3
@@ -480,6 +502,7 @@ class GraspReward:
             penalty=penalty,
             terminal_adjustment=terminal_adjustment,
             success=success,
+            native_success=bool(native_success),
             failure=failure,
             timeout=timeout,
             lift_height=lift_height,

@@ -16,7 +16,8 @@ from tensordict import TensorDict
 from simple.grasp_rl.env import GraspRlEnv
 from simple.grasp_rl.policy import add_optional_phase, load_actor
 from simple.grasp_rl.reference import ReferenceLibrary, ReferenceTracker
-from simple.grasp_rl.schema import MAX_EPISODE_STEPS, REFERENCE_ACTOR_OBS_DIM
+from simple.grasp_rl.schema import REFERENCE_ACTOR_OBS_DIM
+from simple.grasp_rl.task_spec import GraspTaskSpec, get_task_spec
 from simple.grasp_rl.tracker import ActionTransform
 
 
@@ -32,8 +33,10 @@ def render_saved_trajectory(
     camera_fovy: float | None = 40.0,
     expert: bool = False,
     context_start: int | None = None,
+    task: str | GraspTaskSpec | None = None,
 ) -> Path:
     """Run a closed-loop checkpoint (or replay commands) and encode an MP4."""
+    task_spec = get_task_spec(task)
     trajectory = Path(trajectory_path)
     rollout_episode = int(trajectory.stem.removeprefix("episode_"))
     saved_initial_qpos = None
@@ -81,8 +84,22 @@ def render_saved_trajectory(
             [recorded, np.repeat(recorded[-1:], 40, axis=0)], axis=0
         )
     transform = ActionTransform.from_npz(action_transform_path)
-    env = GraspRlEnv(transform, seed=1234)
-    actor = load_actor(checkpoint_path, device) if checkpoint_path else None
+    env = GraspRlEnv(
+        transform,
+        seed=1234,
+        task=task_spec,
+        enable_renderers=True,
+    )
+    actor = (
+        load_actor(
+            checkpoint_path,
+            device,
+            expected_task=task_spec,
+            action_transform=action_transform_path,
+        )
+        if checkpoint_path
+        else None
+    )
     reference = None
     if actor is not None and int(
         getattr(actor, "grasp_observation_dim", 192)
@@ -153,7 +170,7 @@ def render_saved_trajectory(
                         context_observation,
                         exact_episode=context_episode,
                     )
-                for _ in range(MAX_EPISODE_STEPS):
+                for _ in range(task_spec.max_episode_steps):
                     context_step = actor_step(context_observation)
                     context_observation = context_step.actor_observation
                     if context_step.done:
@@ -190,7 +207,7 @@ def render_saved_trajectory(
                 env.sim.mjModel, mujoco.mjtObj.mjOBJ_CAMERA, camera
             )
             env.sim.mjModel.cam_fovy[camera_id] = camera_fovy
-        horizon = MAX_EPISODE_STEPS if actor is not None else len(actions)
+        horizon = task_spec.max_episode_steps if actor is not None else len(actions)
         success = False
         max_lift = -float("inf")
         for index in range(horizon):

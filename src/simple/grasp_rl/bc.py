@@ -26,6 +26,13 @@ from simple.grasp_rl.schema import (
     REFERENCE_ACTOR_OBS_DIM,
 )
 from simple.grasp_rl.tracker import ActionTransform
+from simple.grasp_rl.task_spec import (
+    GraspTaskSpec,
+    checkpoint_task_metadata,
+    get_task_spec,
+    task_from_manifest,
+    validate_task_metadata,
+)
 
 
 def _episode_file(dataset: Path, episode: int) -> Path:
@@ -45,6 +52,7 @@ def _replay_bc_chunk(
     teacher_checkpoint: str | None = None,
     teacher_rollout_blend: float = 0.0,
     teacher_rollout_probability: float = 0.0,
+    task_name: str = "tabletop_grasp",
 ) -> list[dict[str, Any]]:
     if not 0.0 <= teacher_rollout_blend <= 1.0:
         raise ValueError("teacher_rollout_blend must be in [0, 1]")
@@ -62,13 +70,24 @@ def _replay_bc_chunk(
         transform,
         seed=42 + episodes[0],
         task_reward_profile=task_reward_profile,
+        task=task_name,
     )
     actor = None
     if rollout_checkpoint is not None:
-        actor = load_actor(rollout_checkpoint, "cuda:0")
+        actor = load_actor(
+            rollout_checkpoint,
+            "cuda:0",
+            expected_task=task_name,
+            action_transform=transform_path,
+        )
     teacher = None
     if teacher_checkpoint is not None:
-        teacher = load_actor(teacher_checkpoint, "cuda:0")
+        teacher = load_actor(
+            teacher_checkpoint,
+            "cuda:0",
+            expected_task=task_name,
+            action_transform=transform_path,
+        )
     reports: list[dict[str, Any]] = []
     try:
         for episode in episodes:
@@ -192,7 +211,16 @@ def _replay_bc_chunk(
                         teacher_block_remaining -= 1
                         if use_teacher_block:
                             rollout_action = expert_raw_action
-                step = env.step_raw(rollout_action)
+                # Dataset preparation must reproduce the recorded tracker
+                # command exactly.  Encoding then decoding it applies an
+                # additional slew limiter and time-shifts the whole motion,
+                # which is appropriate for a learned raw policy but invalid
+                # for expert replay and reward validation.
+                step = (
+                    env.step_physical(physical_action)
+                    if actor is None and teacher is None
+                    else env.step_raw(rollout_action)
+                )
                 executed_actions.append(env.previous_physical_action.copy())
                 observation = step.actor_observation
                 success |= step.terms.success
@@ -282,7 +310,9 @@ def prepare_bc_dataset(
     dataset_dir: str | Path,
     processed_dir: str | Path,
     num_workers: int = 7,
+    task: str | GraspTaskSpec | None = None,
 ) -> Path:
+    task_spec = get_task_spec(task)
     dataset = Path(dataset_dir).resolve()
     processed = Path(processed_dir).resolve()
     output = processed / "bc"
@@ -310,6 +340,11 @@ def prepare_bc_dataset(
             worker % 7,
             None,
             None,
+            DEFAULT_TASK_REWARD_PROFILE,
+            None,
+            0.0,
+            0.0,
+            task_spec.name,
         )
         for worker, chunk in enumerate(chunks)
     ]
@@ -321,6 +356,7 @@ def prepare_bc_dataset(
     reports.sort(key=lambda row: row["episode"])
     summary = {
         "dataset": str(dataset),
+        "task": task_spec.name,
         "num_episodes": len(reports),
         "num_frames": int(sum(row["frames"] for row in reports)),
         "replay_success_rate": float(np.mean([row["success"] for row in reports])),
@@ -351,7 +387,9 @@ def collect_dagger_dataset(
     teacher_checkpoint: str | Path | None = None,
     teacher_rollout_blend: float = 0.0,
     teacher_rollout_probability: float = 0.0,
+    task: str | GraspTaskSpec | None = None,
 ) -> Path:
+    task_spec = get_task_spec(task)
     dataset = Path(dataset_dir).resolve()
     processed = Path(processed_dir).resolve()
     output = processed / f"bc_dagger_{round_index:03d}"
@@ -387,6 +425,7 @@ def collect_dagger_dataset(
             ),
             teacher_rollout_blend,
             teacher_rollout_probability,
+            task_spec.name,
         )
         for worker, chunk in enumerate(chunks)
     ]
@@ -400,6 +439,7 @@ def collect_dagger_dataset(
     reports.sort(key=lambda row: row["episode"])
     summary = {
         "dataset": str(dataset),
+        "task": task_spec.name,
         "rollout_checkpoint": str(Path(checkpoint).resolve()),
         "teacher_checkpoint": (
             str(Path(teacher_checkpoint).resolve())
@@ -562,6 +602,7 @@ class BcTrainConfig:
     initialize_checkpoint: str | None = None
     sources: tuple[str, ...] = ("bc",)
     reference_conditioning: bool = False
+    plan_conditioned: bool = False
     recurrent: bool = False
     sequence_batch_size: int = 8
     rnn_hidden_dim: int = 256
@@ -657,6 +698,9 @@ def train_bc_actor(
     config: BcTrainConfig | None = None,
 ) -> Path:
     config = config or BcTrainConfig()
+    task_spec = task_from_manifest(processed_dir)
+    if config.plan_conditioned and not config.reference_conditioning:
+        raise ValueError("plan_conditioned requires reference_conditioning")
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
     device = torch.device(config.device)
@@ -728,10 +772,17 @@ def train_bc_actor(
         observation_dim=observation_dim,
         recurrent=config.recurrent,
         rnn_hidden_dim=config.rnn_hidden_dim,
+        plan_conditioned=config.plan_conditioned,
     )
     if config.initialize_checkpoint:
         checkpoint = torch.load(
             config.initialize_checkpoint, map_location=device, weights_only=False
+        )
+        validate_task_metadata(
+            checkpoint,
+            task_spec,
+            checkpoint=config.initialize_checkpoint,
+            action_transform=Path(processed_dir) / "action_transform.npz",
         )
         actor.load_state_dict(checkpoint["actor_state_dict"])
     else:
@@ -742,6 +793,14 @@ def train_bc_actor(
             actor.obs_normalizer._var.copy_(variance)
             actor.obs_normalizer._std.copy_(torch.sqrt(variance))
             actor.obs_normalizer.count.fill_(len(train))
+        if config.plan_conditioned:
+            final_layers = [
+                module
+                for module in actor.mlp.modules()
+                if isinstance(module, torch.nn.Linear)
+            ]
+            torch.nn.init.zeros_(final_layers[-1].weight)
+            torch.nn.init.zeros_(final_layers[-1].bias)
     # Fine-tuning must not silently change the policy just by replacing its
     # input statistics with an on-policy deviation dataset. Use fixed dataset
     # statistics from scratch and preserve checkpoint statistics on restart.
@@ -827,6 +886,9 @@ def train_bc_actor(
             "epoch": epoch,
             "config": asdict(config),
             "val_loss": val,
+            "task_metadata": checkpoint_task_metadata(
+                task_spec, Path(processed_dir) / "action_transform.npz"
+            ),
         }
         torch.save({**payload, "optimizer_state_dict": optimizer.state_dict()}, output / "latest.pt")
         if val < best:
