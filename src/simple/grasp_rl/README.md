@@ -8,6 +8,54 @@ a complete 36D SIMPLE tracker command, and a 10×82D executed-motion window for 
 frozen unconditional diffusion prior. The diffusion model is not the policy and
 does not receive object or goal conditions.
 
+## Current production design
+
+The released path in this branch is a **retrieval-plan-conditioned full-command
+policy**:
+
+```text
+192D online MuJoCo state + 401D retrieved future plan
+    -> 593D PlanConditionedMLPModel
+    -> complete normalized 36D tracker command
+    -> task ActionTransform
+    -> SIMPLE AMO whole-body tracker
+```
+
+The 192D state layout is:
+
+```text
+q[43], qdot[43], projected_gravity[3], pelvis_velocity[6], pelvis_height[1],
+previous_complete_command[36], object_in_pelvis[3+6], object_velocity[3+3],
+object_in_hand[3+6], table_in_pelvis[3+6], hand_contact_forces[24], goal_delta[3]
+```
+
+`ReferenceLibrary` retrieves a replay plan by current object/hand/table geometry.
+At future control offsets `0,5,...,45`, each context frame contains a complete
+36D command, the replayed object-position delta relative to the current object,
+and a bilateral-contact label. Ten 40D frames plus phase give 401D. The first
+command is the proposal and the MLP predicts a state-feedback correction:
+
+```text
+complete_command = plan_command_t + correction_36d
+```
+
+The PPO distribution and log probability are defined over `complete_command`.
+The tracker does not execute a second hidden residual. Raw source trajectories
+need only contain commands and environment configs: replay through the real
+tracker/MuJoCo constructs the state, object delta, and contact context.
+
+This distinction is important: the current system is not target-conditioned
+diffusion and not reference-free. It uses a processed replay library at runtime.
+It also does not use an object-reference tracking reward; physical success is
+computed solely from the current simulated object/contact state and task goal.
+The frozen unconditional SMP diffusion remains an optional reward ablation and
+is disabled in the selected BendPick run.
+
+The output layout is fixed by `ACTION_SLICES`: left/right hands (14D), left/right
+arms (14D), torso RPY (3D), base height (1D), torso vx/vy (2D), turning flag (1D),
+and target yaw (1D). Each task has its own demonstrated action transform; task,
+schema, and transform hash are recorded in checkpoints.
+
 The main experimental path is PPO warm-started from the real-trajectory BC/DAgger
 actor. `task_spec.py` keeps scene construction, reset bounds, success semantics,
 and checkpoint compatibility task-specific while preserving the shared 192/593D
@@ -81,14 +129,15 @@ experiment. Use `--actor-warm-start` for a BC actor; the loader follows chained
 BC initializations to recover the nearest PPO critic. Evaluation supports
 `--episode-offset` for disjoint parallel scene slices.
 
-The current single-object experiment is a verified feasibility baseline, not a
-general grasping result. Exact expert replay succeeds in 99/100 scenes. The
-current learned-policy curriculum reaches 43/100 from a fixed 90% demonstration
-phase, but the same checkpoint is 0/100 from a full start. Another 50 uniform
-PPO iterations give 42/100, and failure-scene mining gives 39/100, so these are
-scene exchanges rather than a monotonic improvement. A matched additive-SMP
-ablation gives 11/20 on the first late-phase slice versus 12/20 for task-only;
-the frozen diffusion prior is therefore not used by the main policy.
+## Legacy Tabletop diagnostics
+
+The following results explain design choices but are not the current BendPick
+production score. On the earlier Tabletop task, a late-phase curriculum reached
+43/100, while its full-start actor failed; uniform continuation and failure mining
+did not improve it monotonically. A matched additive-SMP ablation gave 11/20
+versus 12/20 for task-only. These experiments are why the selected production
+path disables the unconditional diffusion reward and starts near a complete
+retrieved command plan.
 
 A replay-derived stateless nearest-neighbor state-feedback teacher reaches
 90/100 from full starts; adding same-trajectory local temporal continuity reaches

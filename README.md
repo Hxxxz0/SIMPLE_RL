@@ -26,7 +26,154 @@ Contributors: [Songlin Wei](https://songlin.github.io/)\*, [Zhenhao Ni](https://
 + [2026-07-14] We released support for World Action Models: [Cosmos3](https://github.com/songlin/cosmos-framework/blob/main/docs/action_policy_simple_posttrain.md) and [DreamZero](https://github.com/physical-superintelligence-lab/Psi0/blob/main/baselines/dreamzero/README.md). 
 + [ ] Integrate SONIC whole-body controller.
 
+## SIMPLE_RL：完整轨迹抓取新方案
+
+本分支在 SIMPLE 上实现了一个面向 G1 的完整轨迹抓取系统。当前主方案不是 diffusion
+policy，也不是 GRAIL 式外部小残差控制，而是：
+
+```text
+MuJoCo 在线 self / object / goal 状态（192D）
+                    +
+检索到的未来完整 tracker plan（401D）
+                    │
+                    ▼
+       plan-conditioned PPO policy（593D）
+                    │
+                    ▼
+        最终完整 36D tracker command
+                    │
+                    ▼
+       SIMPLE AMO whole-body tracker → MuJoCo
+```
+
+### 方案边界
+
+- policy 每步输出最终的完整 36D 运控命令，SIMPLE tracker 仍负责将其变成底层关节控制；
+- 当前 plan 来自 processed BC replay 库的几何近邻检索，不是 target-conditioned diffusion
+  生成。因此当前结果属于“检索计划 + 状态反馈 PPO”，不是 reference-free policy；
+- plan 中包含 replay 得到的未来 object position delta 和 contact label。原始轨迹不需要记录
+  object state，因为这些量是在真实 SIMPLE tracker + MuJoCo replay 时生成的；
+- task reward 不跟踪 object reference trajectory，只依据当前 MuJoCo 物体状态、接触和任务
+  goal 判断完成情况；
+- 当前 `bend_pick` 结果验证的是同一物体在原生位置/yaw范围内的随机目标抓取，不代表
+  unseen-object 通用抓取。
+
+### Policy 完整输入：593D
+
+基础状态是以下 192D privileged MuJoCo observation：
+
+| 索引 | 信号 | 维度 |
+| :--- | :--- | ---: |
+| `0:43` | G1 43个关节位置 | 43 |
+| `43:86` | G1 43个关节速度 | 43 |
+| `86:89` | pelvis坐标系重力方向 | 3 |
+| `89:92` | pelvis线速度 | 3 |
+| `92:95` | pelvis角速度 | 3 |
+| `95` | pelvis相对脚踝高度 | 1 |
+| `96:132` | 上一步实际执行的完整command | 36 |
+| `132:135` | object相对pelvis的位置 | 3 |
+| `135:141` | object相对pelvis的6D旋转 | 6 |
+| `141:144` | object在pelvis坐标系中的线速度 | 3 |
+| `144:147` | object在pelvis坐标系中的角速度 | 3 |
+| `147:150` | object相对右手的位置 | 3 |
+| `150:156` | object相对右手的6D旋转 | 6 |
+| `156:159` | table相对pelvis的位置 | 3 |
+| `159:165` | table相对pelvis的6D旋转 | 6 |
+| `165:189` | 8个右手link的三维接触力 | 24 |
+| `189:192` | 当前object到抬升goal的位置差 | 3 |
+
+未来计划使用控制步偏移 `0,5,...,45`，即50 Hz下每0.1秒一个点，共10点。每点40D：
+
+```text
+未来完整 normalized tracker command  36D
+reference object position - 当前 object position  3D
+reference bilateral grasp label  1D
+```
+
+再加一个归一化 plan phase，得到 `10 × 40 + 1 = 401D`。最终输入为
+`192 + 401 = 593D`。网络为 `593 → 512 → 256 → 128 → 36`，执行命令为：
+
+```text
+complete_command = current_plan_command + MLP(current_state, future_plan)
+```
+
+PPO 的 distribution、采样动作和 log-prob 都定义在这个最终完整 command 上；不存在另一个
+绕过 PPO 的外部 residual executor。
+
+### Policy 完整输出：36D
+
+| 索引 | 内容 | 维度 |
+| :--- | :--- | ---: |
+| `0:7`, `7:14` | 左手、右手 | 7 + 7 |
+| `14:21`, `21:28` | 左臂、右臂 | 7 + 7 |
+| `28:31` | torso roll/pitch/yaw command | 3 |
+| `31` | base height | 1 |
+| `32:34` | torso `vx`, `vy` | 2 |
+| `34` | turning flag | 1 |
+| `35` | target yaw | 1 |
+
+输出先通过该任务自己的 `action_transform.npz` 做非对称反归一化和 slew limit，再转成
+SIMPLE `ActionCmd` 交给 AMO whole-body tracker。checkpoint 会保存 task/schema 和
+action-transform SHA256，避免跨任务误用动作缩放。
+
+### GRAIL 风格 task reward
+
+当前默认 `grail_release_v1` 在50 Hz下计算：
+
+```text
+target = pregrasp_distance_kernel
+       + 5  × grasp_contact_fraction
+       + 10 × bilateral_finger_direction
+       + 5  × contact_gated_lift
+       + 2  × contact_gated_stability
+
+penalty = 15 × distance_gated_wrist_speed²
+        + clamp(hand_table_force, 0, 1)
+        + 0.1 × normalized_action_rate
+
+step_reward = 0.02 × (target - penalty)
+            + 0.0002 × robot_reference_reward
+            + terminal_adjustment
+```
+
+`bend_pick` 的成功条件是物体相对初始高度提升至少9 cm，同时保持有效thumb-support双侧
+抓持连续13个control steps。目标pose、速度、指尖表面距离、接触力和抬升高度全部来自
+MuJoCo。100场景reward audit中expert为95/100，no-motion、time-shuffle和throw均为0/100。
+
+当前正式实验使用 `task_only`，没有启用 SMP diffusion reward。仓库仍保留 frozen
+unconditional SMP prior的additive/product消融接口，但它不会根据目标生成抓取计划，已有
+消融也没有优于task-only。
+
+### 训练、评测与结果
+
+第一个扩展任务为 `G1WholebodyBendPickMP-v0`：
+
+- 完整轨迹BC初始化：native 100场景为97/100；
+- PPO：14环境 × 96步 × 300轮，共403,200 transitions；
+- 固定100随机目标：rank-0为90/100，rank-1单独为87/100；同目标依次尝试rank-0和rank-1
+  为91/100；
+- 独立生产seed：106个目标成功100个，真实成功率94.34%；共保存100条成功完整轨迹，
+  manifest同时保留6个失败和全部118次plan rollout；
+- 发布checkpoint为 `outputs/grasp_rl/bend_pick/ppo_native_v1_300/model_100.pt`。训练至
+  model250仍为90/100且成功集合完全相同，因此没有因iteration更大而替换发布模型。
+
+主要产物：
+
+```text
+data/grasp_rl/G1WholebodyBendPickMP-v0/
+outputs/grasp_rl/bend_pick/reward_audit_v3/reward_audit.json
+outputs/grasp_rl/bend_pick/bc_plan_v1/best.pt
+outputs/grasp_rl/bend_pick/ppo_native_v1_300/model_100.pt
+outputs/grasp_rl/bend_pick/policy_dataset_random_100_v1/
+outputs/grasp_rl/bend_pick/videos/
+```
+
+完整设计、实验消融和验收记录见
+[`FULL_TRAJECTORY_GRASP_RL_PLAN.md`](FULL_TRAJECTORY_GRASP_RL_PLAN.md)，代码接口说明见
+[`src/simple/grasp_rl/README.md`](src/simple/grasp_rl/README.md)。
+
 ## Table of Contents
+- [SIMPLE_RL：完整轨迹抓取新方案](#simple_rl完整轨迹抓取新方案)
 - [What is SIMPLE?](#what～is～SIMPLE)
 - [System Requirements](#system-requirements)
 - [Installation](#installation)
