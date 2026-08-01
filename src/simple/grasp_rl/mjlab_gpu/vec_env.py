@@ -26,12 +26,14 @@ class GpuGraspVecEnv(VecEnv):
         *,
         training: bool = True,
         randomization_enabled: bool | None = None,
+        capture_terminal_qpos: bool = False,
     ):
         if config.reference_processed is None:
             raise ValueError("GPU PPO requires reference_processed")
         self.config = config
         self.cfg = config.resolved()
         self.training = bool(training)
+        self.capture_terminal_qpos = bool(capture_terminal_qpos)
         self.randomization_enabled = (
             self.training
             if randomization_enabled is None
@@ -222,6 +224,9 @@ class GpuGraspVecEnv(VecEnv):
         }
         finished = dones.nonzero(as_tuple=False).flatten()
         if len(finished):
+            if self.capture_terminal_qpos:
+                extras["terminal_env_ids"] = finished.clone()
+                extras["terminal_qpos"] = self.gpu.sim.data.qpos[finished].clone()
             log = extras["log"]
             assert isinstance(log, dict)
             log["/episode/return"] = self._episode_return[finished].mean()

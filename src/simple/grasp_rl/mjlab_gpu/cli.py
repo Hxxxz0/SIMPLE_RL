@@ -15,15 +15,16 @@ from simple.grasp_rl.mjlab_gpu.runner import (
     checkpoint_uses_plan_conditioned_actor,
     ppo_train_config,
 )
+from simple.grasp_rl.mjlab_gpu.recording import record_success_videos
 from simple.grasp_rl.mjlab_gpu.vec_env import GpuGraspVecEnv
 
 
-def _common(parser: argparse.ArgumentParser) -> None:
+def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
     parser.add_argument("--task", default="tabletop_grasp")
     parser.add_argument("--asset-bundle", type=Path, required=True)
     parser.add_argument("--reference-processed", type=Path, required=True)
     parser.add_argument("--reference-source", default="bc")
-    parser.add_argument("--num-envs", type=int, default=4096)
+    parser.add_argument("--num-envs", type=int, default=num_envs)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--smoke", action="store_true")
@@ -63,6 +64,22 @@ def _parser() -> argparse.ArgumentParser:
         "--stress-domain-randomization",
         action="store_true",
         help="Evaluate deterministic policy under full physics/reference DR",
+    )
+
+    record = commands.add_parser("record")
+    _common(record, num_envs=32)
+    record.set_defaults(smoke=True)
+    record.add_argument("--checkpoint", type=Path, required=True)
+    record.add_argument("--output-dir", type=Path, required=True)
+    record.add_argument("--videos", type=int, default=3)
+    record.add_argument("--max-attempts", type=int, default=100)
+    record.add_argument("--width", type=int, default=640)
+    record.add_argument("--height", type=int, default=360)
+    record.add_argument("--fps", type=int, default=50)
+    record.add_argument(
+        "--stress-domain-randomization",
+        action="store_true",
+        help="Record deterministic policy under full physics/reference DR",
     )
     return parser
 
@@ -249,9 +266,48 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+@torch.inference_mode()
+def _record(args: argparse.Namespace) -> dict[str, object]:
+    for name in ("videos", "max_attempts", "width", "height", "fps"):
+        if getattr(args, name) < 1:
+            raise ValueError(f"{name.replace('_', '-')} must be positive")
+    config = _config(args)
+    env = GpuGraspVecEnv(
+        config,
+        training=False,
+        randomization_enabled=args.stress_domain_randomization,
+        capture_terminal_qpos=True,
+    )
+    if args.stress_domain_randomization:
+        curriculum = config.domain_randomization
+        env.common_step_counter = (
+            curriculum.curriculum_warmup_steps + curriculum.curriculum_ramp_steps
+        )
+        env._reset(torch.arange(env.num_envs, device=env.device))
+    train_config = ppo_train_config(
+        smoke=True,
+        plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(args.checkpoint),
+    )
+    runner = GpuPpoRunner(env, train_config, log_dir=None)
+    runner.load_actor_warm_start(args.checkpoint.resolve())
+    return record_success_videos(
+        env,
+        runner.alg.get_policy().eval(),
+        args.checkpoint.resolve(),
+        args.output_dir.resolve(),
+        videos=args.videos,
+        max_attempts=args.max_attempts,
+        width=args.width,
+        height=args.height,
+        fps=args.fps,
+        domain_randomization=args.stress_domain_randomization,
+    )
+
+
 def main() -> None:
     args = _parser().parse_args()
-    result = _train(args) if args.command == "train" else _evaluate(args)
+    handlers = {"train": _train, "evaluate": _evaluate, "record": _record}
+    result = handlers[args.command](args)
     print(json.dumps({"result": result}, indent=2))
 
 

@@ -32,6 +32,7 @@ from simple.grasp_rl.tracker import ActionTransform
 
 ASSET_BUNDLE_VERSION = 1
 AMO_CONTROLLER_STATE_VERSION = 1
+RENDER_BUNDLE_VERSION = 1
 
 
 def _enum_label(value: int, choices: dict[int, str], name: str) -> str:
@@ -96,8 +97,9 @@ def _portable_scene_xml(
     *,
     repo_root: Path,
     controller: str,
+    physics_only: bool = True,
 ) -> tuple[str, list[dict[str, str | int]]]:
-    """Copy referenced files and remove rendering-only scene elements."""
+    """Copy referenced files, optionally stripping rendering-only elements."""
 
     root = ET.fromstring(xml)
     # MuJoCo 3.3's MjSpec serializer can emit an anonymous <default> nested
@@ -126,10 +128,10 @@ def _portable_scene_xml(
 
     for parent in root.iter():
         for child in list(parent):
-            if child.tag in {"camera", "light"}:
+            if physics_only and child.tag in {"camera", "light"}:
                 parent.remove(child)
                 continue
-            if child.tag == "geom":
+            if physics_only and child.tag == "geom":
                 contype = child.get("contype")
                 conaffinity = child.get("conaffinity")
                 density = child.get("density")
@@ -185,6 +187,52 @@ def _portable_scene_xml(
     return ET.tostring(root, encoding="unicode"), sorted(
         records, key=lambda item: str(item["bundle_path"])
     )
+
+
+def _joint_layout(model: mujoco.MjModel) -> list[tuple[str, int, int, int]]:
+    return [
+        (
+            model.joint(index).name,
+            int(model.jnt_type[index]),
+            int(model.jnt_qposadr[index]),
+            int(model.jnt_dofadr[index]),
+        )
+        for index in range(model.njnt)
+    ]
+
+
+def _pin_render_distractors(env: GraspRlEnv, physics_model: mujoco.MjModel) -> None:
+    """Recreate the exact GraspNet distractors stored in a frozen bundle."""
+
+    randomizer = env.task.dr.get_randomizer("distractors")
+    if randomizer is None or randomizer.cfg.number_of_distractors == 0:
+        return
+    if randomizer.cfg.res_id != "graspnet1b":
+        return
+
+    from simple.assets.graspnet import GraspNet_1B_Object_Names
+
+    label_to_id = {
+        "_".join(name.split()).replace("-", "_"): str(asset_id)
+        for asset_id, name in GraspNet_1B_Object_Names.items()
+    }
+    excluded = {str(value) for value in (randomizer.cfg.exclude or ())}
+    distractor_ids = []
+    for index in range(physics_model.njnt):
+        joint_name = physics_model.joint(index).name
+        if not joint_name.endswith("_joint"):
+            continue
+        asset_id = label_to_id.get(joint_name.removesuffix("_joint"))
+        if asset_id is not None and asset_id not in excluded:
+            distractor_ids.append(asset_id)
+    expected = int(randomizer.cfg.number_of_distractors)
+    if len(distractor_ids) != expected:
+        raise ValueError(
+            "Cannot recover frozen GraspNet distractors for render sidecar: "
+            f"expected {expected}, found {distractor_ids}"
+        )
+    randomizer.cfg.include = distractor_ids
+    randomizer._inner_state = None
 
 
 def _body_name(model, body_id: int | None) -> str | None:
@@ -568,6 +616,93 @@ def export_mjlab_scene(
         temporary_manifest_path.replace(manifest_path)
         return manifest
     finally:
+        env.close()
+
+
+def export_mjlab_render_scene(path: str | Path) -> dict:
+    """Add a full visual sidecar without changing the frozen physics bundle."""
+
+    output = Path(path).resolve()
+    manifest = validate_asset_bundle(output)
+    task_spec = get_task_spec(manifest["task"])
+    repo_root = _repo_root()
+    transform = ActionTransform.from_npz(output / manifest["action_transform"])
+    env = GraspRlEnv(
+        transform,
+        seed=int(manifest["seed"]),
+        target_object=manifest["target_object"],
+        warmup_steps=int(manifest["warmup_steps"]),
+        task=task_spec,
+        enable_renderers=False,
+    )
+    temporary_scene = output / ".render_scene.tmp.xml"
+    try:
+        physics_model = mujoco.MjModel.from_xml_path(
+            str(output / manifest["scene_file"])
+        )
+        _pin_render_distractors(env, physics_model)
+        env.reset(target_object=manifest["target_object"])
+        render_xml, assets = _portable_scene_xml(
+            env.sim.mjSpec.to_xml(),
+            output,
+            repo_root=repo_root,
+            controller=manifest["controller"],
+            physics_only=False,
+        )
+        temporary_scene.write_text(render_xml)
+        render_model = mujoco.MjModel.from_xml_path(str(temporary_scene))
+        render_topology = _model_topology(render_model)
+        state_fields = ("nq", "nv", "nu", "nbody", "njnt", "nsensor")
+        if any(
+            render_topology[field] != manifest["source_model"][field]
+            for field in state_fields
+        ):
+            raise ValueError(
+                "Render sidecar does not match frozen state topology: "
+                f"{render_topology} != {manifest['source_model']}"
+            )
+        render_joints = _joint_layout(render_model)
+        physics_joints = _joint_layout(physics_model)
+        if render_joints != physics_joints:
+            difference = next(
+                (
+                    pair
+                    for pair in zip(render_joints, physics_joints)
+                    if pair[0] != pair[1]
+                ),
+                (len(render_joints), len(physics_joints)),
+            )
+            raise ValueError(
+                f"Render sidecar joint layout does not match GPU physics: {difference}"
+            )
+        required_bodies = {
+            "pelvis",
+            "right_wrist_yaw_link",
+            manifest["roles"]["primary"],
+            manifest["roles"]["destination"],
+        }
+        render_bodies = {render_model.body(i).name for i in range(render_model.nbody)}
+        if not required_bodies.issubset(render_bodies):
+            raise ValueError("Render sidecar is missing required task bodies")
+        scene = output / "render_scene.xml"
+        temporary_scene.replace(scene)
+        sidecar = {
+            "format_version": RENDER_BUNDLE_VERSION,
+            "base_manifest_hash": manifest["manifest_hash"],
+            "scene_file": scene.name,
+            "scene_sha256": _sha256(scene),
+            "assets": assets,
+            "model": render_topology,
+            "ncam": int(render_model.ncam),
+            "nlight": int(render_model.nlight),
+        }
+        sidecar["manifest_hash"] = _json_hash(sidecar)
+        temporary_manifest = output / ".render_manifest.tmp.json"
+        temporary_manifest.write_text(json.dumps(sidecar, indent=2, sort_keys=True))
+        temporary_manifest.replace(output / "render_manifest.json")
+        return sidecar
+    finally:
+        temporary_scene.unlink(missing_ok=True)
         env.close()
 
 

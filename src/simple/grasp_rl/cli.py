@@ -16,7 +16,11 @@ from simple.grasp_rl.collect import collect_policy_dataset
 from simple.grasp_rl.diffusion import DiffusionTrainConfig, train_diffusion
 from simple.grasp_rl.evaluate import evaluate_policy
 from simple.grasp_rl.hard_targets import mine_hard_targets
-from simple.grasp_rl.mjlab_assets import export_mjlab_scene, validate_asset_bundle
+from simple.grasp_rl.mjlab_assets import (
+    export_mjlab_render_scene,
+    export_mjlab_scene,
+    validate_asset_bundle,
+)
 from simple.grasp_rl.policy import build_knn_actor_checkpoint
 from simple.grasp_rl.paired import compare_paired_evaluations
 from simple.grasp_rl.rewards import (
@@ -37,7 +41,6 @@ from simple.grasp_rl.task_spec import (
     task_names,
     TaskSpecV2,
 )
-
 
 DEFAULT_DATASET = Path("data/simple/G1WholebodyTabletopGraspMP-v0")
 DEFAULT_PROCESSED = Path("data/grasp_rl/G1WholebodyTabletopGraspMP-v0")
@@ -72,6 +75,10 @@ def _parser() -> argparse.ArgumentParser:
     validate_mjlab = commands.add_parser("validate-mjlab-assets")
     validate_mjlab.set_defaults(task=DEFAULT_TASK)
     validate_mjlab.add_argument("--bundle", type=Path, required=True)
+
+    export_mjlab_render = commands.add_parser("export-mjlab-render-assets")
+    export_mjlab_render.set_defaults(task=DEFAULT_TASK)
+    export_mjlab_render.add_argument("--bundle", type=Path, required=True)
 
     compare_paired = commands.add_parser("compare-paired")
     compare_paired.set_defaults(task=DEFAULT_TASK)
@@ -526,7 +533,10 @@ def main() -> None:
             args.output = task_spec.processed_path()
         task_output = DEFAULT_OUTPUT / task_spec.name
         conventional_outputs = {
-            "audit-reward": (DEFAULT_OUTPUT / "reward_audit", task_output / "reward_audit"),
+            "audit-reward": (
+                DEFAULT_OUTPUT / "reward_audit",
+                task_output / "reward_audit",
+            ),
             "pretrain-actor": (DEFAULT_OUTPUT / "bc_actor", task_output / "bc_actor"),
             "pretrain": (DEFAULT_OUTPUT / "diffusion", task_output / "diffusion"),
         }
@@ -541,9 +551,7 @@ def main() -> None:
                 f"Processed data is for {processed_task.name}, not {task_spec.name}"
             )
     if args.command == "list-tasks":
-        result = {
-            name: get_task_spec(name).metadata() for name in task_names()
-        }
+        result = {name: get_task_spec(name).metadata() for name in task_names()}
     elif args.command == "export-mjlab-assets":
         result = export_mjlab_scene(
             task_spec.name,
@@ -554,6 +562,8 @@ def main() -> None:
         )
     elif args.command == "validate-mjlab-assets":
         result = validate_asset_bundle(args.bundle)
+    elif args.command == "export-mjlab-render-assets":
+        result = export_mjlab_render_scene(args.bundle)
     elif args.command == "compare-paired":
         result = compare_paired_evaluations(
             args.policy_evaluation,
@@ -569,20 +579,28 @@ def main() -> None:
     elif args.command == "prepare":
         result = (
             prepare_v2_dataset(
-                args.dataset, args.output, num_workers=args.workers,
-                task=task_spec, episodes=args.episodes,
+                args.dataset,
+                args.output,
+                num_workers=args.workers,
+                task=task_spec,
+                episodes=args.episodes,
                 warmup_steps=args.warmup_steps,
             )
             if isinstance(task_spec, TaskSpecV2)
             else prepare_dataset(
-                args.dataset, args.output, num_workers=args.workers, task=task_spec,
+                args.dataset,
+                args.output,
+                num_workers=args.workers,
+                task=task_spec,
             )
         )
     elif args.command == "repair-data":
         result = write_repaired_actions(args.dataset, args.output, task_spec)
     elif args.command == "prepare-bc":
         if isinstance(task_spec, TaskSpecV2):
-            raise ValueError("v2 prepare already writes the BC replay; use the prepare command")
+            raise ValueError(
+                "v2 prepare already writes the BC replay; use the prepare command"
+            )
         result = prepare_bc_dataset(
             args.dataset,
             args.processed,
@@ -590,12 +608,19 @@ def main() -> None:
             task=task_spec,
         )
     elif args.command == "audit-reward":
-        scenarios = tuple(value.strip() for value in args.scenarios.split(",") if value.strip())
+        scenarios = tuple(
+            value.strip() for value in args.scenarios.split(",") if value.strip()
+        )
         result = (
             audit_v2_reward(
-                args.dataset, args.processed, args.output,
-                episodes=args.episodes, episode_offset=args.episode_offset,
-                scenarios=scenarios, task=task_spec, workers=args.workers,
+                args.dataset,
+                args.processed,
+                args.output,
+                episodes=args.episodes,
+                episode_offset=args.episode_offset,
+                scenarios=scenarios,
+                task=task_spec,
+                workers=args.workers,
             )
             if isinstance(task_spec, TaskSpecV2)
             else audit_reward(
@@ -606,9 +631,7 @@ def main() -> None:
                 episode_offset=args.episode_offset,
                 workers=args.workers,
                 profiles=tuple(
-                    value.strip()
-                    for value in args.profiles.split(",")
-                    if value.strip()
+                    value.strip() for value in args.profiles.split(",") if value.strip()
                 ),
                 scenarios=scenarios,
                 task_weight=args.task_reward_weight,
@@ -628,9 +651,7 @@ def main() -> None:
                     str(args.initialize) if args.initialize else None
                 ),
                 sources=tuple(
-                    value.strip()
-                    for value in args.sources.split(",")
-                    if value.strip()
+                    value.strip() for value in args.sources.split(",") if value.strip()
                 ),
                 reference_conditioning=args.reference_conditioning,
                 plan_conditioned=args.plan_conditioned,
@@ -683,9 +704,7 @@ def main() -> None:
             args.diffusion,
             PpoTrainConfig(
                 task=task_spec.name,
-                reward_audit=(
-                    str(args.reward_audit) if args.reward_audit else None
-                ),
+                reward_audit=(str(args.reward_audit) if args.reward_audit else None),
                 num_envs=args.num_envs,
                 iterations=args.iterations,
                 seed=args.seed,
@@ -702,12 +721,12 @@ def main() -> None:
                     str(args.actor_warm_start) if args.actor_warm_start else None
                 ),
                 worker_devices=tuple(
-                    int(value) for value in args.worker_devices.split(",") if value.strip()
+                    int(value)
+                    for value in args.worker_devices.split(",")
+                    if value.strip()
                 ),
                 rsi_dataset=str(args.rsi_dataset) if args.rsi_dataset else None,
-                rsi_processed=(
-                    str(args.rsi_processed) if args.rsi_processed else None
-                ),
+                rsi_processed=(str(args.rsi_processed) if args.rsi_processed else None),
                 rsi_prefix=tuple(int(value) for value in args.rsi_prefix.split(",")),
                 rsi_phase=(
                     tuple(float(value) for value in args.rsi_phase.split(","))
@@ -727,9 +746,7 @@ def main() -> None:
                     args.target_position_jitter_xy
                 ),
                 target_position_offset_center_xy=(
-                    _parse_target_position_jitter(
-                        args.target_position_offset_center_xy
-                    )
+                    _parse_target_position_jitter(args.target_position_offset_center_xy)
                     or (0.0, 0.0)
                 ),
                 target_yaw_jitter=args.target_yaw_jitter,
@@ -754,9 +771,7 @@ def main() -> None:
                     if value.strip()
                 ),
                 bc_anchor_batch_size=args.bc_anchor_batch_size,
-                bc_anchor_manipulation_weight=(
-                    args.bc_anchor_manipulation_weight
-                ),
+                bc_anchor_manipulation_weight=(args.bc_anchor_manipulation_weight),
                 teacher_anchor_checkpoint=(
                     str(args.teacher_anchor_checkpoint)
                     if args.teacher_anchor_checkpoint
@@ -764,9 +779,7 @@ def main() -> None:
                 ),
                 teacher_anchor_weight=args.teacher_anchor_weight,
                 reference_processed=(
-                    str(args.reference_processed)
-                    if args.reference_processed
-                    else None
+                    str(args.reference_processed) if args.reference_processed else None
                 ),
                 reference_source=args.reference_source,
                 reference_splits=tuple(
@@ -788,9 +801,7 @@ def main() -> None:
                 rnn_hidden_dim=args.rnn_hidden_dim,
                 max_grad_norm=args.max_grad_norm,
                 curriculum_config=(
-                    str(args.curriculum_config)
-                    if args.curriculum_config
-                    else None
+                    str(args.curriculum_config) if args.curriculum_config else None
                 ),
                 hard_target_manifest=(
                     str(args.hard_target_manifest)
@@ -836,9 +847,7 @@ def main() -> None:
                 args.target_position_jitter_xy
             ),
             target_position_offset_center_xy=(
-                _parse_target_position_jitter(
-                    args.target_position_offset_center_xy
-                )
+                _parse_target_position_jitter(args.target_position_offset_center_xy)
                 or (0.0, 0.0)
             ),
             target_yaw_jitter=args.target_yaw_jitter,
@@ -891,9 +900,7 @@ def main() -> None:
             ),
             target_yaw_jitter=args.target_yaw_jitter,
             reference_ranks=tuple(
-                int(value)
-                for value in args.reference_ranks.split(",")
-                if value.strip()
+                int(value) for value in args.reference_ranks.split(",") if value.strip()
             ),
             base_reference_fallback=args.base_reference_fallback,
             base_reference_first=args.base_reference_first,
