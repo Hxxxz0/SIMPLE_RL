@@ -32,6 +32,12 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
     parser.add_argument("--dr-initial-strength", type=float)
     parser.add_argument("--dr-warmup-steps", type=int)
     parser.add_argument("--dr-ramp-steps", type=int)
+    parser.add_argument(
+        "--dr-profile",
+        choices=("full", "pose_only"),
+        default="full",
+        help="Stage target-pose adaptation before the unchanged full-DR profile",
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -128,6 +134,11 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
             domain_randomization=replace(
                 config.domain_randomization, **dr_overrides
             ),
+        )
+    if args.dr_profile == "pose_only":
+        config = replace(
+            config,
+            domain_randomization=config.domain_randomization.pose_only(),
         )
     return config
 

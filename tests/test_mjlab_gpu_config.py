@@ -102,3 +102,26 @@ def test_domain_randomization_curriculum_reaches_full_strength() -> None:
         0.5 * config.reference_noise.action_std
     )
     assert config.reference_noise.action_std == pytest.approx(0.002)
+
+
+def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
+    full = DomainRandomizationConfig(
+        curriculum_initial_strength=0.25, curriculum_ramp_steps=19_200
+    )
+    pose = full.pose_only()
+
+    assert pose.target_position_jitter_xy == full.target_position_jitter_xy
+    assert pose.target_yaw_jitter == full.target_yaw_jitter
+    assert pose.curriculum_initial_strength == 0.25
+    assert pose.curriculum_ramp_steps == 19_200
+    assert pose.target_mass_scale == (1.0, 1.0)
+    assert pose.friction_scale == (1.0, 1.0)
+    assert pose.joint_damping_scale == (1.0, 1.0)
+    assert pose.actuator_strength_scale == (1.0, 1.0)
+    assert pose.action_delay_max_steps == 0
+    assert pose.reference_noise == ReferenceNoiseConfig(
+        action_std=0.0,
+        position_std=0.0,
+        phase_std=0.0,
+        future_dropout_probability=0.0,
+    )

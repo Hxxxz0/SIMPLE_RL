@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import json
 from pathlib import Path
@@ -124,6 +124,24 @@ class DomainRandomizationConfig:
         if not self.enabled:
             return 0.0
         return max(self.curriculum_initial_strength, self.strength(vector_step))
+
+    def pose_only(self) -> "DomainRandomizationConfig":
+        """Retain target-pose DR while staging harder dynamics and input noise."""
+
+        return replace(
+            self,
+            target_mass_scale=(1.0, 1.0),
+            friction_scale=(1.0, 1.0),
+            joint_damping_scale=(1.0, 1.0),
+            actuator_strength_scale=(1.0, 1.0),
+            action_delay_max_steps=0,
+            reference_noise=ReferenceNoiseConfig(
+                action_std=0.0,
+                position_std=0.0,
+                phase_std=0.0,
+                future_dropout_probability=0.0,
+            ),
+        )
 
 
 @dataclass(frozen=True)

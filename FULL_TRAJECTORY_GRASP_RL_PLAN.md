@@ -1,6 +1,6 @@
 # SIMPLE 全轨迹抓取：mjlab GPU PPO 方案
 
-更新日期：2026-08-02
+更新日期：2026-08-01
 
 ## 目标
 
@@ -91,6 +91,12 @@ total            = 500 updates = 49,152,000 fresh transitions
 CLI 支持 `--dr-initial-strength`、`--dr-warmup-steps`、`--dr-ramp-steps` 和
 `--exploration-std`；默认值保持前向兼容，所有 resolved 值写入 `config.json`。
 
+若 full-DR 诊断表明失败集中在目标位姿两端，可以用 `--dr-profile pose_only` 做显式
+分阶段预训练：保留目标 XY/yaw curriculum，暂时把质量、摩擦、阻尼、执行器强度、
+action delay 和 reference noise 固定为 nominal。该 profile 只负责先学空间适配；其
+checkpoint 必须再 warm-start 到默认 `full` profile，最终仍按完整 physics DR + reference
+noise 验收，不能把 pose-only 数字当发布结果。
+
 ## Reward
 
 v2 任务在 GPU 上执行 frozen ordered goal graph：approach -> grasp -> lift，以及 place
@@ -112,9 +118,11 @@ v2 任务在 GPU 上执行 frozen ordered goal graph：approach -> grasp -> lift
 3. 验证旧 BC checkpoint 的 task/action-transform hash；不匹配则拒绝。
 4. 若 replay 无法物理抓取，先找可达的非 PPO calibration seed，并明确标注。
 5. 4096 env 启动真实 PPO；每 5 updates 保存 checkpoint。
-6. 先用短 ramp 排除坏 reward/坏 seed，再从最佳 checkpoint 做 500-update 慢 ramp。
-7. 在固定 world 上比较 reference-only、pre-PPO seed/BC 和 PPO。
-8. 只为真正成功的 GPU PPO checkpoint 生成视频。
+6. 先用短 ramp 排除坏 reward/坏 seed；若位姿随机化是主要瓶颈，先跑 pose-only
+   curriculum，再进入默认 full profile。
+7. 从最佳 checkpoint 做慢 ramp，并保留至少 100 updates 的 full-DR settle。
+8. 在固定 world 上比较 reference-only、pre-PPO seed/BC 和 PPO。
+9. 只为真正成功的 GPU PPO checkpoint 生成视频。
 
 正式命令示例：
 
@@ -147,9 +155,13 @@ PYTHONPATH=src CUDA_VISIBLE_DEVICES=4 mjlab_gpu/.venv/bin/python \
 
 - `xmove_pick` reference-only clean/full-DR 都是 0%。非 PPO calibration seed clean
   256/256，full-DR 20/256（7.81%）。真实 PPO 快 ramp `model_80` full-DR
-  23/256（8.98%），只提升 3 个 world，尚不能称为明显有效；已转入 500-update 慢 ramp。
+  23/256（8.98%），只提升 3 个 world。500-update 慢 ramp 的 `model_85` clean
+  256/256，但 seed 本来就是 256/256；`model_200` full-DR 19/256（7.42%），尚未形成
+  PPO 增益。当前同时保留原 run、700-update 更慢 ramp 和 pose-only staged 方案。
 - `xmove_bend_pick`、`bend_pick_teleop`、`bend_pick_and_place` 的 reference-only 完整
-  success 当前均为 0%，需要各自 calibration/PPO，不可复用 `xmove_pick` 数字。
+  success 当前均为 0%，不可复用 `xmove_pick` 数字。`bend_pick_teleop` 51 updates 后
+  grasp/success 仍为 0%；`bend_pick_and_place` 已完成 120 updates、11,796,480 条 fresh
+  transitions，full-DR stochastic training batch 偶发约 1.79%，但尚未通过确定性评估。
 - `locomotion_pick_between_tables` reference-only 能 grasp 并抬升约 11.6 cm，但完整
   pick-and-place 为 0%，主要失败在后续 transport/place/settle。
 
