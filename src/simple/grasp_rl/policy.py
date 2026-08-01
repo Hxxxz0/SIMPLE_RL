@@ -20,9 +20,11 @@ from simple.grasp_rl.schema import (
     ACTION_DIM,
     ACTOR_OBS_DIM,
     REFERENCE_ACTOR_OBS_DIM,
+    ACTOR_OBS_V2_DIM,
+    REFERENCE_ACTOR_OBS_V2_DIM,
 )
 from simple.grasp_rl.task_spec import (
-    GraspTaskSpec,
+    TaskSpec,
     checkpoint_task_metadata,
     get_task_spec,
     task_from_manifest,
@@ -107,7 +109,7 @@ class KnnBcActor(nn.Module):
         self.register_buffer(
             "observation_norm_squared", (normalized * normalized).sum(-1)
         )
-        self.grasp_observation_dim = ACTOR_OBS_DIM
+        self.grasp_observation_dim = int(self.observations.shape[1])
         self.last_indices: torch.Tensor | None = None
 
     def reset(self) -> None:
@@ -198,7 +200,7 @@ def build_knn_actor_checkpoint(
 def load_actor(
     checkpoint: str | Path,
     device: str | torch.device = "cuda:0",
-    expected_task: str | GraspTaskSpec | None = None,
+    expected_task: str | TaskSpec | None = None,
     action_transform: str | Path | None = None,
 ) -> MLPModel | KnnBcActor:
     data = torch.load(checkpoint, map_location=device, weights_only=False)
@@ -229,6 +231,8 @@ def load_actor(
         ACTOR_OBS_DIM,
         ACTOR_OBS_DIM + 1,
         REFERENCE_ACTOR_OBS_DIM,
+        ACTOR_OBS_V2_DIM,
+        REFERENCE_ACTOR_OBS_V2_DIM,
     }:
         raise ValueError(
             f"Unsupported actor observation dimension {observation_dim}"

@@ -14,9 +14,57 @@ from simple.grasp_rl.env import GraspRlEnv
 from simple.grasp_rl.policy import add_optional_phase, load_actor
 from simple.grasp_rl.reference import ReferenceLibrary, ReferenceTracker
 from simple.grasp_rl.rewards import DEFAULT_TASK_REWARD_PROFILE
-from simple.grasp_rl.schema import REFERENCE_ACTOR_OBS_DIM
-from simple.grasp_rl.task_spec import GraspTaskSpec, get_task_spec
+from simple.grasp_rl.schema import REFERENCE_ACTOR_OBS_DIM, REFERENCE_ACTOR_OBS_V2_DIM
+from simple.grasp_rl.task_spec import GraspTaskSpec, TaskSpecV2, get_task_spec
 from simple.grasp_rl.tracker import ActionTransform
+
+
+def _filter_replay_gated_rows(
+    rows: list[dict], processed_dir: str | Path
+) -> list[dict]:
+    """Use only source scenes admitted to the processed train/val/test set."""
+
+    manifest_path = Path(processed_dir) / "manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"Collection requires a replay-gated manifest at {manifest_path}"
+        )
+    manifest = json.loads(manifest_path.read_text())
+    episode_ids = manifest.get("unique_episodes")
+    if not episode_ids:
+        splits = manifest.get("splits", {})
+        episode_ids = [
+            episode
+            for split in ("train", "val", "test")
+            for episode in splits.get(split, ())
+        ]
+    allowed = {int(episode) for episode in episode_ids}
+    filtered = [
+        row for row in rows if int(row["episode_index"]) in allowed
+    ]
+    if not filtered:
+        raise ValueError("Processed manifest selected no source scenes")
+    return filtered
+
+
+def reference_plan_requests(
+    reference_ranks: tuple[int, ...],
+    base_episode: int,
+    *,
+    base_reference_fallback: bool,
+    base_reference_first: bool,
+) -> list[tuple[int, int | None]]:
+    """Return `(rank, exact_episode)` attempts in their execution order."""
+    requests: list[tuple[int, int | None]] = [
+        (rank, None) for rank in reference_ranks
+    ]
+    if base_reference_fallback:
+        base_request = (-1, base_episode)
+        if base_reference_first:
+            requests.insert(0, base_request)
+        else:
+            requests.append(base_request)
+    return requests
 
 
 @torch.no_grad()
@@ -37,6 +85,7 @@ def collect_policy_dataset(
     reference_splits: tuple[str, ...] = ("train", "val", "test"),
     reference_ranks: tuple[int, ...] = (0, 1),
     base_reference_fallback: bool = True,
+    base_reference_first: bool = False,
     seed: int = 20260729,
     device: str = "cuda:0",
     task: str | GraspTaskSpec | None = None,
@@ -76,6 +125,19 @@ def collect_policy_dataset(
             Path(dataset_dir) / "meta" / "episodes.jsonl"
         ).read_text().splitlines()
     ]
+    valid_source_uids = (
+        set(task_spec.source_uids)
+        if isinstance(task_spec, TaskSpecV2)
+        else {task_spec.registry_uid}
+    )
+    rows = [
+        row
+        for row in rows
+        if json.loads(row["environment_config"]).get("uid") in valid_source_uids
+    ]
+    if not rows:
+        raise ValueError("Collection selected no compatible dataset episodes")
+    rows = _filter_replay_gated_rows(rows, processed_dir)
     rng = np.random.default_rng(seed)
     scene_order = rng.permutation(len(rows))
     transform = ActionTransform.from_npz(action_transform_path)
@@ -94,7 +156,7 @@ def collect_policy_dataset(
                 splits=reference_splits,
             )
         )
-        if observation_dim == REFERENCE_ACTOR_OBS_DIM
+        if observation_dim in (REFERENCE_ACTOR_OBS_DIM, REFERENCE_ACTOR_OBS_V2_DIM)
         else None
     )
     env = GraspRlEnv(
@@ -107,6 +169,8 @@ def collect_policy_dataset(
     successes = 0
     start_time = time.monotonic()
     current_scene_slot = -1
+    current_state_dict = None
+    is_v2 = isinstance(task_spec, TaskSpecV2)
 
     def run_rollout(
         observation: np.ndarray,
@@ -157,7 +221,11 @@ def collect_policy_dataset(
             )[0].cpu().numpy()
             if reference is not None:
                 assert env.reward is not None
-                env.reward.set_reference_contact(reference.post_step_contact_label())
+                if hasattr(env.reward, "set_reference_contact"):
+                    env.reward.set_reference_contact(
+                        reference.post_step_contact_label(),
+                        reference.post_step_contact_center_primary(),
+                    )
             step = env.step_raw(raw_action)
             if reference is not None:
                 reference.reward(
@@ -191,31 +259,72 @@ def collect_policy_dataset(
                 current_scene_slot = scene_slot
                 row = rows[int(scene_order[scene_slot % len(scene_order)])]
                 base_episode = int(row["episode_index"])
-                env.reset(state_dict=json.loads(row["environment_config"]))
+                current_state_dict = json.loads(row["environment_config"])
+                env.reset(state_dict=current_state_dict)
                 assert env.state is not None
-                reference_target_position = env.state.initial_object_pos.copy()
-                env.capture_fast_reset_snapshot(
-                    randomize_target=True,
-                    position_jitter_xy=target_position_jitter_xy,
-                    yaw_jitter=target_yaw_jitter,
+                reference_target_position = (
+                    env.state.initial_primary_pos.copy()
+                    if is_v2 else env.state.initial_object_pos.copy()
                 )
-            observation, initial_frame = env.reset()
+                if not is_v2:
+                    env.capture_fast_reset_snapshot(
+                        randomize_target=True,
+                        position_jitter_xy=target_position_jitter_xy,
+                        yaw_jitter=target_yaw_jitter,
+                    )
+            observation, initial_frame = (
+                env.reset(state_dict=current_state_dict) if is_v2 else env.reset()
+            )
+            if is_v2 and target_position_jitter_xy is not None:
+                env.randomize_primary_pose(
+                    target_position_jitter_xy, target_yaw_jitter
+                )
+                assert env.state is not None and env.motion is not None
+                observation, _ = env.state.actor_observation()
+                initial_frame = env.motion.extract()
             assert env.state is not None
-            target_position = env.state.initial_object_pos.copy()
-            _, target_quaternion = env.target_freejoint_pose()
+            target_position = (
+                env.state.initial_primary_pos.copy()
+                if is_v2 else env.state.initial_object_pos.copy()
+            )
+            target_quaternion = (
+                env.primary_freejoint_pose()[1]
+                if is_v2
+                else env.target_freejoint_pose()[1]
+            )
             initial_qpos = env.sim.mjData.qpos.copy()
             initial_qvel = env.sim.mjData.qvel.copy()
             rollout_attempts = []
             rollout = None
-            for rank_index, reference_rank in enumerate(reference_ranks):
-                if rank_index:
-                    observation, initial_frame = env.reset_to_target_pose(
-                        target_position, target_quaternion
-                    )
+            plan_requests = reference_plan_requests(
+                reference_ranks,
+                base_episode,
+                base_reference_fallback=base_reference_fallback,
+                base_reference_first=base_reference_first,
+            )
+            for reference_rank, exact_reference_episode in plan_requests:
+                # A retrieved neighbor may already be the scene's own plan.
+                # Do not execute the identical plan again under the base label.
+                if exact_reference_episode is not None and any(
+                    item["reference_episode"] == exact_reference_episode
+                    for item in rollout_attempts
+                ):
+                    continue
+                if rollout_attempts:
+                    if is_v2:
+                        env.reset(state_dict=current_state_dict)
+                        observation, initial_frame = env.set_primary_pose(
+                            target_position, target_quaternion
+                        )
+                    else:
+                        observation, initial_frame = env.reset_to_target_pose(
+                            target_position, target_quaternion
+                        )
                 rollout = run_rollout(
                     observation,
                     initial_frame,
                     reference_rank,
+                    exact_reference_episode=exact_reference_episode,
                 )
                 terms = rollout["terms"]
                 rollout_attempts.append(
@@ -230,34 +339,6 @@ def collect_policy_dataset(
                 )
                 if terms.success:
                     break
-            if (
-                not rollout["terms"].success
-                and base_reference_fallback
-                and all(
-                    item["reference_episode"] != base_episode
-                    for item in rollout_attempts
-                )
-            ):
-                observation, initial_frame = env.reset_to_target_pose(
-                    target_position, target_quaternion
-                )
-                rollout = run_rollout(
-                    observation,
-                    initial_frame,
-                    reference_rank=-1,
-                    exact_reference_episode=base_episode,
-                )
-                terms = rollout["terms"]
-                rollout_attempts.append(
-                    {
-                        "reference_rank": -1,
-                        "reference_episode": rollout["reference_episode"],
-                        "success": bool(terms.success),
-                        "failure": bool(terms.failure),
-                        "timeout": bool(terms.timeout),
-                        "length": len(rollout["arrays"]["raw_actions"]),
-                    }
-                )
             assert rollout is not None
             final_terms = rollout["terms"]
             arrays = rollout["arrays"]
@@ -335,16 +416,21 @@ def collect_policy_dataset(
         "task_metadata": task_spec.metadata(),
         "dataset": str(Path(dataset_dir).resolve()),
         "processed": str(Path(processed_dir).resolve()),
+        "eligible_replay_success_scenes": len(rows),
         "requested_successes": num_successes,
         "successes": successes,
         "attempts": attempts,
         "attempt_success_rate": successes / max(attempts, 1),
+        "target_attempts": attempts,
+        "target_success_rate": successes / max(attempts, 1),
+        "failed_targets": attempts - successes,
         "complete": successes == num_successes,
         "elapsed_seconds": elapsed,
         "successful_trajectories_per_second": successes / max(elapsed, 1e-6),
         "scene_hold_attempts": scene_hold_attempts,
         "reference_ranks": list(reference_ranks),
         "base_reference_fallback": base_reference_fallback,
+        "base_reference_first": base_reference_first,
         "plan_rollouts": sum(
             len(row["plan_attempts"]) for row in manifest
         ),
@@ -356,6 +442,9 @@ def collect_policy_dataset(
         "target_yaw_jitter": target_yaw_jitter,
         "seed": seed,
     }
+    summary["plan_rollout_success_rate"] = successes / max(
+        summary["plan_rollouts"], 1
+    )
     (output / "manifest.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in manifest)
     )

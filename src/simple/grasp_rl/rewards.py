@@ -87,6 +87,9 @@ class RewardTerms:
     lift_height: float
     is_grasp: bool
     hand_table_force: float
+    stage_index: int = 0
+    stage_progress: float = 0.0
+    stage_name: str = "legacy_grasp"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -127,8 +130,13 @@ class GraspReward:
         self.previous_progress: float | None = None
         self.reference_should_contact: float | None = None
 
-    def set_reference_contact(self, should_contact: float | None) -> None:
+    def set_reference_contact(
+        self,
+        should_contact: float | None,
+        contact_center: np.ndarray | None = None,
+    ) -> None:
         """Set GRAIL's per-frame reference contact intent for the next step."""
+        del contact_center  # Only the v2 goal graph uses the reference center.
         self.reference_should_contact = (
             None if should_contact is None else float(bool(should_contact))
         )

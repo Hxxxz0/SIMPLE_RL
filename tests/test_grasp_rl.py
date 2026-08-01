@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -11,12 +13,14 @@ from simple.grasp_rl.diffusion import DDPMScheduler, DiffusionDenoiser, _loss
 from simple.grasp_rl.distribution import TemporallyCorrelatedGaussianDistribution
 from simple.grasp_rl.motion import frames_to_features
 from simple.grasp_rl.policy import KnnBcActor, make_actor
+from simple.grasp_rl.paired import exact_mcnemar_p_value
 from simple.grasp_rl.reference import (
     ReferenceLibrary,
     ReferenceTracker,
     augment_reference_observation,
     reference_contact_label,
 )
+from simple.grasp_rl.render import _select_camera
 from simple.grasp_rl.rewards import GraspReward, compose_reward
 from simple.grasp_rl.schema import (
     ACTION_DIM,
@@ -28,8 +32,27 @@ from simple.grasp_rl.schema import (
     MAX_EPISODE_STEPS,
     REFERENCE_ACTOR_OBS_DIM,
     REFERENCE_CONTEXT_DIM,
+    ACTOR_OBS_V2_DIM,
+    REFERENCE_CONTEXT_V2_DIM,
+    REFERENCE_ACTOR_OBS_V2_DIM,
 )
+from simple.grasp_rl.data_v2 import (
+    _successful_replay_transform,
+    _usable_replay_episode_ids,
+    repair_cross_table_actions,
+)
+from simple.grasp_rl.collect import _filter_replay_gated_rows
+from simple.grasp_rl.evaluate import (
+    _filter_evaluation_split,
+    reference_action_from_observation,
+)
+from simple.grasp_rl.goal_reward import GoalGraphReward
+from simple.grasp_rl.state_v2 import V2_SLICES
 from simple.grasp_rl.train import PpoTrainConfig, rsl_config
+from simple.grasp_rl.vec_env import (
+    apply_reference_action_bias,
+    reference_residual_action_rate,
+)
 from simple.grasp_rl.tracker import (
     ActionTransform,
     compute_action_transform,
@@ -38,6 +61,8 @@ from simple.grasp_rl.tracker import (
 from simple.grasp_rl.task_spec import (
     checkpoint_task_metadata,
     get_task_spec,
+    task_names,
+    TaskSpecV2,
     validate_task_metadata,
 )
 
@@ -50,6 +75,136 @@ def test_schema_dimensions_are_frozen() -> None:
     assert len(JOINT_NAMES) == 43
     assert (MOTION_WINDOW, MOTION_FRAME_DIM, MOTION_FEATURE_DIM) == (10, 80, 82)
     assert MAX_EPISODE_STEPS == 192
+
+
+@pytest.mark.parametrize("base_dim", [ACTOR_OBS_DIM, ACTOR_OBS_V2_DIM])
+def test_reference_override_reads_action_after_active_base_schema(base_dim: int) -> None:
+    policy_observation = np.zeros(base_dim + ACTION_DIM + 7, dtype=np.float32)
+    expected = np.linspace(-1.0, 1.0, ACTION_DIM, dtype=np.float32)
+    policy_observation[base_dim : base_dim + ACTION_DIM] = expected
+    np.testing.assert_array_equal(
+        reference_action_from_observation(policy_observation, base_dim), expected
+    )
+
+
+def test_exact_mcnemar_uses_only_discordant_pairs() -> None:
+    assert exact_mcnemar_p_value(0, 0) == 1.0
+    assert exact_mcnemar_p_value(2, 0) == 0.5
+    assert exact_mcnemar_p_value(3, 3) == 1.0
+    assert exact_mcnemar_p_value(10, 0) == pytest.approx(2.0 / 1024.0)
+
+
+def test_v2_schema_and_catalog_cover_merged_tasks() -> None:
+    assert ACTOR_OBS_V2_DIM == 331
+    assert REFERENCE_CONTEXT_V2_DIM == 511
+    assert REFERENCE_ACTOR_OBS_V2_DIM == 842
+    assert len(task_names()) == 14
+    flagship = get_task_spec("G1WholebodyLocomotionPickBetweenTablesMixed-v0")
+    assert isinstance(flagship, TaskSpecV2)
+    assert flagship.controller_backend == "amo"
+    assert flagship.family == "place"
+    assert flagship.source_uids[0] == "g1_wholebody_locomotion_pick_between_tables_variant5"
+    assert get_task_spec("open_oven").controller_backend == "sonic_wbc"
+    assert list(V2_SLICES.values())[0].start == 0
+    assert list(V2_SLICES.values())[-1].stop == ACTOR_OBS_V2_DIM
+
+
+def test_cross_table_repair_changes_only_missing_turn_fields() -> None:
+    actions = np.zeros((260, ACTION_DIM), dtype=np.float32)
+    actions[20:220, 32] = .1
+    actions[220:, 32] = .35
+    repaired, report = repair_cross_table_actions(actions)
+    assert report["applied"] is True
+    assert report["changed_dimensions"] == [34, 35]
+    np.testing.assert_array_equal(repaired[:, :32], actions[:, :32])
+    np.testing.assert_array_equal(repaired[:, 32:34], actions[:, 32:34])
+    assert np.isclose(repaired[119, 35], np.pi / 2)
+    assert np.isclose(repaired[219, 35], np.pi)
+    assert np.all(repaired[20:220, 34] == 1)
+
+
+def test_goal_graph_does_not_charge_valid_stationary_stage() -> None:
+    assert GoalGraphReward.gamma == 1.0
+
+
+def test_goal_graph_requires_completion_after_entering_final_stage() -> None:
+    reward = GoalGraphReward.__new__(GoalGraphReward)
+    reward.spec = SimpleNamespace(stages=(object(), object(), object()))
+    reward.stage_index = 1
+    reward.stage_hold = 3
+
+    advanced, success = reward._advance_stage(completed=True)
+    assert advanced is True
+    assert success is False
+    assert reward.stage_index == 2
+    assert reward.stage_hold == 0
+
+    _, success = reward._advance_stage(completed=True)
+    assert success is True
+
+
+def test_grail_v2_grasp_terms_use_reference_contact_intent_and_geometry() -> None:
+    reward = GoalGraphReward.__new__(GoalGraphReward)
+    reward.reference_should_contact = 1.0
+    reward.reference_contact_center_primary = np.zeros(3)
+    forces = np.zeros((2, 8, 3), dtype=np.float64)
+    forces[1, :, 0] = 0.2
+    state = SimpleNamespace(
+        contact_forces_pelvis=forces,
+        left_primary_contact=False,
+        right_primary_contact=True,
+        primary=SimpleNamespace(pos_w=np.zeros(3), rot_w=np.eye(3)),
+        distal_pos_w=np.asarray(
+            [
+                np.zeros((3, 3)),
+                [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
+            ]
+        ),
+    )
+    grasp, direction = reward._grail_grasp_terms(state)
+    assert np.isclose(grasp, 1.0)
+    assert np.isclose(direction, 1.0)
+
+    reward.set_reference_contact(0.0, np.zeros(3, dtype=np.float32))
+    grasp, direction = reward._grail_grasp_terms(state)
+    assert grasp == 0.0
+    assert direction == 0.0
+
+
+def test_v2_plan_correction_preserves_non_manipulation_and_release() -> None:
+    actor = make_actor(
+        "cpu", REFERENCE_ACTOR_OBS_V2_DIM, plan_conditioned=True
+    ).eval()
+    with torch.no_grad():
+        for parameter in actor.mlp.parameters():
+            parameter.zero_()
+        linear = [
+            module
+            for module in actor.mlp.modules()
+            if isinstance(module, torch.nn.Linear)
+        ]
+        linear[-1].bias.fill_(1.0)
+
+    def command(stage: int) -> np.ndarray:
+        observation = torch.zeros(1, REFERENCE_ACTOR_OBS_V2_DIM)
+        observation[:, ACTOR_OBS_V2_DIM:ACTOR_OBS_V2_DIM + ACTION_DIM] = .25
+        observation[:, 322 + stage] = 1.0
+        result = actor(
+            TensorDict({"actor": observation}, batch_size=[1]),
+            stochastic_output=False,
+        )
+        return result.detach().numpy()[0]
+
+    approach = command(0)
+    transport = command(3)
+    place = command(4)
+    np.testing.assert_allclose(approach[7:14], 1.25)
+    np.testing.assert_allclose(approach[21:28], 1.25)
+    np.testing.assert_allclose(approach[:7], .25)
+    np.testing.assert_allclose(approach[28:], .25)
+    np.testing.assert_allclose(transport[7:14], .25)
+    np.testing.assert_allclose(transport[21:28], 1.25)
+    np.testing.assert_allclose(place, .25)
 
 
 def test_bend_pick_adapter_preserves_policy_contract_and_native_goal() -> None:
@@ -128,6 +283,83 @@ def test_non_tabletop_transform_preserves_bending_command_range() -> None:
         episode[-1],
         atol=1e-6,
     )
+
+
+def test_successful_replay_transform_round_trips_every_command() -> None:
+    rng = np.random.default_rng(11)
+    episodes = []
+    for frames in (17, 29, 41):
+        commands = rng.uniform(-1.5, 1.5, size=(frames, ACTION_DIM)).astype(
+            np.float32
+        )
+        commands[0] = np.linspace(-0.2, 0.2, ACTION_DIM, dtype=np.float32)
+        episodes.append(commands)
+    transform = _successful_replay_transform(episodes)
+    for commands in episodes:
+        previous = transform.center
+        decoded = []
+        for command in commands:
+            physical = transform.decode(transform.encode(command), previous)
+            decoded.append(physical)
+            previous = physical
+        np.testing.assert_allclose(decoded, commands, atol=1e-6, rtol=0.0)
+
+
+def test_replay_gate_selects_only_verified_successes() -> None:
+    reports = [
+        {"episode": 8, "success": True},
+        {"episode": 9, "success": False},
+        {"episode": 10, "success": True},
+        {"episode": 11, "success": True},
+    ]
+    assert _usable_replay_episode_ids(reports) == [8, 10, 11]
+    with pytest.raises(RuntimeError, match="Fewer than 3"):
+        _usable_replay_episode_ids(reports[:3])
+
+
+def test_evaluation_split_filters_to_manifest_episode_ids(tmp_path) -> None:
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "splits": {
+                    "train": [2, 5],
+                    "val": [7],
+                    "test": [11, 13],
+                }
+            }
+        )
+    )
+    rows = [{"episode_index": value} for value in (2, 7, 11, 13, 17)]
+    assert _filter_evaluation_split(rows, "test", tmp_path) == rows[2:4]
+    assert _filter_evaluation_split(rows, "all", None) is rows
+    with pytest.raises(ValueError, match="requires reference_processed"):
+        _filter_evaluation_split(rows, "val", None)
+
+
+def test_collection_excludes_known_replay_failures(tmp_path) -> None:
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "unique_episodes": [1, 4, 8],
+                "splits": {"train": [1], "val": [4], "test": [8]},
+            }
+        )
+    )
+    rows = [{"episode_index": value} for value in range(10)]
+    assert _filter_replay_gated_rows(rows, tmp_path) == [
+        rows[1],
+        rows[4],
+        rows[8],
+    ]
+
+
+def test_render_auto_camera_supports_legacy_and_sonic_tasks() -> None:
+    assert _select_camera("auto", ("front_stereo_left",)) == "front_stereo_left"
+    assert _select_camera(
+        "auto", ("head_stereo_left", "head_stereo_right")
+    ) == "head_stereo_left"
+    with pytest.raises(KeyError, match="Unknown camera"):
+        _select_camera("missing", ("head_stereo_left",))
 
 
 def test_motion_features_are_finite_and_final_xy_is_anchored() -> None:
@@ -218,9 +450,12 @@ def test_cli_forwards_actor_warm_start(monkeypatch, tmp_path) -> None:
             "progress_v2",
             "--rsi-scene-hold-episodes",
             "17",
+            "--rsi-processed",
+            "processed-v2",
             "--rsi-randomize-target",
             "--target-position-jitter-xy",
             "0.01,0.02",
+            "--target-position-offset-center-xy=-0.025,0.01",
             "--target-yaw-jitter",
             "0.05",
             "--rsi-phase",
@@ -233,6 +468,14 @@ def test_cli_forwards_actor_warm_start(monkeypatch, tmp_path) -> None:
             "teacher.pt",
             "--teacher-anchor-weight",
             "10",
+            "--reference-rank-max",
+            "4",
+            "--reference-base-episode-probability",
+            "0.75",
+            "--reference-action-noise-std",
+            "0.03",
+            "--reference-action-noise-hold-steps",
+            "20",
             "--plan-conditioned-actor",
         ],
     )
@@ -243,8 +486,10 @@ def test_cli_forwards_actor_warm_start(monkeypatch, tmp_path) -> None:
     assert captured["config"].learning_schedule == "fixed"
     assert captured["config"].task_reward_profile == "progress_v2"
     assert captured["config"].rsi_scene_hold_episodes == 17
+    assert captured["config"].rsi_processed == "processed-v2"
     assert captured["config"].rsi_randomize_target is True
     assert captured["config"].target_position_jitter_xy == (0.01, 0.02)
+    assert captured["config"].target_position_offset_center_xy == (-0.025, 0.01)
     assert captured["config"].target_yaw_jitter == 0.05
     assert captured["config"].rsi_phase == (0.64, 0.75)
     assert captured["config"].rsi_stage == "grasp_to_lift"
@@ -252,7 +497,50 @@ def test_cli_forwards_actor_warm_start(monkeypatch, tmp_path) -> None:
     assert captured["config"].bc_anchor_sources == ("bc",)
     assert captured["config"].teacher_anchor_checkpoint == "teacher.pt"
     assert captured["config"].teacher_anchor_weight == 10.0
+    assert captured["config"].reference_rank_max == 4
+    assert captured["config"].reference_base_episode_probability == 0.75
+    assert captured["config"].reference_action_noise_std == 0.03
+    assert captured["config"].reference_action_noise_hold_steps == 20
     assert captured["config"].plan_conditioned_actor is True
+
+
+def test_reference_action_bias_is_coherent_and_manipulation_only() -> None:
+    observation = torch.zeros(2, REFERENCE_ACTOR_OBS_V2_DIM)
+    bias = torch.zeros(2, ACTION_DIM)
+    bias[:, 7:14] = 0.1
+    bias[:, 21:28] = -0.2
+    perturbed = apply_reference_action_bias(
+        observation,
+        bias,
+        ACTOR_OBS_V2_DIM,
+        51,
+    )
+    torch.testing.assert_close(
+        perturbed[:, :ACTOR_OBS_V2_DIM],
+        observation[:, :ACTOR_OBS_V2_DIM],
+    )
+    for frame_index in range(10):
+        start = ACTOR_OBS_V2_DIM + frame_index * 51
+        torch.testing.assert_close(perturbed[:, start:start + ACTION_DIM], bias)
+        torch.testing.assert_close(
+            perturbed[:, start + ACTION_DIM:start + 51],
+            observation[:, start + ACTION_DIM:start + 51],
+        )
+
+
+def test_reference_action_rate_does_not_penalize_generated_motion() -> None:
+    proposal = torch.tensor([[0.2, -0.4], [0.6, 0.1]])
+    previous = torch.zeros_like(proposal)
+    rate, residual = reference_residual_action_rate(
+        proposal.clone(), proposal, previous
+    )
+    torch.testing.assert_close(rate, torch.zeros(2))
+    torch.testing.assert_close(residual, torch.zeros_like(proposal))
+
+    actions = proposal + torch.tensor([[0.1, -0.2], [0.0, 0.3]])
+    rate, residual = reference_residual_action_rate(actions, proposal, previous)
+    torch.testing.assert_close(rate, torch.tensor([0.05, 0.09]))
+    torch.testing.assert_close(residual, actions - proposal)
 
 
 def test_plan_conditioned_actor_emits_complete_proposed_command() -> None:
@@ -271,6 +559,33 @@ def test_plan_conditioned_actor_emits_complete_proposed_command() -> None:
     )
     torch.testing.assert_close(output, proposal)
     assert "_plan_conditioned_actor" in actor.state_dict()
+
+
+def test_v2_plan_conditioned_actor_uses_complete_command_slot() -> None:
+    actor = make_actor("cpu", REFERENCE_ACTOR_OBS_V2_DIM, plan_conditioned=True)
+    for parameter in actor.mlp.parameters():
+        torch.nn.init.zeros_(parameter)
+    observation = torch.randn(2, REFERENCE_ACTOR_OBS_V2_DIM)
+    proposal = observation[:, ACTOR_OBS_V2_DIM:ACTOR_OBS_V2_DIM + ACTION_DIM]
+    output = actor(TensorDict({"actor": observation}, batch_size=[2]), stochastic_output=False)
+    torch.testing.assert_close(output, proposal)
+
+
+def test_collection_can_try_exact_base_plan_before_neighbor_ranks() -> None:
+    from simple.grasp_rl.collect import reference_plan_requests
+
+    assert reference_plan_requests(
+        (6, 4, 2),
+        17,
+        base_reference_fallback=True,
+        base_reference_first=True,
+    ) == [(-1, 17), (6, None), (4, None), (2, None)]
+    assert reference_plan_requests(
+        (6, 4),
+        17,
+        base_reference_fallback=True,
+        base_reference_first=False,
+    ) == [(6, None), (4, None), (-1, 17)]
 
 
 def test_temporal_knn_starts_at_trajectory_zero_then_advances() -> None:
@@ -399,19 +714,63 @@ def test_cli_forwards_normalized_evaluation_phase(monkeypatch, tmp_path) -> None
             str(tmp_path),
             "--initialization-phase",
             "0.9",
+            "--evaluation-split",
+            "test",
             "--randomize-target",
             "--target-position-jitter-xy",
             "0.03,0.04",
+            "--target-position-offset-center-xy",
+            "0.01,-0.02",
             "--target-yaw-jitter",
             "0.2",
+            "--fixed-reference-episode",
+            "82",
+            "--fixed-base-episode",
+            "82",
         ],
     )
     cli.main()
     assert captured["initialization_prefix"] is None
     assert captured["initialization_phase"] == 0.9
+    assert captured["evaluation_split"] == "test"
     assert captured["randomize_target"] is True
     assert captured["target_position_jitter_xy"] == (0.03, 0.04)
+    assert captured["target_position_offset_center_xy"] == (0.01, -0.02)
     assert captured["target_yaw_jitter"] == 0.2
+    assert captured["fixed_reference_episode"] == 82
+    assert captured["fixed_base_episode"] == 82
+
+
+def test_cli_forwards_exact_v2_target_position(monkeypatch, tmp_path) -> None:
+    from simple.grasp_rl import cli
+
+    captured = {}
+
+    def fake_evaluate(*args, **kwargs):
+        captured.update(kwargs)
+        return {"success_rate": 0.0}
+
+    monkeypatch.setattr(cli, "evaluate_policy", fake_evaluate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "grasp-rl",
+            "evaluate",
+            "--task",
+            "xmove_pick",
+            "--checkpoint",
+            "actor.pt",
+            "--output",
+            str(tmp_path),
+            "--target-position-xy=-0.28,-0.06",
+            "--robot-position-xy=-0.82,0.01",
+        ],
+    )
+    cli.main()
+    assert captured["target_position_xy"] == (-0.28, -0.06)
+    assert captured["robot_position_xy"] == (-0.82, 0.01)
+    assert captured["randomize_target"] is False
 
 
 def test_cli_selects_task_scoped_dataset_defaults(monkeypatch) -> None:
@@ -481,7 +840,13 @@ def test_reference_reward_prefers_exact_transition(tmp_path) -> None:
     library = ReferenceLibrary(root, splits=("train",))
     exact = ReferenceTracker(library)
     exact.reset(observations[0], exact_episode=0)
+    assert exact.is_complete is False
     exact_terms = exact.reward(observations[1], actions[0])
+    assert exact.is_complete is False
+    exact.reward(observations[2], actions[1])
+    assert exact.is_complete is False
+    exact.reward(observations[2], actions[2])
+    assert exact.is_complete is True
     bad = ReferenceTracker(library)
     bad.reset(observations[0], exact_episode=0)
     bad_terms = bad.reward(

@@ -5,12 +5,13 @@ Copyright (c) 2025 Songlin Wei and Contributors
 Licensed under the terms in LICENSE file.
 """
 
+import copy
 import os
 import numpy as np
 import mujoco
 import xml.etree.ElementTree as ET
 from typing import Any, List, Dict, Tuple
-from threading import Lock, Thread
+from threading import Lock
 
 from simple.core.robot import Robot
 from simple.core.controller import Controller
@@ -20,13 +21,10 @@ from simple.robots.controllers.eef import  DexHandEEFControllerCfg
 from simple.robots.controllers.qpos import PDJointPosControllerCfg
 from simple.robots.registry import RobotRegistry
 from simple.robots.mixin import CuRoboMixin
-from simple.utils import resolve_res_path, resolve_data_path, load_yaml
-from simple.robots.protocols import Humanoid,HeadCamMountable
-from simple.robots.protocols import HasDexterousHand, Humanoid
+from simple.robots.protocols import HasDexterousHand, HeadCamMountable, Humanoid
 from simple.core.action import ActionCmd
 from simple.core.types import Pose
 
-from gear_sonic.utils.mujoco_sim.configs import SimLoopConfig
 from gear_sonic.data.robot_model.instantiation.g1 import instantiate_g1_robot_model
 from gear_sonic.utils.mujoco_sim.robot import Robot as GearSonicRobot
 from gear_sonic.utils.mujoco_sim.unitree_sdk2py_bridge import ElasticBand
@@ -160,6 +158,30 @@ class G1Sonic(CuRoboMixin,Humanoid,Robot,HeadCamMountable,HasDexterousHand):
         self.spawn_pose = kwargs["spawn_pose"]
         self._stabilized = False
         self._stabilize_step_count = 0
+
+    def get_runtime_state(self) -> dict[str, Any]:
+        """Capture mutable state needed by exact headless RL fast reset."""
+
+        fields = (
+            "command",
+            "_debug_ctrl_err",
+            "spawn_pose",
+            "_stabilized",
+            "_stabilize_step_count",
+            "obs",
+            "torques",
+        )
+        return {
+            name: copy.deepcopy(getattr(self, name))
+            for name in fields
+            if hasattr(self, name)
+        }
+
+    def set_runtime_state(self, state: dict[str, Any]) -> None:
+        """Restore mutable state while retaining current MuJoCo array views."""
+
+        for name, value in state.items():
+            setattr(self, name, copy.deepcopy(value))
 
     @property
     def stabilized(self) -> bool:

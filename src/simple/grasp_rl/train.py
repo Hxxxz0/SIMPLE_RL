@@ -14,16 +14,24 @@ from tensordict import TensorDict
 from torch.utils.data import DataLoader
 
 from simple.grasp_rl.bc import BcDataset
+from simple.grasp_rl.curriculum import TrainingCurriculum, load_curriculum
+from simple.grasp_rl.hard_targets import (
+    HardTargetManifest,
+    load_hard_target_manifest,
+)
 from simple.grasp_rl.policy import load_actor
+from simple.grasp_rl.ppo_integrity import PpoIntegrityAuditor
 from simple.grasp_rl.rewards import DEFAULT_TASK_REWARD_PROFILE
 from simple.grasp_rl.schema import (
     ACTION_DIM,
     ACTOR_OBS_DIM,
     REFERENCE_ACTOR_OBS_DIM,
+    REFERENCE_ACTOR_OBS_V2_DIM,
 )
 from simple.grasp_rl.vec_env import DistributedGraspVecEnv
 from simple.grasp_rl.task_spec import (
     DEFAULT_TASK,
+    TaskSpecV2,
     checkpoint_task_metadata,
     get_task_spec,
     validate_task_metadata,
@@ -84,7 +92,7 @@ def _install_bc_anchor(
             "train",
             sources,
             reference_conditioning=(
-                actor_observation_dim == REFERENCE_ACTOR_OBS_DIM
+                actor_observation_dim in (REFERENCE_ACTOR_OBS_DIM, REFERENCE_ACTOR_OBS_V2_DIM)
             ),
         ),
         batch_size=batch_size,
@@ -253,6 +261,7 @@ class PpoTrainConfig:
     actor_warm_start: str | None = None
     worker_devices: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7)
     rsi_dataset: str | None = None
+    rsi_processed: str | None = None
     rsi_prefix: tuple[int, int] = (75, 115)
     rsi_phase: tuple[float, float] | None = None
     rsi_stage: str | None = None
@@ -261,6 +270,7 @@ class PpoTrainConfig:
     rsi_scene_hold_episodes: int = 32
     rsi_randomize_target: bool = False
     target_position_jitter_xy: tuple[float, float] | None = (0.025, 0.03)
+    target_position_offset_center_xy: tuple[float, float] = (0.0, 0.0)
     target_yaw_jitter: float = 0.15
     action_std: float = 0.30
     manipulation_action_std: float | None = None
@@ -284,10 +294,16 @@ class PpoTrainConfig:
     reference_source: str = "bc"
     reference_splits: tuple[str, ...] = ("train", "val", "test")
     reference_reward_weight: float = 0.0
+    reference_rank_max: int = 0
+    reference_base_episode_probability: float = 0.0
+    reference_action_noise_std: float = 0.0
+    reference_action_noise_hold_steps: int = 25
     recurrent_actor: bool = False
     plan_conditioned_actor: bool = False
     rnn_hidden_dim: int = 256
     max_grad_norm: float = 0.1
+    curriculum_config: str | None = None
+    hard_target_manifest: str | None = None
 
 
 def rsl_config(config: PpoTrainConfig) -> dict:
@@ -379,10 +395,18 @@ def train_ppo(
             raise ValueError(
                 f"Reward audit is for {audit.get('task')!r}, not {task_spec.name!r}"
             )
-        acceptance = audit.get("acceptance", {}).get(config.task_reward_profile, {})
-        if not acceptance.get("passed", False):
+        audit_passed = (
+            bool(audit.get("passed", False))
+            if isinstance(task_spec, TaskSpecV2)
+            else bool(
+                audit.get("acceptance", {})
+                .get(config.task_reward_profile, {})
+                .get("passed", False)
+            )
+        )
+        if not audit_passed:
             raise ValueError(
-                f"Reward audit did not pass for {config.task_reward_profile}; refusing PPO"
+                f"Reward audit did not pass for {task_spec.name}; refusing PPO"
             )
     checkpoint_modes = [config.resume, config.warm_start, config.actor_warm_start]
     if sum(value is not None for value in checkpoint_modes) > 1:
@@ -427,6 +451,46 @@ def train_ppo(
             )
     output.mkdir(parents=True, exist_ok=True)
     (output / "config.json").write_text(json.dumps(asdict(config), indent=2))
+    curriculum: TrainingCurriculum | None = (
+        load_curriculum(config.curriculum_config)
+        if config.curriculum_config is not None
+        else None
+    )
+    hard_targets: HardTargetManifest | None = (
+        load_hard_target_manifest(config.hard_target_manifest)
+        if config.hard_target_manifest is not None
+        else None
+    )
+    if curriculum is not None and any(
+        phase.target_mix["hard"] > 0.0 for phase in curriculum.phases
+    ) and hard_targets is None:
+        raise ValueError(
+            "curriculum target_mix hard>0 requires --hard-target-manifest"
+        )
+
+    def training_config_for_update(update: int) -> dict | None:
+        if curriculum is None:
+            return None
+        runtime = curriculum.phase_for_update(update).runtime_dict()
+        if hard_targets is not None:
+            runtime["hard_target_offsets_xy"] = [
+                list(target.target_offset_xy) for target in hard_targets.targets
+            ]
+        return runtime
+
+    initial_update = 0
+    if config.resume is not None and architecture_checkpoint is not None:
+        initial_update = int(architecture_data.get("iter", 0))
+        latest_integrity = (
+            architecture_data.get("ppo_integrity", {}).get("latest_record")
+        )
+        if latest_integrity is not None:
+            initial_update = int(latest_integrity["update"]) + 1
+    initial_training_config = training_config_for_update(initial_update)
+    if curriculum is not None:
+        (output / "curriculum_resolved.json").write_text(
+            json.dumps(curriculum.metadata(), indent=2)
+        )
     env = DistributedGraspVecEnv(
         config.num_envs,
         action_transform,
@@ -440,6 +504,7 @@ def train_ppo(
         seed=config.seed,
         worker_devices=config.worker_devices,
         rsi_dataset=config.rsi_dataset,
+        rsi_processed=config.rsi_processed,
         rsi_prefix=config.rsi_prefix,
         rsi_phase=config.rsi_phase,
         rsi_stage=config.rsi_stage,
@@ -448,28 +513,79 @@ def train_ppo(
         rsi_scene_hold_episodes=config.rsi_scene_hold_episodes,
         rsi_randomize_target=config.rsi_randomize_target,
         target_position_jitter_xy=config.target_position_jitter_xy,
+        target_position_offset_center_xy=(
+            config.target_position_offset_center_xy
+        ),
         target_yaw_jitter=config.target_yaw_jitter,
         observation_noise=config.observation_noise,
         reference_processed=config.reference_processed,
         reference_source=config.reference_source,
         reference_splits=config.reference_splits,
         reference_reward_weight=config.reference_reward_weight,
+        reference_rank_max=config.reference_rank_max,
+        reference_base_episode_probability=(
+            config.reference_base_episode_probability
+        ),
+        reference_action_noise_std=config.reference_action_noise_std,
+        reference_action_noise_hold_steps=config.reference_action_noise_hold_steps,
         task=task_spec.name,
+        training_config=initial_training_config,
     )
     try:
         runner = OnPolicyRunner(env, rsl_config(config), log_dir=str(output), device=config.device)
         base_algorithm_save = runner.alg.save
+        integrity_auditor: PpoIntegrityAuditor | None = None
 
         def save_with_task_metadata():
             payload = base_algorithm_save()
             payload["task_metadata"] = checkpoint_task_metadata(
                 task_spec, action_transform
             )
+            if integrity_auditor is not None:
+                payload["ppo_integrity"] = integrity_auditor.metadata()
+            if curriculum is not None:
+                payload["curriculum"] = curriculum.metadata()
+            if hard_targets is not None:
+                payload["hard_targets"] = {
+                    "source_evaluation": hard_targets.source_evaluation,
+                    "source_split": hard_targets.source_split,
+                    "source_seed": hard_targets.source_seed,
+                    "count": len(hard_targets.targets),
+                }
             return payload
 
         runner.alg.save = save_with_task_metadata
+        if config.actor_learning_rate_scale != 1.0:
+            if config.actor_learning_rate_scale <= 0.0:
+                raise ValueError("actor_learning_rate_scale must be positive")
+            if config.learning_schedule != "fixed":
+                raise ValueError(
+                    "actor_learning_rate_scale requires learning_schedule='fixed'"
+                )
+            # Configure the same optimizer parameter groups *before* loading a
+            # resume checkpoint.  PPO checkpoints created with decoupled
+            # actor/critic rates contain two Adam groups; loading them into the
+            # runner's default one-group optimizer fails, while recreating Adam
+            # after loading silently discards all moment estimates.
+            runner.alg.optimizer = torch.optim.Adam(
+                [
+                    {
+                        "params": runner.alg.get_policy().parameters(),
+                        "lr": config.learning_rate
+                        * config.actor_learning_rate_scale,
+                    },
+                    {
+                        "params": runner.alg._raw_critic.parameters(),
+                        "lr": config.learning_rate,
+                    },
+                ]
+            )
         if config.resume:
             runner.load(config.resume)
+            # RSL-RL stores the just-completed loop index in ``iter`` and
+            # normally repeats it after loading. Audited checkpoints have an
+            # unambiguous policy version, so continue at the next update.
+            runner.current_learning_iteration = initial_update
         elif config.warm_start:
             runner.load(
                 config.warm_start,
@@ -495,31 +611,14 @@ def train_ppo(
             # long-horizon PPO update does not start from a random value model.
             _load_ancestor_critic(runner, actor_checkpoint, config.device)
         runner.alg.learning_rate = config.learning_rate
-        for param_group in runner.alg.optimizer.param_groups:
-            param_group["lr"] = config.learning_rate
         if config.actor_learning_rate_scale != 1.0:
-            if config.actor_learning_rate_scale <= 0.0:
-                raise ValueError("actor_learning_rate_scale must be positive")
-            if config.learning_schedule != "fixed":
-                raise ValueError(
-                    "actor_learning_rate_scale requires learning_schedule='fixed'"
-                )
-            # A pretrained grasp actor is far more sensitive than its critic.
-            # Separate groups let the value function adapt without immediately
-            # erasing contact behavior from the actor.
-            runner.alg.optimizer = torch.optim.Adam(
-                [
-                    {
-                        "params": runner.alg.get_policy().parameters(),
-                        "lr": config.learning_rate
-                        * config.actor_learning_rate_scale,
-                    },
-                    {
-                        "params": runner.alg._raw_critic.parameters(),
-                        "lr": config.learning_rate,
-                    },
-                ]
+            runner.alg.optimizer.param_groups[0]["lr"] = (
+                config.learning_rate * config.actor_learning_rate_scale
             )
+            runner.alg.optimizer.param_groups[1]["lr"] = config.learning_rate
+        else:
+            for param_group in runner.alg.optimizer.param_groups:
+                param_group["lr"] = config.learning_rate
         actor = runner.alg.get_policy()
         if config.freeze_actor_normalizer and hasattr(actor.obs_normalizer, "until"):
             actor.obs_normalizer.until = int(actor.obs_normalizer.count.item())
@@ -564,6 +663,42 @@ def train_ppo(
             final_layers = [module for module in actor.mlp.modules() if isinstance(module, nn.Linear)]
             nn.init.zeros_(final_layers[-1].weight)
             nn.init.zeros_(final_layers[-1].bias)
+        # This wrapper is deliberately installed after optional BC/teacher
+        # anchors so it observes the exact optimizer steps used by the final
+        # objective. It aborts rather than producing an unaudited checkpoint.
+        integrity_auditor = PpoIntegrityAuditor(
+            runner,
+            output / "ppo_integrity.jsonl",
+            start_update=runner.current_learning_iteration,
+            start_total_transitions=(
+                int(
+                    architecture_data.get("ppo_integrity", {}).get(
+                        "total_transitions", 0
+                    )
+                )
+                if config.resume is not None
+                and architecture_checkpoint is not None
+                else 0
+            ),
+        )
+        if curriculum is not None:
+            active_phase = curriculum.phase_for_update(
+                runner.current_learning_iteration
+            ).name
+            audited_update = runner.alg.update
+
+            def update_with_curriculum():
+                nonlocal active_phase
+                metrics = audited_update()
+                phase = curriculum.phase_for_update(integrity_auditor.update)
+                if phase.name != active_phase:
+                    runtime = training_config_for_update(integrity_auditor.update)
+                    assert runtime is not None
+                    env.configure_training(runtime)
+                    active_phase = phase.name
+                return metrics
+
+            runner.alg.update = update_with_curriculum
         # Keep the exact pre-update policy for warm-start regression checks.
         initial_payload = runner.alg.save()
         initial_payload["iter"] = runner.current_learning_iteration

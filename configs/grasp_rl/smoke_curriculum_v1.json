@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "phases": [
+    {
+      "name": "integration_smoke",
+      "start_update": 0,
+      "rsi_probability": 0.5,
+      "target_mix": {"uniform": 0.0, "hard": 1.0, "native": 0.0},
+      "rsi_stage_weights": {"pregrasp": 0.6, "grasp_to_lift": 0.4},
+      "reference_rank_max": 1,
+      "reference_base_episode_probability": 0.25,
+      "reference_action_noise_std": 0.01,
+      "domain_randomization": {
+        "target_mass_scale": [0.9, 1.1],
+        "friction_scale": [0.8, 1.2],
+        "manipulation_action_noise_std": 0.01,
+        "action_delay_max_steps": 1
+      }
+    }
+  ]
+}

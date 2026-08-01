@@ -23,7 +23,6 @@ from simple.grasp_rl.rewards import DEFAULT_TASK_REWARD_PROFILE
 from simple.grasp_rl.schema import (
     ACTION_DIM,
     ACTOR_OBS_DIM,
-    REFERENCE_ACTOR_OBS_DIM,
 )
 from simple.grasp_rl.tracker import ActionTransform
 from simple.grasp_rl.task_spec import (
@@ -763,9 +762,9 @@ def train_bc_actor(
             pin_memory=True,
         )
     observation_dim = (
-        REFERENCE_ACTOR_OBS_DIM
+        task_spec.reference_actor_observation_dim
         if config.reference_conditioning
-        else ACTOR_OBS_DIM
+        else task_spec.actor_observation_dim
     )
     actor = make_actor(
         device,

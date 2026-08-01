@@ -114,7 +114,11 @@ class SonicDecoupledWbcAgent(WholeBodyControlAgent):
         obs["wrist_pose"] = sim_obs.get("wrist_pose", np.zeros(14))
         return obs
         
-    def get_stabilize_action(self, observation) -> ActionCmd:
+    def get_stabilize_action(
+        self,
+        observation,
+        control_time: float | None = None,
+    ) -> ActionCmd:
         """Run the WBC pipeline ramping to the WBC default pose — used during stabilization.
 
         Drives the upper body toward the WBC default configuration (forearms pointing
@@ -127,7 +131,7 @@ class SonicDecoupledWbcAgent(WholeBodyControlAgent):
             DEFAULT_NAV_CMD,
         )
 
-        t_now = time.monotonic()
+        t_now = time.monotonic() if control_time is None else control_time
         control_freq = self._control_frequency
         proprio = self.robot.prepare_obs()
         wbc_obs = self._build_wbc_observation(proprio)
@@ -148,6 +152,10 @@ class SonicDecoupledWbcAgent(WholeBodyControlAgent):
             "timestamp": t_now,
         }
         self._wbc_policy.set_goal(goal)
+        if control_time is not None:
+            # Headless dataset replay may run much faster than real time.  The
+            # WBC watchdog and interpolator must use the same supplied clock.
+            self._wbc_policy.last_goal_time = t_now
 
         wbc_action = self._wbc_policy.get_action(time=t_now)
         self._cached_target_q = self._dwbc_robot_model.get_body_actuated_joints(wbc_action["q"])

@@ -1,10 +1,10 @@
-"""SMP-guided full-trajectory grasp reinforcement learning for SIMPLE.
+"""Full-command multi-task reinforcement learning for SIMPLE.
 
 The package deliberately keeps three contracts separate:
 
-* an unconditional diffusion prior over executed robot motion;
-* a task-conditioned PPO actor that emits a complete 36-D tracker command; and
-* the existing SIMPLE AMO tracker that executes the command in MuJoCo.
+* one task policy emits a complete 36-D tracker command;
+* role-based observations and ordered goal rewards are shared across tasks;
+* AMO and Sonic decoupled-WBC execute the same public command layout.
 """
 
 import os
@@ -17,6 +17,8 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 from simple.grasp_rl.schema import (
     ACTION_DIM,
     ACTOR_OBS_DIM,
+    ACTOR_OBS_V2_DIM,
+    REFERENCE_ACTOR_OBS_V2_DIM,
     MOTION_FEATURE_DIM,
     MOTION_FRAME_DIM,
     MOTION_WINDOW,
@@ -25,6 +27,8 @@ from simple.grasp_rl.schema import (
 __all__ = [
     "ACTION_DIM",
     "ACTOR_OBS_DIM",
+    "ACTOR_OBS_V2_DIM",
+    "REFERENCE_ACTOR_OBS_V2_DIM",
     "MOTION_FEATURE_DIM",
     "MOTION_FRAME_DIM",
     "MOTION_WINDOW",

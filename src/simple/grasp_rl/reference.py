@@ -22,7 +22,11 @@ from simple.grasp_rl.schema import (
     REFERENCE_ACTOR_OBS_DIM,
     REFERENCE_CONTEXT_DIM,
     REFERENCE_FUTURE_OFFSETS,
+    ACTOR_OBS_V2_DIM,
+    REFERENCE_ACTOR_OBS_V2_DIM,
+    REFERENCE_CONTEXT_V2_DIM,
 )
+from simple.grasp_rl.state_v2 import V2_SLICES
 
 
 # Frozen slices from the 192-D base observation contract in state.py.
@@ -39,6 +43,8 @@ CONTACT_FORCE = slice(165, 189)
 
 def reference_contact_label(observation: np.ndarray) -> float:
     """Return the replay reference's thumb--support bilateral contact label."""
+    if len(observation) == ACTOR_OBS_V2_DIM:
+        return float(observation[V2_SLICES["predicates"].start + 1] > .5)
     forces = np.asarray(observation[CONTACT_FORCE], dtype=np.float32).reshape(8, 3)
     magnitudes = np.linalg.norm(forces, axis=-1)
     thumb = float(magnitudes[1:4].max(initial=0.0)) > 2.0
@@ -53,13 +59,15 @@ def build_reference_context(
     current_observation: np.ndarray,
 ) -> np.ndarray:
     """Build ten 0.1-s-spaced future commands and object/contact deltas."""
-    if observations.ndim != 2 or observations.shape[1] != ACTOR_OBS_DIM:
-        raise ValueError(f"Expected reference observations [T,{ACTOR_OBS_DIM}]")
+    if observations.ndim != 2 or observations.shape[1] not in (ACTOR_OBS_DIM, ACTOR_OBS_V2_DIM):
+        raise ValueError(f"Unsupported reference observations {observations.shape}")
     if actions.ndim != 2 or actions.shape[1] != ACTION_DIM:
         raise ValueError(f"Expected reference actions [T,{ACTION_DIM}]")
     if len(observations) != len(actions):
         raise ValueError("Reference observation/action lengths differ")
     index = int(np.clip(index, 0, len(actions) - 1))
+    if observations.shape[1] == ACTOR_OBS_V2_DIM:
+        return _build_reference_context_v2(observations, actions, index, current_observation)
     pieces: list[np.ndarray] = []
     current_object = np.asarray(current_observation[OBJECT_POS_BODY], dtype=np.float32)
     for offset in REFERENCE_FUTURE_OFFSETS:
@@ -82,6 +90,46 @@ def build_reference_context(
     return context
 
 
+def _build_reference_context_v2(
+    observations: np.ndarray,
+    actions: np.ndarray,
+    index: int,
+    current_observation: np.ndarray,
+) -> np.ndarray:
+    """Build the 10x51 v2 plan from role-based replay state."""
+
+    primary_pos = slice(V2_SLICES["entities"].start + 1,
+                        V2_SLICES["entities"].start + 4)
+    auxiliary_start = V2_SLICES["entities"].start + 2 * 19
+    auxiliary_pos = slice(auxiliary_start + 1, auxiliary_start + 4)
+    pieces: list[np.ndarray] = []
+    index = int(np.clip(index, 0, len(actions) - 1))
+    for offset in REFERENCE_FUTURE_OFFSETS:
+        future = min(index + offset, len(actions) - 1)
+        dt = float(future - index) / 50.0
+        root_velocity = observations[future, 89:95]
+        root_delta = np.asarray(
+            [root_velocity[0] * dt, root_velocity[1] * dt, root_velocity[5] * dt],
+            dtype=np.float32,
+        )
+        entity_delta = observations[future, primary_pos] - current_observation[primary_pos]
+        aux_delta = observations[future, auxiliary_pos] - current_observation[auxiliary_pos]
+        interactions = observations[future, V2_SLICES["predicates"]][:4]
+        articulation = observations[future, V2_SLICES["articulation"]]
+        present_delta = [abs(float(articulation[i + 3])) for i in (0, 4) if articulation[i] > .5]
+        articulation_progress = 1.0 - min(min(present_delta, default=1.0), 1.0)
+        stage_one_hot = observations[future, 322:330]
+        stage_index = float(np.argmax(stage_one_hot)) / 7.0
+        pieces.extend((actions[future], root_delta, entity_delta.astype(np.float32),
+                       aux_delta.astype(np.float32), interactions.astype(np.float32),
+                       np.asarray([articulation_progress, stage_index], dtype=np.float32)))
+    phase = np.asarray([index / max(len(actions) - 1, 1)], dtype=np.float32)
+    context = np.concatenate((*pieces, phase)).astype(np.float32)
+    if context.shape != (REFERENCE_CONTEXT_V2_DIM,):
+        raise RuntimeError(f"V2 reference context has shape {context.shape}")
+    return context
+
+
 def augment_reference_observation(
     current_observation: np.ndarray,
     reference_observations: np.ndarray,
@@ -99,7 +147,8 @@ def augment_reference_observation(
             ),
         ]
     ).astype(np.float32)
-    if augmented.shape != (REFERENCE_ACTOR_OBS_DIM,):
+    expected = REFERENCE_ACTOR_OBS_V2_DIM if len(current_observation) == ACTOR_OBS_V2_DIM else REFERENCE_ACTOR_OBS_DIM
+    if augmented.shape != (expected,):
         raise RuntimeError(f"Reference-conditioned observation has shape {augmented.shape}")
     return augmented
 
@@ -146,12 +195,24 @@ class ReferenceLibrary:
         directory = root / source
         self.observations: dict[int, np.ndarray] = {}
         self.actions: dict[int, np.ndarray] = {}
+        self.contact_centers_primary: dict[int, np.ndarray] = {}
+        self.contact_center_valid: dict[int, np.ndarray] = {}
         for episode in episode_ids:
             with np.load(
                 directory / f"episode_{episode:06d}.npz", allow_pickle=False
             ) as data:
                 self.observations[episode] = data["observations"].astype(np.float32)
                 self.actions[episode] = data["raw_actions"].astype(np.float32)
+                if "right_contact_centers_primary" in data.files:
+                    centers = data["right_contact_centers_primary"].astype(np.float32)
+                    valid = data["right_contact_center_valid"].astype(bool)
+                    expected = (len(self.actions[episode]), 3)
+                    if centers.shape != expected or valid.shape != (expected[0],):
+                        raise ValueError(
+                            f"Episode {episode} contact centres have invalid shape"
+                        )
+                    self.contact_centers_primary[episode] = centers
+                    self.contact_center_valid[episode] = valid
         self.episode_ids = np.asarray(episode_ids, dtype=np.int64)
         descriptors = np.stack(
             [self._descriptor(self.observations[e][0]) for e in episode_ids]
@@ -164,6 +225,11 @@ class ReferenceLibrary:
 
     @staticmethod
     def _descriptor(observation: np.ndarray) -> np.ndarray:
+        if len(observation) == ACTOR_OBS_V2_DIM:
+            return np.concatenate(
+                [observation[V2_SLICES["hands"]], observation[V2_SLICES["entities"]],
+                 observation[V2_SLICES["articulation"]]]
+            ).astype(np.float32)
         return np.concatenate(
             [
                 observation[OBJECT_POS_BODY],
@@ -197,10 +263,19 @@ class ReferenceTracker:
         self.library = library
         self.episode: int | None = None
         self.index = 0
+        self._executed_final_action = False
 
     @property
     def is_ready(self) -> bool:
         return self.episode is not None
+
+    @property
+    def is_complete(self) -> bool:
+        """Whether the current reference reached its final motion frame."""
+
+        if self.episode is None:
+            return False
+        return self._executed_final_action
 
     def reset(
         self,
@@ -214,6 +289,7 @@ class ReferenceTracker:
         )
         length = len(self.library.actions[self.episode])
         self.index = int(np.clip(start_index, 0, length - 1))
+        self._executed_final_action = False
 
     def augment(self, observation: np.ndarray) -> np.ndarray:
         if self.episode is None:
@@ -233,6 +309,18 @@ class ReferenceTracker:
         following = min(self.index + 1, len(observations) - 1)
         return reference_contact_label(observations[following])
 
+    def post_step_contact_center_primary(self) -> np.ndarray | None:
+        """Return GRAIL's next-frame contact centre in object coordinates."""
+
+        if self.episode is None:
+            raise RuntimeError("ReferenceTracker.reset must be called first")
+        centers = self.library.contact_centers_primary.get(self.episode)
+        valid = self.library.contact_center_valid.get(self.episode)
+        if centers is None or valid is None:
+            return None
+        following = min(self.index + 1, len(centers) - 1)
+        return centers[following].copy() if valid[following] else None
+
     def reward(
         self, post_observation: np.ndarray, executed_raw_action: np.ndarray
     ) -> ReferenceRewardTerms:
@@ -249,6 +337,7 @@ class ReferenceTracker:
         actions = self.library.actions[self.episode]
         current = min(self.index, len(actions) - 1)
         following = min(current + 1, len(observations) - 1)
+        self._executed_final_action = current >= len(actions) - 1
         target_observation = observations[following]
 
         joint_weights = np.ones(43, dtype=np.float32)

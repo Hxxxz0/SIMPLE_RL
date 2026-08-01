@@ -15,7 +15,9 @@ from simple.grasp_rl.bc import (
 from simple.grasp_rl.collect import collect_policy_dataset
 from simple.grasp_rl.diffusion import DiffusionTrainConfig, train_diffusion
 from simple.grasp_rl.evaluate import evaluate_policy
+from simple.grasp_rl.hard_targets import mine_hard_targets
 from simple.grasp_rl.policy import build_knn_actor_checkpoint
+from simple.grasp_rl.paired import compare_paired_evaluations
 from simple.grasp_rl.rewards import (
     DEFAULT_TASK_REWARD_PROFILE,
     REWARD_VARIANTS,
@@ -23,6 +25,8 @@ from simple.grasp_rl.rewards import (
 )
 from simple.grasp_rl.render import render_saved_trajectory
 from simple.grasp_rl.prepare import prepare_dataset
+from simple.grasp_rl.data_v2 import prepare_v2_dataset, write_repaired_actions
+from simple.grasp_rl.audit_v2 import audit_v2_reward
 from simple.grasp_rl.reward_audit import AUDIT_SCENARIOS, audit_reward
 from simple.grasp_rl.train import PpoTrainConfig, train_ppo
 from simple.grasp_rl.task_spec import (
@@ -30,6 +34,7 @@ from simple.grasp_rl.task_spec import (
     get_task_spec,
     task_from_manifest,
     task_names,
+    TaskSpecV2,
 )
 
 
@@ -56,6 +61,18 @@ def _parser() -> argparse.ArgumentParser:
     list_tasks = commands.add_parser("list-tasks")
     list_tasks.set_defaults(task=DEFAULT_TASK)
 
+    compare_paired = commands.add_parser("compare-paired")
+    compare_paired.set_defaults(task=DEFAULT_TASK)
+    compare_paired.add_argument("--policy-evaluation", type=Path, required=True)
+    compare_paired.add_argument("--reference-evaluation", type=Path, required=True)
+    compare_paired.add_argument("--output", type=Path, required=True)
+
+    mine_hard = commands.add_parser("mine-hard-targets")
+    mine_hard.set_defaults(task=DEFAULT_TASK)
+    mine_hard.add_argument("--evaluation-summary", type=Path, required=True)
+    mine_hard.add_argument("--output", type=Path, required=True)
+    mine_hard.add_argument("--limit", type=int, default=256)
+
     def task_argument(command: argparse.ArgumentParser) -> None:
         command.add_argument(
             "--task",
@@ -68,6 +85,13 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     prepare.add_argument("--output", type=Path, default=DEFAULT_PROCESSED)
     prepare.add_argument("--workers", type=int, default=8)
+    prepare.add_argument("--episodes", type=int)
+    prepare.add_argument("--warmup-steps", type=int, default=60)
+
+    repair = commands.add_parser("repair-data")
+    task_argument(repair)
+    repair.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
+    repair.add_argument("--output", type=Path, required=True)
 
     prepare_bc = commands.add_parser("prepare-bc")
     task_argument(prepare_bc)
@@ -185,7 +209,22 @@ def _parser() -> argparse.ArgumentParser:
     checkpoint_mode.add_argument("--warm-start", type=Path)
     checkpoint_mode.add_argument("--actor-warm-start", type=Path)
     train.add_argument("--worker-devices", default="1,2,3,4,5,6,7")
+    train.add_argument(
+        "--curriculum-config",
+        type=Path,
+        help="Versioned JSON curriculum; hashes are embedded in every checkpoint",
+    )
+    train.add_argument(
+        "--hard-target-manifest",
+        type=Path,
+        help="Train/val failure targets; final-test manifests are rejected",
+    )
     train.add_argument("--rsi-dataset", type=Path)
+    train.add_argument(
+        "--rsi-processed",
+        type=Path,
+        help="Replay-gated prepared actions for RSI without enabling reference input",
+    )
     train.add_argument("--rsi-prefix", default="75,115")
     train.add_argument(
         "--rsi-phase",
@@ -212,6 +251,14 @@ def _parser() -> argparse.ArgumentParser:
         "--target-position-jitter-xy",
         default="0.025,0.03",
         help="Per-axis target position half-ranges in metres",
+    )
+    train.add_argument(
+        "--target-position-offset-center-xy",
+        default="0,0",
+        help=(
+            "Centre of the target-offset distribution in metres; use a "
+            "non-zero x/y centre for hard-failure mining"
+        ),
     )
     train.add_argument("--target-yaw-jitter", type=float, default=0.15)
     train.add_argument("--action-std", type=float, default=0.30)
@@ -259,6 +306,30 @@ def _parser() -> argparse.ArgumentParser:
     train.add_argument("--reference-splits", default="train,val,test")
     train.add_argument("--reference-reward-weight", type=float, default=0.0)
     train.add_argument(
+        "--reference-rank-max",
+        type=int,
+        default=0,
+        help="Uniformly sample reference retrieval ranks from zero through this value",
+    )
+    train.add_argument(
+        "--reference-base-episode-probability",
+        type=float,
+        default=0.0,
+        help="Probability of retaining the base scene plan after moving its target",
+    )
+    train.add_argument(
+        "--reference-action-noise-std",
+        type=float,
+        default=0.0,
+        help="Correlated normalized right-arm/hand bias applied only to actor plans",
+    )
+    train.add_argument(
+        "--reference-action-noise-hold-steps",
+        type=int,
+        default=25,
+        help="Control steps to retain each sampled reference command bias",
+    )
+    train.add_argument(
         "--recurrent-actor",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -292,6 +363,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument("--episodes", type=int, default=100)
     evaluate.add_argument("--device", default="cuda:0")
+    evaluate.add_argument("--seed", type=int, default=1234)
+    evaluate.add_argument(
+        "--final-protocol",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enforce the locked 200-target unseen-test protocol",
+    )
     evaluate.add_argument("--task-reward-weight", type=float, default=0.02)
     evaluate.add_argument("--smp-reward-weight", type=float, default=0.01)
     evaluate.add_argument(
@@ -300,6 +378,12 @@ def _parser() -> argparse.ArgumentParser:
         default=DEFAULT_TASK_REWARD_PROFILE,
     )
     evaluate.add_argument("--episode-offset", type=int, default=0)
+    evaluate.add_argument(
+        "--evaluation-split",
+        choices=("all", "train", "val", "test"),
+        default="all",
+        help="Restrict evaluation to replay-gated processed episode IDs",
+    )
     evaluate.add_argument("--reference-source", default="bc")
     evaluate.add_argument("--reference-splits", default="train,val,test")
     evaluate.add_argument("--reference-reward-weight", type=float, default=0.0)
@@ -314,6 +398,16 @@ def _parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Use the current dataset scene's plan after moving its target",
+    )
+    evaluate.add_argument(
+        "--fixed-reference-episode",
+        type=int,
+        help="Use one exact reference plan for every evaluation rollout",
+    )
+    evaluate.add_argument(
+        "--fixed-base-episode",
+        type=int,
+        help="Repeat one exact robot/scene state for all randomized targets",
     )
     evaluate.add_argument("--reach-extension-threshold", type=float)
     evaluate.add_argument(
@@ -332,7 +426,20 @@ def _parser() -> argparse.ArgumentParser:
         "--target-position-jitter-xy",
         default="0.025,0.03",
     )
+    evaluate.add_argument(
+        "--target-position-offset-center-xy",
+        default="0,0",
+        help="Centre of the randomized target-offset distribution in metres",
+    )
     evaluate.add_argument("--target-yaw-jitter", type=float, default=0.15)
+    evaluate.add_argument(
+        "--target-position-xy",
+        help="Set an exact v2 target world XY, for explicit out-of-distribution tests",
+    )
+    evaluate.add_argument(
+        "--robot-position-xy",
+        help="Set an exact v2 robot world XY before stabilization",
+    )
     evaluate.add_argument(
         "--reference-action-override",
         choices=("none", "right_hand", "right_arm_hand", "all"),
@@ -349,13 +456,21 @@ def _parser() -> argparse.ArgumentParser:
     render.add_argument("--processed", type=Path, default=DEFAULT_PROCESSED)
     render.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     render.add_argument("--output", type=Path, required=True)
-    render.add_argument("--camera", default="front_stereo_left")
+    render.add_argument(
+        "--camera",
+        default="auto",
+        help="Camera name, or auto for a task-compatible left camera",
+    )
     render.add_argument("--fps", type=float, default=50.0)
     render.add_argument("--checkpoint", type=Path)
     render.add_argument("--device", default="cuda:0")
     render.add_argument("--camera-fovy", type=float, default=40.0)
     render.add_argument("--expert", action="store_true")
     render.add_argument("--context-start", type=int)
+    render.add_argument(
+        "--robot-position-xy",
+        help="Restore an exact v2 robot world XY for an OOD rollout",
+    )
 
     collect = commands.add_parser("collect-policy")
     task_argument(collect)
@@ -373,6 +488,12 @@ def _parser() -> argparse.ArgumentParser:
         "--base-reference-fallback",
         action=argparse.BooleanOptionalAction,
         default=True,
+    )
+    collect.add_argument(
+        "--base-reference-first",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Try the current scene's complete plan before retrieved ranks",
     )
     collect.add_argument("--seed", type=int, default=20260729)
     collect.add_argument("--device", default="cuda:0")
@@ -411,14 +532,35 @@ def main() -> None:
         result = {
             name: get_task_spec(name).metadata() for name in task_names()
         }
-    elif args.command == "prepare":
-        result = prepare_dataset(
-            args.dataset,
+    elif args.command == "compare-paired":
+        result = compare_paired_evaluations(
+            args.policy_evaluation,
+            args.reference_evaluation,
             args.output,
-            num_workers=args.workers,
-            task=task_spec,
         )
+    elif args.command == "mine-hard-targets":
+        result = mine_hard_targets(
+            args.evaluation_summary,
+            args.output,
+            limit=args.limit,
+        )
+    elif args.command == "prepare":
+        result = (
+            prepare_v2_dataset(
+                args.dataset, args.output, num_workers=args.workers,
+                task=task_spec, episodes=args.episodes,
+                warmup_steps=args.warmup_steps,
+            )
+            if isinstance(task_spec, TaskSpecV2)
+            else prepare_dataset(
+                args.dataset, args.output, num_workers=args.workers, task=task_spec,
+            )
+        )
+    elif args.command == "repair-data":
+        result = write_repaired_actions(args.dataset, args.output, task_spec)
     elif args.command == "prepare-bc":
+        if isinstance(task_spec, TaskSpecV2):
+            raise ValueError("v2 prepare already writes the BC replay; use the prepare command")
         result = prepare_bc_dataset(
             args.dataset,
             args.processed,
@@ -426,25 +568,30 @@ def main() -> None:
             task=task_spec,
         )
     elif args.command == "audit-reward":
-        result = audit_reward(
-            args.dataset,
-            args.processed / "action_transform.npz",
-            args.output,
-            episodes=args.episodes,
-            episode_offset=args.episode_offset,
-            workers=args.workers,
-            profiles=tuple(
-                value.strip()
-                for value in args.profiles.split(",")
-                if value.strip()
-            ),
-            scenarios=tuple(
-                value.strip()
-                for value in args.scenarios.split(",")
-                if value.strip()
-            ),
-            task_weight=args.task_reward_weight,
-            task=task_spec,
+        scenarios = tuple(value.strip() for value in args.scenarios.split(",") if value.strip())
+        result = (
+            audit_v2_reward(
+                args.dataset, args.processed, args.output,
+                episodes=args.episodes, episode_offset=args.episode_offset,
+                scenarios=scenarios, task=task_spec, workers=args.workers,
+            )
+            if isinstance(task_spec, TaskSpecV2)
+            else audit_reward(
+                args.dataset,
+                args.processed / "action_transform.npz",
+                args.output,
+                episodes=args.episodes,
+                episode_offset=args.episode_offset,
+                workers=args.workers,
+                profiles=tuple(
+                    value.strip()
+                    for value in args.profiles.split(",")
+                    if value.strip()
+                ),
+                scenarios=scenarios,
+                task_weight=args.task_reward_weight,
+                task=task_spec,
+            )
         )
     elif args.command == "pretrain-actor":
         result = train_bc_actor(
@@ -536,6 +683,9 @@ def main() -> None:
                     int(value) for value in args.worker_devices.split(",") if value.strip()
                 ),
                 rsi_dataset=str(args.rsi_dataset) if args.rsi_dataset else None,
+                rsi_processed=(
+                    str(args.rsi_processed) if args.rsi_processed else None
+                ),
                 rsi_prefix=tuple(int(value) for value in args.rsi_prefix.split(",")),
                 rsi_phase=(
                     tuple(float(value) for value in args.rsi_phase.split(","))
@@ -553,6 +703,12 @@ def main() -> None:
                 rsi_randomize_target=args.rsi_randomize_target,
                 target_position_jitter_xy=_parse_target_position_jitter(
                     args.target_position_jitter_xy
+                ),
+                target_position_offset_center_xy=(
+                    _parse_target_position_jitter(
+                        args.target_position_offset_center_xy
+                    )
+                    or (0.0, 0.0)
                 ),
                 target_yaw_jitter=args.target_yaw_jitter,
                 action_std=args.action_std,
@@ -597,10 +753,28 @@ def main() -> None:
                     if value.strip()
                 ),
                 reference_reward_weight=args.reference_reward_weight,
+                reference_rank_max=args.reference_rank_max,
+                reference_base_episode_probability=(
+                    args.reference_base_episode_probability
+                ),
+                reference_action_noise_std=args.reference_action_noise_std,
+                reference_action_noise_hold_steps=(
+                    args.reference_action_noise_hold_steps
+                ),
                 recurrent_actor=args.recurrent_actor,
                 plan_conditioned_actor=args.plan_conditioned_actor,
                 rnn_hidden_dim=args.rnn_hidden_dim,
                 max_grad_norm=args.max_grad_norm,
+                curriculum_config=(
+                    str(args.curriculum_config)
+                    if args.curriculum_config
+                    else None
+                ),
+                hard_target_manifest=(
+                    str(args.hard_target_manifest)
+                    if args.hard_target_manifest
+                    else None
+                ),
             ),
         )
     elif args.command == "evaluate":
@@ -615,6 +789,7 @@ def main() -> None:
             initialization_prefix=args.initialization_prefix,
             initialization_phase=args.initialization_phase,
             episode_offset=args.episode_offset,
+            evaluation_split=args.evaluation_split,
             task_reward_weight=args.task_reward_weight,
             smp_reward_weight=args.smp_reward_weight,
             task_reward_profile=args.task_reward_profile,
@@ -630,13 +805,33 @@ def main() -> None:
             reference_action_override=args.reference_action_override,
             reference_rank=args.reference_rank,
             reference_base_episode=args.reference_base_episode,
+            fixed_reference_episode=args.fixed_reference_episode,
+            fixed_base_episode=args.fixed_base_episode,
             reach_extension_threshold=args.reach_extension_threshold,
             reach_extension_velocity=args.reach_extension_velocity,
             randomize_target=args.randomize_target,
             target_position_jitter_xy=_parse_target_position_jitter(
                 args.target_position_jitter_xy
             ),
+            target_position_offset_center_xy=(
+                _parse_target_position_jitter(
+                    args.target_position_offset_center_xy
+                )
+                or (0.0, 0.0)
+            ),
             target_yaw_jitter=args.target_yaw_jitter,
+            target_position_xy=(
+                _parse_target_position_jitter(args.target_position_xy)
+                if args.target_position_xy is not None
+                else None
+            ),
+            robot_position_xy=(
+                _parse_target_position_jitter(args.robot_position_xy)
+                if args.robot_position_xy is not None
+                else None
+            ),
+            seed=args.seed,
+            final_protocol=args.final_protocol,
             task=task_spec,
         )
     elif args.command == "render":
@@ -652,6 +847,11 @@ def main() -> None:
             camera_fovy=args.camera_fovy,
             expert=args.expert,
             context_start=args.context_start,
+            robot_position_xy=(
+                _parse_target_position_jitter(args.robot_position_xy)
+                if args.robot_position_xy is not None
+                else None
+            ),
             task=task_spec,
         )
     elif args.command == "collect-policy":
@@ -674,6 +874,7 @@ def main() -> None:
                 if value.strip()
             ),
             base_reference_fallback=args.base_reference_fallback,
+            base_reference_first=args.base_reference_first,
             seed=args.seed,
             device=args.device,
             task=task_spec,

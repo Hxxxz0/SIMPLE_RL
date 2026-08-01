@@ -116,7 +116,245 @@ PPO 的 distribution、采样动作和 log-prob 都定义在这个最终完整 c
 SIMPLE `ActionCmd` 交给 AMO whole-body tracker。checkpoint 会保存 task/schema 和
 action-transform SHA256，避免跨任务误用动作缩放。
 
-### GRAIL 风格 task reward
+### 通用复杂任务 RL v2
+
+当前新增的 v2 框架覆盖合并数据集中的14类任务，但每个任务单独训练 policy。统一输入为
+331D MuJoCo privileged state；使用完整计划时再拼接511D future-plan，最终输入842D。
+Policy 每步直接输出完整36D tracker command，不是对专家轨迹的 residual。
+
+统一 `GoalGraphReward` 支持抓取、放置、handover、可动关节、推物体和复合容器任务。
+MP任务通过 AMO tracker 执行，Teleop任务通过 Sonic decoupled-WBC 执行。任务奖励只读取
+当前物体、目标、接触和关节状态，不依赖物体参考轨迹。
+
+首个重点复杂任务是 `G1WholebodyLocomotionPickBetweenTablesMixed-v0`。旧数据中的
+`turning_flag/target_yaw` 丢失会在派生数据中修复，并通过闭环走近、稳定、开手补齐当前
+tracker可执行的放置尾段；原始 `data/simple` 永不修改。详细接口与命令见
+[`src/simple/grasp_rl/README.md`](src/simple/grasp_rl/README.md)。
+
+该任务现已完成真实 tracker/MuJoCo 闭环验收：派生数据 50/50 可执行，10 条 expert 重放
+与 repeat 全部成功，七组 no-motion/truncate/open-hand/early-release/time-shuffle/throw
+反事实均为 0/10。发布 checkpoint 是
+`outputs/grasp_rl/locomotion_pick_between_tables/bc_plan_v2_smoke/best.pt`。在同一批 50 个
+独立随机目标（x ±2.5 cm、y ±3 cm、yaw ±0.15 rad）上，单一 base plan 为 37/50，
+rank-0 为 28/50；base 与 rank-0...9 从完全相同初态依次尝试时覆盖 46/50，即严格的
+target-level multi-plan success 为 **92%**。这不是单次 rollout 成功率，也不是 PPO 成功率。
+
+最新 stage-masked PPO 保留固定场景 10/10，但 `model_25.pt` 和 `model_49.pt` 在大扰动
+随机 10 场景都只有 5/10，低于初始化的 7/10，因此只保留为失败消融，生产路径不选 PPO。
+当前生产器先试 base complete plan，再按互补 rank 回退；每次回退恢复完全相同的机器人、
+物体 pose 和 MuJoCo 初态，只把最终成功轨迹写入 `trajectories/`，同时在 manifest 中保留
+所有失败目标和 plan rollout。独立 seed 20260730 的实际生产结果是 20/22 个随机目标成功
+（**90.91% target success**），共运行 52 条完整计划；base 成功 14 个，rank 6/4/5 又救回
+3/2/1 个，两个最终失败目标各自的 11 次失败计划均保留。20 条 NPZ 已验证为完整
+331D/842D observation、36D raw/physical command 和初始 MuJoCo/目标状态。当前正式路径
+没有使用 SMP diffusion。
+
+### 已训练的 Sonic 移动抓取任务（2026-07-31）
+
+现在另有两个真正完成数据重放、reward audit、训练和随机目标验收的移动操作任务；其余
+v2 task 仍只是共享代码/奖励接口支持，不能称为已有 policy：
+
+| task | 可执行 source | 独立 test | 随机目标单 rollout |
+| :--- | ---: | ---: | ---: |
+| `xmove_pick` | 72/99 | 8/8 | 18/20（90%） |
+| `xmove_bend_pick` | 24/100 | 3/3 | 18/19（94.74%） |
+
+两者都只用 controller 重放成功的 episode 训练，source 失败不会进入 train/val/test；动作
+变换 `successful_replay_cover_v1` 在带 slew limit 的逐帧 `encode -> decode` 路径上最大误差
+为 `5.96e-8`。奖励要求真实力接触后的连续抬升：`xmove_pick` 至少 9 cm，
+`xmove_bend_pick` 至少 8 cm，保持 13 个 50 Hz control steps。两份 reward audit 都是
+expert/repeat 10/10，七类反事实 0/10。
+
+发布 checkpoint 分别为
+`outputs/grasp_rl/xmove_pick/bc_plan_v2_reversible/best.pt` 和
+`outputs/grasp_rl/xmove_bend_pick/bc_plan_v2_reversible/best.pt`。它们是
+plan-conditioned 36D complete-command BC policy，输出仍由 Sonic tracker 执行；不是 PPO，
+也没有使用 diffusion/SMP。生产器现强制只从 processed manifest 的 replay-success scenes
+采样，避免把已知 controller 重放失败场景误算成 policy 失败。独立 seed 20260731 已各自
+产出 20 个成功、schema/有限值检查通过的 NPZ；在更大的 ±2.5/3 cm、±0.15 rad envelope
+上，真实 target success 分别为 20/24（83.33%）和 20/21（95.24%）。所有失败目标保留在
+manifest，未混进成功轨迹目录。四个随机闭环成功视频已放到对应
+`data/grasp_rl/.../v2/videos/`，均为 H.264/yuv420p。
+
+显式未见初态实验进一步区分了“回放”和泛化。`xmove_pick`数据的机器人XY恒为
+`(-0.8,0)`，物体XY包围盒为`[-0.3197,-0.2905] × [-0.0797,-0.0401]`；将机器人设为
+`(-0.78,0)`、物体设为`(-0.28,-0.06)`后仍为4/4成功。`xmove_bend_pick`数据的机器人
+y恒为0、物体y不超过`-0.0400`；机器人`(-0.95,0.02)`、物体
+`(-0.275,-0.025)`同样4/4成功。因此机器人和物体初始位置均可不在原数据中，但四方向
+边界测试显示成功率明显非对称，不能称为无限范围泛化。完整结果见
+`outputs/grasp_rl/ood_initial_pose_analysis.json`，两段联合OOD视频也已放入对应
+`data/grasp_rl/.../v2/videos/`。
+
+需要严格说明：上面两个 `bc_plan_v2_reversible/best.pt` 的 correction MLP 最后一层
+weight/bias 均严格为0，所以这两个 **BC checkpoint** 的输出等于检索计划的36D command。
+它们仍是 retrieval/playback + Sonic tracker 基线，不能标成RL。下面的 PPO checkpoint 是
+在此之后单独完成的在线训练结果。
+
+### 当前 GRAIL-v7 真实 PPO 结果（2026-07-31）
+
+当前发布候选是修复奖励和 reset 后重新训练的 on-policy PPO，不是轨迹回放重命名：
+
+- `xmove_pick`: `ppo_reference_grail_v7_fastreset_300/model_200.pt`；
+- `xmove_bend_pick`: `ppo_reference_grail_v7_fastreset_300/model_180.pt`。
+
+Actor 输入是 331D MuJoCo task state 与 511D complete-plan context，共 842D；输出始终是
+最终完整 36D tracker command，再由 Sonic decoupled-WBC 执行。网络内部只允许右手和
+右臂在抓取相关 stage 修正计划，但 PPO distribution、采样 action、log-prob 和保存到数据集
+的 action 都定义在最终 36D command 上。
+
+训练使用发布 GRAIL `pnp_table` 的 dense grasp 部分：`5×grasp_contact_fraction +
+10×finger_direction - 15×approach_velocity - hand_table - 0.1×policy_residual_rate`；
+另以加法加入 robot/reference tracking。两项均按 50 Hz 的 `0.02` 缩放。finger direction
+由 reference contact intent 门控并使用 reference contact center；缺失 center 的旧数据才
+按 GRAIL fallback 使用物体中心。reference 最后一条 command 执行后立即 motion timeout，
+不会继续优化到无关的 800 步。
+
+reward audit 先在真实 tracker 回放上验收：
+
+| task | expert | no-motion/open-hand/contact-hold | expert mean return |
+| :--- | ---: | ---: | ---: |
+| `xmove_pick` | 3/3 | 全部 0/3 | 15.28 |
+| `xmove_bend_pick` | 3/3 | 全部 0/3 | 14.20 |
+
+严格配对评估固定 base/reference episode（xmove 82、bend 96），只随机物体 x/y
+`±4/5 cm` 和 yaw `±0.25 rad`。每对的完整 `initial_qpos/qvel`、目标位置/四元数、base ID
+和 reference ID 都逐元素相同；reference-only 直接执行同一 plan 的完整 36D command。
+
+| task / selected checkpoint | reference only | PPO | PPO-only rescue | reference-only regression | exact McNemar |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| `xmove_pick/model_200` | 32/100 | **49/100** | 17 | 0 | **`p=1.53e-5`** |
+| `xmove_bend_pick/model_180` | 43/100 | **54/100** | 12 | 1 | **`p=0.00342`** |
+
+这两个结果都证明 PPO 相对同一 reference 有统计显著的闭环增益。xmove 的策略/reference
+物理 action 平均绝对差为 `7.86e-3`，bend 为 `4.13e-3`；差异仅出现在右手 `7:14`
+和右臂 `21:28`，其它 22 维仍由完整计划提供。配对报告分别位于：
+
+```text
+outputs/grasp_rl/xmove_pick/ppo_reference_grail_v7_fastreset_300/paired_model200_100.json
+outputs/grasp_rl/xmove_bend_pick/ppo_reference_grail_v7_fastreset_300/paired_model180_100.json
+```
+
+`compare-paired` 会验证所有配对初态字段并计算双侧 exact McNemar/binomial 检验，避免只比较
+两个未配对成功率。旧 evaluator 曾错误地从 V1 的 192D offset 读取 V2 reference action；
+现在按活动 schema 从 331D base observation 后读取，并有 V1/V2 回归测试。因此下方 v1
+配对表仅保留为历史实验记录，不再用于当前结论。
+
+真实 PPO rescue 与同初态 reference failure 视频为 H.264/yuv420p、640×360、50 fps：
+
+```text
+data/grasp_rl/G1WholebodyXMovePickTeleop-v0/v2/videos/grail_v7_model200_fixed82_repeat15_ppo_success.mp4
+data/grasp_rl/G1WholebodyXMovePickTeleop-v0/v2/videos/grail_v7_fixed82_repeat15_reference_failure.mp4
+data/grasp_rl/G1WholebodyXMoveBendPickTeleop-v0/v2/videos/grail_v7_model180_fixed96_repeat1_ppo_success.mp4
+data/grasp_rl/G1WholebodyXMoveBendPickTeleop-v0/v2/videos/grail_v7_fixed96_repeat1_reference_failure.mp4
+```
+
+训练 worker 使用完整 MuJoCo、Sonic interpolation/lower-body history 和 deterministic control
+clock 快照做 fast reset。同一快照重复执行相同 20 步 action 后 observation、motion frame、
+qpos 和 qvel 均逐元素完全相同。训练仍会保存每 10 轮 checkpoint；发布模型按严格配对
+筛选，而不是默认选择最后一轮。两条续训都完整结束并保存 `model_299.pt`；xmove
+`model_280` 已退回 8/20（reference 8/20），bend `model_299` 为 10/20，与 model 180
+的小样本相同但没有新的 100 对证据，因此不替换已验证的发布 checkpoint。
+
+成功轨迹生产器只写入通过 MuJoCo task success 的 rollout，所有失败目标和每次 plan 尝试
+仍保留在 `manifest.jsonl`。新 PPO 的实际生产结果为：
+
+| task / envelope | 成功轨迹 | target success | plan rollouts |
+| :--- | ---: | ---: | ---: |
+| xmove `±4/5 cm, ±0.25 rad` | 20 | 20/28 (71.43%) | 70 |
+| bend `±4/5 cm, ±0.25 rad` | 20 | 20/24 (83.33%) | 56 |
+| bend `±2.5/3 cm, ±0.15 rad` | 20 | **20/21 (95.24%)** | 34 |
+
+xmove 的常规 envelope 严格 22-target run 只有 18/22 (81.82%)，未达到 90%，所以不把它
+列成完整 20 条生产结果。较大 envelope 的两份完整数据都已检查：每份恰好 20 个有限 NPZ，
+包含 331D state、842D policy input、36D normalized/physical command 和 80D motion frame。
+路径为 `ppo_grail_v7_model200_production20_hard` 与
+`ppo_grail_v7_model180_production20_hard`；bend 95.24% 路径为
+`ppo_grail_v7_model180_production20_standard`。
+
+### 历史 Sonic 移动抓取 PPO 结果（已由 GRAIL-v7 替代）
+
+`xmove_pick` 和 `xmove_bend_pick` 均训练了100个在线PPO update（checkpoint的 `iter=99`
+表示第0--99轮）。reference policy 使用842D输入并输出最终完整36D command；state-only
+policy只使用331D在线MuJoCo状态。两条线都保存 actor、critic、两组Adam optimizer state，
+不是BC重命名。reference actor最后一层也已从严格0更新为非零：选用的
+`xmove_pick/model_10.pt` 最大绝对weight为 `1.54e-4`，
+`xmove_bend_pick/model_20.pt` 为 `2.27e-4`。
+
+统一评测使用确定性完整起点，以及同一组前20个可执行场景上的 x/y
+`±2.5/3 cm`、yaw `±0.15 rad` 随机目标。结果必须和BC基线一起看：
+
+| task / policy | 固定独立test | 随机目标单rollout |
+| :--- | ---: | ---: |
+| `xmove_pick` BC playback基线 | 8/8 | 15/20 |
+| `xmove_pick` reference PPO `model_10` | 8/8 | 14/20 |
+| `xmove_pick` reference PPO `model_99` | 8/8 | 15/20 |
+| `xmove_pick` state-only PPO `model_99` | 0/8 | 未进入随机生产 |
+| `xmove_bend_pick` BC playback基线 | 3/3 | 16/20 |
+| `xmove_bend_pick` reference PPO `model_20` | 3/3 | 16/20 |
+| `xmove_bend_pick` reference PPO `model_99` | 3/3 | 16/20 |
+| `xmove_bend_pick` state-only PPO `model_99` | 0/3 | 未进入随机生产 |
+
+为了直接判断成功究竟来自固定 reference 还是 PPO，另做了严格的100次配对实验：
+`xmove_pick`固定 base/reference episode 82，`xmove_bend_pick`固定 episode 96；每对
+rollout 的机器人 `qpos/qvel`、目标位置/四元数和 reference ID 都逐元素相同，只随机目标
+x/y `±4/5 cm`、yaw `±0.25 rad`。BC checkpoint 的 correction 层严格为零，因此就是
+“同一 reference only”基线。
+
+| task | reference only | reference + PPO | PPO-only | reference-only | 双侧精确配对检验 |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| `xmove_pick` | 59/100 | 59/100 | 0 | 0 | `p=1.0` |
+| `xmove_bend_pick` | 77/100 | 79/100 | 2 | 0 | `p=0.5` |
+
+`xmove_pick`的100个成败逐个完全一致；`xmove_bend_pick`的PPO只额外救回repeat 18和67，
+没有丢失reference成功。物理36D command相对reference的平均绝对变化分别只有
+`8.78e-5`和`5.15e-5`，最大变化为`1.34e-3`和`1.87e-3`。所以当前证据只能说明bend
+存在微弱的`+2%`信号，统计上不能确认PPO有稳定增益；xmove则没有任何可测增益。完整
+summary位于各checkpoint下的`eval_fixed_reference*_random100_large/summary.json`。
+
+因此这里可以确认“PPO policy会成功”，但不能声称PPO已经超过计划基线；大部分成功应
+归因于reference plan与Sonic tracker的容差。无reference的
+MLP PPO以及额外GRU-BC都在完整起点为0，说明仅靠当前331D逐帧状态监督还不能稳定恢复
+长时序；这条负消融被保留，没有冒充成功policy。
+
+两个 reference PPO 在显式联合OOD初态上均为4/4：`xmove_pick`使用机器人
+`(-0.78,0)`、物体`(-0.28,-0.06)`，`xmove_bend_pick`使用机器人
+`(-0.95,0.02)`、物体`(-0.275,-0.025)`。用于实际数据生产时，每个随机目标从完全相同
+MuJoCo初态依次尝试base计划与rank 0--4，所有rollout仍由PPO checkpoint闭环输出：
+
+| task | 成功轨迹 | 随机目标成功率 | 完整plan rollout |
+| :--- | ---: | ---: | ---: |
+| `xmove_pick` reference PPO `model_10` | 20 | 20/24（83.33%） | 50 |
+| `xmove_bend_pick` reference PPO `model_20` | 20 | 20/20（100%） | 30 |
+
+成功数据分别位于 `outputs/grasp_rl/xmove_pick/ppo_reference_production20_v1` 和
+`outputs/grasp_rl/xmove_bend_pick/ppo_reference_production20_v1`。每条NPZ均已检查为有限的
+331D state、842D policy input、36D normalized/physical command和80D motion frame。
+PPO闭环视频位于：
+
+```text
+data/grasp_rl/G1WholebodyXMovePickTeleop-v0/v2/videos/ppo_reference_model10_random_episode000002_success.mp4
+data/grasp_rl/G1WholebodyXMovePickTeleop-v0/v2/videos/ppo_reference_model10_production_episode000000_success.mp4
+data/grasp_rl/G1WholebodyXMoveBendPickTeleop-v0/v2/videos/ppo_reference_model20_random_episode000007_success.mp4
+data/grasp_rl/G1WholebodyXMoveBendPickTeleop-v0/v2/videos/ppo_reference_model20_production_episode000000_success.mp4
+data/grasp_rl/G1WholebodyXMoveBendPickTeleop-v0/v2/videos/paired_fixed_reference96_repeat67_ppo_success.mp4
+data/grasp_rl/G1WholebodyXMoveBendPickTeleop-v0/v2/videos/paired_fixed_reference96_repeat67_reference_failure.mp4
+```
+
+视频均为H.264/yuv420p、640x360、50 fps，metadata记录 `closed_loop=true`、实际
+`success` 和对应checkpoint路径。这里的成功仍应解释为“检索完整计划 + PPO状态
+反馈 + Sonic tracker”的有界泛化，不是无条件SMP，也不是任意目标的通用运动规划。
+最后两段是repeat 67的严格同初态配对：PPO抬升14.78 cm并成功，零correction的reference
+只抬升0.64 cm且失败。渲染器会恢复轨迹保存的完整v2 `initial_qpos/qvel`，而非只恢复物体
+pose，因此该视频与评估summary逐值复现。
+
+`xmove_pick` 还完成了一轮更激进的50轮PPO续训：task权重由0.05增至0.1、actor
+学习率放大5倍、reference权重降至0.0002，并以 `model_99` 做teacher anchor。最终
+`model_148`仍保持固定test 8/8，但统一随机20场中 `model_110`为15/20，
+`model_140/148`均为14/20，没有超过原 `model_99` 的15/20，因此不替换。另一个不缩小
+扰动、同seed的rank 0--10生产消融只有18/22（81.82%，72次完整plan rollout），也未达到
+20条目标，所以保留在 `ppo_reference_model99_production20_rank10_v1` 作为失败证据。
+
+### GRAIL 风格 task reward（旧版 grasp v1）
 
 当前默认 `grail_release_v1` 在50 Hz下计算：
 

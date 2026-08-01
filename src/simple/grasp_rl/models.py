@@ -9,8 +9,9 @@ from rsl_rl.utils import unpad_trajectories
 
 from simple.grasp_rl.schema import (
     ACTION_DIM,
-    ACTOR_OBS_DIM,
     REFERENCE_ACTOR_OBS_DIM,
+    REFERENCE_ACTOR_OBS_V2_DIM,
+    base_observation_dim,
 )
 
 
@@ -67,8 +68,10 @@ class PlanConditionedMLPModel(ClippedMLPModel):
 
     The first future-reference frame contains the generator's current 36-D
     tracker command.  A zero-initialized policy therefore starts exactly on
-    the generated trajectory, while PPO can still change every output
-    dimension using state and target feedback.  The distribution is defined
+    the generated trajectory.  For v2 multi-stage tasks, PPO correction is
+    restricted to the right arm/hand during approach, grasp and lift; the
+    audited plan owns locomotion, transport, placement and release.  The
+    distribution is defined
     over the *complete command* (not over a separately executed residual), so
     rollout actions and PPO log-probabilities remain consistent.
 
@@ -79,11 +82,12 @@ class PlanConditionedMLPModel(ClippedMLPModel):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        if self.obs_dim != REFERENCE_ACTOR_OBS_DIM:
+        if self.obs_dim not in (REFERENCE_ACTOR_OBS_DIM, REFERENCE_ACTOR_OBS_V2_DIM):
             raise ValueError(
-                "PlanConditionedMLPModel requires the 593-D plan-conditioned "
+                "PlanConditionedMLPModel requires a supported plan-conditioned "
                 f"observation, got {self.obs_dim}"
             )
+        self.base_observation_dim = base_observation_dim(self.obs_dim)
         # Persistent marker makes standalone RSL checkpoints self-describing.
         self.register_buffer("_plan_conditioned_actor", torch.ones(()))
 
@@ -97,11 +101,21 @@ class PlanConditionedMLPModel(ClippedMLPModel):
         if masks is not None:
             obs = unpad_trajectories(obs, masks)
         raw = torch.cat([obs[group] for group in self.obs_groups], dim=-1)
-        proposal = raw[
-            ..., ACTOR_OBS_DIM : ACTOR_OBS_DIM + ACTION_DIM
-        ]
+        proposal = raw[..., self.base_observation_dim : self.base_observation_dim + ACTION_DIM]
         latent = self.get_latent(obs, None, hidden_state)
-        complete_command = proposal + self.mlp(latent)
+        correction = self.mlp(latent)
+        if self.obs_dim == REFERENCE_ACTOR_OBS_V2_DIM:
+            # V2 task-context stage one-hot is at base-state indices 322:330.
+            # For the flagship task, stages 0..2 are approach/grasp/lift and
+            # stage 3 is transport.  Arm correction follows the moved object
+            # through transport; finger correction stops after lift.
+            hand_active = raw[..., 322:325].sum(-1, keepdim=True).clamp(0.0, 1.0)
+            arm_active = raw[..., 322:326].sum(-1, keepdim=True).clamp(0.0, 1.0)
+            correction_mask = torch.zeros_like(correction)
+            correction_mask[..., 7:14] = hand_active
+            correction_mask[..., 21:28] = arm_active
+            correction = correction * correction_mask
+        complete_command = proposal + correction
         if self.distribution is not None:
             if stochastic_output:
                 self.distribution.update(complete_command)

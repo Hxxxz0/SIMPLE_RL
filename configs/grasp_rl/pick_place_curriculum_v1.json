@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "phases": [
+    {
+      "name": "rsi70_full30",
+      "start_update": 0,
+      "rsi_probability": 0.70,
+      "target_mix": {"uniform": 0.50, "hard": 0.35, "native": 0.15},
+      "rsi_stage_weights": {
+        "approach": 0.20,
+        "grasp": 0.35,
+        "lift": 0.25,
+        "transport": 0.20
+      },
+      "reference_rank_max": 2,
+      "reference_base_episode_probability": 0.35,
+      "reference_action_noise_std": 0.01,
+      "domain_randomization": {
+        "target_mass_scale": [0.95, 1.05],
+        "friction_scale": [0.90, 1.10],
+        "manipulation_action_noise_std": 0.003,
+        "action_delay_max_steps": 0
+      }
+    },
+    {
+      "name": "rsi50_full50",
+      "start_update": 1065,
+      "rsi_probability": 0.50,
+      "target_mix": {"uniform": 0.50, "hard": 0.35, "native": 0.15},
+      "rsi_stage_weights": {
+        "approach": 0.20,
+        "grasp": 0.35,
+        "lift": 0.25,
+        "transport": 0.20
+      },
+      "reference_rank_max": 4,
+      "reference_base_episode_probability": 0.15,
+      "reference_action_noise_std": 0.02,
+      "domain_randomization": {
+        "target_mass_scale": [0.90, 1.10],
+        "friction_scale": [0.85, 1.15],
+        "manipulation_action_noise_std": 0.006,
+        "action_delay_max_steps": 1
+      }
+    },
+    {
+      "name": "rsi25_full75",
+      "start_update": 2395,
+      "rsi_probability": 0.25,
+      "target_mix": {"uniform": 0.50, "hard": 0.35, "native": 0.15},
+      "rsi_stage_weights": {
+        "approach": 0.20,
+        "grasp": 0.35,
+        "lift": 0.25,
+        "transport": 0.20
+      },
+      "reference_rank_max": 4,
+      "reference_base_episode_probability": 0.0,
+      "reference_action_noise_std": 0.025,
+      "domain_randomization": {
+        "target_mass_scale": [0.85, 1.15],
+        "friction_scale": [0.80, 1.20],
+        "manipulation_action_noise_std": 0.01,
+        "action_delay_max_steps": 1
+      }
+    }
+  ]
+}
