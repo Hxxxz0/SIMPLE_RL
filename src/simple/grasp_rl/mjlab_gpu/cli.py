@@ -339,7 +339,11 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         "max_lift": max(completed_max_lift),
         "mean_max_grasp_quality": sum(completed_max_grasp_quality) / episodes,
         "domain_randomization": bool(args.stress_domain_randomization),
-        "reference_noise": bool(args.stress_domain_randomization),
+        "reference_noise": bool(
+            args.stress_domain_randomization
+            and config.domain_randomization.reference_noise.enabled
+        ),
+        "dr_profile": args.dr_profile,
         "device": config.device,
         "success_world_ids": (
             (outcomes == 1).nonzero(as_tuple=False).flatten().cpu().tolist()

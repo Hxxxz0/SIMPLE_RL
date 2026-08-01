@@ -56,6 +56,15 @@ class ReferenceNoiseConfig:
         payload["resolved_sha256"] = _canonical_hash(payload)
         return payload
 
+    @property
+    def enabled(self) -> bool:
+        return bool(
+            self.action_std
+            or self.position_std
+            or self.phase_std
+            or self.future_dropout_probability
+        )
+
     def scaled(self, strength: float) -> "ReferenceNoiseConfig":
         value = min(max(float(strength), 0.0), 1.0)
         return ReferenceNoiseConfig(

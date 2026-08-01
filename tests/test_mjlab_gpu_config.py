@@ -125,3 +125,5 @@ def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
         phase_std=0.0,
         future_dropout_probability=0.0,
     )
+    assert full.reference_noise.enabled
+    assert not pose.reference_noise.enabled
