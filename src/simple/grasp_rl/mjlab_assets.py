@@ -32,6 +32,7 @@ from simple.grasp_rl.tracker import ActionTransform
 
 ASSET_BUNDLE_VERSION = 1
 AMO_CONTROLLER_STATE_VERSION = 1
+SONIC_CONTROLLER_STATE_VERSION = 1
 RENDER_BUNDLE_VERSION = 1
 
 
@@ -395,6 +396,203 @@ def _export_amo_controller(
     }
 
 
+def _export_onnx_mlp_weights(source: Path, destination: Path) -> dict:
+    """Store the reviewed Sonic ONNX initializers in a CUDA-loadable PT file."""
+
+    import onnx
+    import torch
+    from onnx import numpy_helper
+
+    graph = onnx.load(str(source)).graph
+    supported = {"Gemm", "Elu", "Constant", "Slice", "ReduceL2", "Clip",
+                 "Shape", "Expand", "Div", "Concat"}
+    operators = {node.op_type for node in graph.node}
+    if not operators.issubset(supported):
+        raise ValueError(f"Unsupported Sonic ONNX operators: {sorted(operators - supported)}")
+    weights = {
+        item.name: torch.from_numpy(numpy_helper.to_array(item).copy()).float()
+        for item in graph.initializer
+    }
+    expected = {
+        "estimator.0.weight", "estimator.0.bias", "estimator.2.weight",
+        "estimator.2.bias", "estimator.4.weight", "estimator.4.bias",
+        "actor.0.weight", "actor.0.bias", "actor.2.weight", "actor.2.bias",
+        "actor.4.weight", "actor.4.bias", "actor.6.weight", "actor.6.bias",
+    }
+    if weights.keys() != expected:
+        raise ValueError("Unexpected Sonic ONNX parameter schema")
+    torch.save(weights, destination)
+    return {
+        "bundle_path": str(destination),
+        "sha256": _sha256(destination),
+        "bytes": destination.stat().st_size,
+    }
+
+
+def _export_sonic_controller(env: GraspRlEnv, output: Path) -> dict:
+    """Freeze Sonic histories, MLP weights and name-derived target mappings."""
+
+    import decoupled_wbc
+
+    controller = env.controller
+    if controller is None or not hasattr(controller, "agent"):
+        raise ValueError("Sonic controller was not initialized during scene export")
+    agent = controller.agent
+    whole = agent._wbc_policy
+    lower_policy = whole.lower_body_policy
+    runtime = controller.get_runtime_state()
+    lower = runtime["lower"]
+    upper = runtime["upper"]
+    robot = env.task.robot
+    model = agent._dwbc_robot_model
+
+    upper_names = list(controller.upper_names)
+    wbc_left_names = [
+        name for name, index in model.joint_to_dof_index.items()
+        if index in model.get_joint_group_indices("left_hand")
+    ]
+    wbc_right_names = [
+        name for name, index in model.joint_to_dof_index.items()
+        if index in model.get_joint_group_indices("right_hand")
+    ]
+    actual_left_names = [robot.mjModel.joint(int(i)).name for i in robot.left_hand_index]
+    actual_right_names = [robot.mjModel.joint(int(i)).name for i in robot.right_hand_index]
+
+    output_slot_by_name = {
+        name: upper_names.index(name) for name in JOINT_NAMES[15:29]
+    }
+    for actual, wbc in zip(actual_left_names, wbc_left_names, strict=True):
+        output_slot_by_name[actual] = upper_names.index(wbc)
+    for actual, wbc in zip(actual_right_names, wbc_right_names, strict=True):
+        output_slot_by_name[actual] = upper_names.index(wbc)
+    upper_output_mapping = [output_slot_by_name[name] for name in JOINT_NAMES[15:]]
+
+    action_index_by_name = {
+        **dict(zip(JOINT_NAMES[15:22], range(14, 21), strict=True)),
+        **dict(zip(JOINT_NAMES[22:29], range(21, 28), strict=True)),
+        **dict(zip(JOINT_NAMES[29:36], (0, 1, 2, 5, 6, 3, 4), strict=True)),
+        **dict(zip(JOINT_NAMES[36:43], range(7, 14), strict=True)),
+        "waist_yaw_joint": 30,
+        "waist_roll_joint": 28,
+        "waist_pitch_joint": 29,
+    }
+    upper_action_indices = [action_index_by_name[name] for name in upper_names]
+
+    history = np.stack(list(lower["obs_history"])).astype(np.float32)
+    initial_upper = np.asarray(
+        upper["last_action"]["target_upper_body_pose"], dtype=np.float32
+    )
+    state = {
+        "observation_history": history,
+        "last_lower_action": np.asarray(lower["action"], dtype=np.float32),
+        "command": np.asarray(lower["cmd"], dtype=np.float32),
+        "base_height": np.asarray(lower["height_cmd"], dtype=np.float32).reshape(1),
+        "torso_rpy": np.asarray(
+            [lower["roll_cmd"], lower["pitch_cmd"], lower["yaw_cmd"]],
+            dtype=np.float32,
+        ),
+        "target_yaw": np.asarray([lower["target_yaw_cmd"]], dtype=np.float32),
+        "pending_upper": initial_upper,
+        "pending_navigation": np.asarray(
+            upper["last_action"]["navigate_cmd"], dtype=np.float32
+        ),
+        "pending_base_height": np.asarray(
+            upper["last_action"]["base_height_command"], dtype=np.float32
+        ).reshape(1),
+    }
+    expected_shapes = {
+        "observation_history": (6, 86), "last_lower_action": (15,),
+        "command": (3,), "base_height": (1,), "torso_rpy": (3,),
+        "target_yaw": (1,), "pending_upper": (31,),
+        "pending_navigation": (4,), "pending_base_height": (1,),
+    }
+    if {name: value.shape for name, value in state.items()} != expected_shapes:
+        raise ValueError("Unexpected Sonic warm controller state shapes")
+
+    saved_runtime = controller.get_runtime_state()
+    parity_action = np.asarray(env.previous_physical_action, dtype=np.float32)
+    try:
+        parity_command = controller.command(parity_action)
+        parity_target = np.empty(len(JOINT_NAMES), dtype=np.float32)
+        body_names = [robot.mjModel.joint(int(i)).name for i in robot.body_joint_index]
+        for name, value in zip(body_names, parity_command["target_q"], strict=True):
+            parity_target[JOINT_NAMES.index(name)] = value
+        for names, values in (
+            (actual_left_names, parity_command["left_hand_q"]),
+            (actual_right_names, parity_command["right_hand_q"]),
+        ):
+            for name, value in zip(names, values, strict=True):
+                parity_target[JOINT_NAMES.index(name)] = value
+    finally:
+        controller.set_runtime_state(saved_runtime)
+    state["parity_physical_action"] = parity_action
+    state["parity_pd_target"] = parity_target
+
+    controller_dir = output / "controller"
+    controller_dir.mkdir(parents=True, exist_ok=True)
+    state_path = controller_dir / "state.npz"
+    np.savez(state_path, **state)
+    policy_root = (
+        Path(decoupled_wbc.__file__).resolve().parent
+        / "sim2mujoco/resources/robots/g1/policy"
+    )
+    artifacts = []
+    for role, filename in (
+        ("balance", "GR00T-WholeBodyControl-Balance.onnx"),
+        ("walk", "GR00T-WholeBodyControl-Walk.onnx"),
+    ):
+        destination = controller_dir / f"{role}_weights.pt"
+        record = _export_onnx_mlp_weights(policy_root / filename, destination)
+        record["bundle_path"] = str(destination.relative_to(output))
+        record["role"] = role
+        artifacts.append(record)
+
+    actual_joint_names = [
+        robot.mjModel.actuator(index).name for index in range(robot.mjModel.nu)
+    ]
+    torque_limit = {
+        name: float(robot.torque_limit[index])
+        for index, name in enumerate(actual_joint_names)
+    }
+    body_names = [robot.mjModel.joint(int(i)).name for i in robot.body_joint_index]
+    body_kp = dict(zip(body_names, robot.sonic_config["MOTOR_KP"], strict=True))
+    body_kd = dict(zip(body_names, robot.sonic_config["MOTOR_KD"], strict=True))
+    hand_kp_values = (5.0, 5.0, 5.0, 2.5, 2.5, 2.5, 2.5)
+    hand_kp = {
+        name: value
+        for names in (actual_left_names, actual_right_names)
+        for name, value in zip(names, hand_kp_values, strict=True)
+    }
+    config = lower_policy.config
+    return {
+        "format_version": SONIC_CONTROLLER_STATE_VERSION,
+        "state_file": str(state_path.relative_to(output)),
+        "state_sha256": _sha256(state_path),
+        "artifacts": artifacts,
+        "upper_names": upper_names,
+        "upper_action_indices": upper_action_indices,
+        "upper_output_mapping": upper_output_mapping,
+        "joint_parameters": {
+            "names": list(JOINT_NAMES),
+            "stiffness": [
+                body_kp[name] if name in body_kp else hand_kp[name]
+                for name in JOINT_NAMES
+            ],
+            "damping": [body_kd.get(name, 1.0) for name in JOINT_NAMES],
+            "torque_limits": [torque_limit[name] for name in JOINT_NAMES],
+        },
+        "policy": {
+            "default_angles": np.asarray(config["default_angles"]).tolist(),
+            "action_scale": float(config["action_scale"]),
+            "cmd_scale": np.asarray(config["cmd_scale"]).tolist(),
+            "dof_pos_scale": float(config["dof_pos_scale"]),
+            "dof_vel_scale": float(config["dof_vel_scale"]),
+            "ang_vel_scale": float(config["ang_vel_scale"]),
+        },
+        "control_decimation": int(env.control_decimation),
+    }
+
+
 def _role_names(env: GraspRlEnv) -> dict[str, str | None]:
     assert env.state is not None
     if isinstance(env.task_spec, TaskSpecV2):
@@ -432,6 +630,17 @@ def _default_action_transform(task_spec, repo_root: Path) -> Path:
     return fallback
 
 
+def _episode_state(task_spec, repo_root: Path, episode: int | None) -> dict | None:
+    if episode is None:
+        return None
+    metadata = task_spec.dataset_path(repo_root / "data/simple") / "meta/episodes.jsonl"
+    for line in metadata.read_text().splitlines():
+        row = json.loads(line)
+        if int(row["episode_index"]) == episode:
+            return json.loads(row["environment_config"])
+    raise ValueError(f"Episode {episode} is not present in {metadata}")
+
+
 def export_mjlab_scene(
     task: str,
     output_dir: str | Path,
@@ -439,6 +648,7 @@ def export_mjlab_scene(
     seed: int = 42,
     target_object: str | None = None,
     warmup_steps: int = 60,
+    base_episode: int | None = None,
 ) -> dict:
     """Export one stabilized task/asset variant for GPU training."""
 
@@ -460,7 +670,10 @@ def export_mjlab_scene(
         enable_renderers=False,
     )
     try:
-        env.reset(target_object=target_object)
+        env.reset(
+            state_dict=_episode_state(task_spec, repo_root, base_episode),
+            target_object=target_object,
+        )
         assert env.state is not None
         model = env.sim.mjModel
         data = env.sim.mjData
@@ -478,9 +691,19 @@ def export_mjlab_scene(
         scene_path.write_text(scene_xml)
         exported_model = mujoco.MjModel.from_xml_path(str(scene_path))
         robot_xml = _robot_xml_path(task_spec, repo_root)
-        actor_observation, _ = env.state.actor_observation()
-        initial_object_pos = np.asarray(env.state.initial_object_pos).tolist()
-        goal_pos = np.asarray(env.state.goal_pos).tolist()
+        actor_observation, task_state = env.state.actor_observation()
+        if isinstance(task_spec, TaskSpecV2):
+            initial_object_pos = np.asarray(
+                task_state.initial_primary_pos
+            ).tolist()
+            goal_pos = np.asarray(
+                task_state.destination.pos_w
+                if task_state.destination.present
+                else task_state.initial_primary_pos
+            ).tolist()
+        else:
+            initial_object_pos = np.asarray(env.state.initial_object_pos).tolist()
+            goal_pos = np.asarray(env.state.goal_pos).tolist()
         reset_arrays = {
             "qpos": np.asarray(data.qpos),
             "qvel": np.asarray(data.qvel),
@@ -508,7 +731,7 @@ def export_mjlab_scene(
         controller_bundle = (
             _export_amo_controller(env, output, repo_root)
             if controller == "amo"
-            else None
+            else _export_sonic_controller(env, output)
         )
         manifest = {
             "format_version": ASSET_BUNDLE_VERSION,
@@ -518,6 +741,7 @@ def export_mjlab_scene(
             "controller": controller,
             "controller_bundle": controller_bundle,
             "seed": int(seed),
+            "base_episode": base_episode,
             "target_object": target_object or task_spec.target_object,
             "warmup_steps": int(warmup_steps),
             "scene_file": "scene.xml",
@@ -641,7 +865,12 @@ def export_mjlab_render_scene(path: str | Path) -> dict:
             str(output / manifest["scene_file"])
         )
         _pin_render_distractors(env, physics_model)
-        env.reset(target_object=manifest["target_object"])
+        env.reset(
+            state_dict=_episode_state(
+                task_spec, repo_root, manifest.get("base_episode")
+            ),
+            target_object=manifest["target_object"],
+        )
         render_xml, assets = _portable_scene_xml(
             env.sim.mjSpec.to_xml(),
             output,

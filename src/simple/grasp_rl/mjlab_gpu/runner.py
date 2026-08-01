@@ -15,14 +15,17 @@ from simple.grasp_rl.task_spec import validate_task_metadata
 
 
 def ppo_train_config(
-    *, smoke: bool = False, plan_conditioned_actor: bool = False
+    *,
+    smoke: bool = False,
+    plan_conditioned_actor: bool = False,
+    exploration_std: float | None = None,
 ) -> dict:
     """Return the reviewed PPO hyperparameters for the 593-D reference actor."""
 
     return {
         "seed": 42,
         "num_steps_per_env": 4 if smoke else 24,
-        "save_interval": 100 if smoke else 25,
+        "save_interval": 1 if smoke else 5,
         "logger": "tensorboard",
         "experiment_name": "tabletop_grasp_mjlab_gpu",
         "run_name": "",
@@ -39,7 +42,11 @@ def ppo_train_config(
             "obs_normalization": True,
             "distribution_cfg": {
                 "class_name": "GaussianDistribution",
-                "init_std": 0.05 if smoke else 0.01,
+                "init_std": (
+                    exploration_std
+                    if exploration_std is not None
+                    else (0.05 if smoke else 0.02)
+                ),
                 "std_type": "scalar",
                 "learn_std": False,
             },
@@ -153,9 +160,16 @@ class GpuPpoRunner(OnPolicyRunner):
                 action_transform=bundle.root / bundle.manifest["action_transform"],
             )
         state = payload["actor_state_dict"]
+        expected_observation_dim = (
+            self.env.reference.observation_dim + self.env.reference.context_dim
+        )
         first_weight = state.get("mlp.0.weight")
-        if first_weight is None or first_weight.shape[1] != 593:
-            raise ValueError("Actor warm start is not a 593-D reference policy")
+        if first_weight is None or first_weight.shape[1] != expected_observation_dim:
+            raise ValueError(
+                "Actor warm start observation dimension does not match the task: "
+                f"{None if first_weight is None else first_weight.shape[1]} != "
+                f"{expected_observation_dim}"
+            )
         # A BC checkpoint contains the old policy's sampling distribution too.
         # Warm-start the network and observation normalizer, but keep the PPO
         # run's reviewed exploration settings (notably init_std) authoritative.

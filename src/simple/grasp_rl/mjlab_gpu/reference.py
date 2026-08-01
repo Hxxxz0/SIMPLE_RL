@@ -14,14 +14,29 @@ from simple.grasp_rl.mjlab_gpu.reference_noise import apply_reference_noise
 from simple.grasp_rl.schema import (
     ACTION_DIM,
     ACTOR_OBS_DIM,
+    ACTOR_OBS_V2_DIM,
     REFERENCE_CONTEXT_DIM,
+    REFERENCE_CONTEXT_V2_DIM,
     REFERENCE_FRAME_DIM,
+    REFERENCE_FRAME_V2_DIM,
     REFERENCE_FUTURE_OFFSETS,
 )
 
 OBJECT_POS_BODY = slice(132, 135)
 DESCRIPTOR_INDICES = tuple(range(132, 141)) + tuple(range(147, 165))
 CONTACT_FORCE = slice(165, 189)
+V2_HANDS = slice(132, 162)
+V2_ENTITIES = slice(162, 219)
+V2_PRIMARY_POS = slice(163, 166)
+V2_AUXILIARY_POS = slice(201, 204)
+V2_PREDICATES = slice(300, 308)
+V2_ARTICULATION = slice(308, 316)
+V2_STAGE = slice(322, 330)
+V2_DESCRIPTOR_INDICES = (
+    tuple(range(V2_HANDS.start, V2_HANDS.stop))
+    + tuple(range(V2_ENTITIES.start, V2_ENTITIES.stop))
+    + tuple(range(V2_ARTICULATION.start, V2_ARTICULATION.stop))
+)
 
 
 def _file_digest(paths: list[Path]) -> str:
@@ -35,7 +50,7 @@ def _file_digest(paths: list[Path]) -> str:
 
 
 class GpuReferenceLibrary:
-    """Pack a legacy replay split once, then perform all tracking on CUDA."""
+    """Pack a v1/v2 replay split once, then perform all tracking on CUDA."""
 
     def __init__(
         self,
@@ -62,24 +77,36 @@ class GpuReferenceLibrary:
         ]
         observations = []
         actions = []
+        observation_dim: int | None = None
         for episode, path in zip(episode_ids, episode_paths, strict=True):
             with np.load(path, allow_pickle=False) as saved:
                 episode_observations = saved["observations"].astype(np.float32)
                 episode_actions = saved["raw_actions"].astype(np.float32)
-            if (
-                episode_observations.ndim != 2
-                or episode_observations.shape[1] != ACTOR_OBS_DIM
+            if episode_observations.ndim != 2 or episode_observations.shape[1] not in (
+                ACTOR_OBS_DIM,
+                ACTOR_OBS_V2_DIM,
             ):
                 raise ValueError(f"Episode {episode} has invalid observations")
+            if observation_dim is None:
+                observation_dim = int(episode_observations.shape[1])
+            elif episode_observations.shape[1] != observation_dim:
+                raise ValueError("Reference episodes mix incompatible observation schemas")
             if episode_actions.shape != (len(episode_observations), ACTION_DIM):
                 raise ValueError(f"Episode {episode} has invalid actions")
             observations.append(episode_observations)
             actions.append(episode_actions)
 
+        assert observation_dim is not None
+        self.observation_dim = observation_dim
+        self.context_dim = (
+            REFERENCE_CONTEXT_V2_DIM
+            if observation_dim == ACTOR_OBS_V2_DIM
+            else REFERENCE_CONTEXT_DIM
+        )
         lengths = np.asarray([len(item) for item in actions], dtype=np.int64)
         max_length = int(lengths.max())
         packed_observations = np.zeros(
-            (len(episode_ids), max_length, ACTOR_OBS_DIM), dtype=np.float32
+            (len(episode_ids), max_length, observation_dim), dtype=np.float32
         )
         packed_actions = np.zeros(
             (len(episode_ids), max_length, ACTION_DIM), dtype=np.float32
@@ -93,7 +120,12 @@ class GpuReferenceLibrary:
             packed_observations[row, length:] = episode_observations[-1]
             packed_actions[row, length:] = episode_actions[-1]
 
-        descriptor_indices = np.asarray(DESCRIPTOR_INDICES, dtype=np.int64)
+        descriptor_indices = np.asarray(
+            V2_DESCRIPTOR_INDICES
+            if observation_dim == ACTOR_OBS_V2_DIM
+            else DESCRIPTOR_INDICES,
+            dtype=np.int64,
+        )
         descriptors = packed_observations[:, 0, descriptor_indices]
         descriptor_mean = descriptors.mean(axis=0)
         descriptor_std = descriptors.std(axis=0).clip(1e-3)
@@ -125,8 +157,14 @@ class GpuReferenceLibrary:
             "source": self.source,
             "episodes": self.episode_ids.tolist(),
             "data_sha256": self.data_sha256,
-            "observation_dim": ACTOR_OBS_DIM,
+            "observation_dim": self.observation_dim,
         }
+
+    def rows_for_episode(self, episode: int, count: int) -> torch.Tensor:
+        matches = (self.episode_ids == int(episode)).nonzero(as_tuple=False).flatten()
+        if len(matches) != 1:
+            raise ValueError(f"Reference episode {episode} is unavailable or duplicated")
+        return matches[0].expand(count)
 
     def reset(
         self,
@@ -142,7 +180,7 @@ class GpuReferenceLibrary:
             if env_ids is None
             else env_ids
         )
-        if observation.shape != (len(ids), ACTOR_OBS_DIM):
+        if observation.shape != (len(ids), self.observation_dim):
             raise ValueError("Reference reset observation has the wrong shape")
         if episode_rows is None:
             query = (
@@ -170,15 +208,23 @@ class GpuReferenceLibrary:
         starts = torch.minimum(starts.clamp_min(0), self.lengths[rows] - 1)
         self.episode_rows[ids] = rows
         self.indices[ids] = starts
-        initial_reference = self.observations[rows, starts, OBJECT_POS_BODY]
+        position_slice = (
+            V2_PRIMARY_POS
+            if self.observation_dim == ACTOR_OBS_V2_DIM
+            else OBJECT_POS_BODY
+        )
+        initial_reference = self.observations[rows, starts, position_slice]
         self.reference_object_offset[ids] = (
-            observation[:, OBJECT_POS_BODY] - initial_reference
+            observation[:, position_slice] - initial_reference
         )
         self._generation += 1
         self._cached_policy_context = None
 
-    @staticmethod
-    def _contact_label(observation: torch.Tensor) -> torch.Tensor:
+    def _contact_label(self, observation: torch.Tensor) -> torch.Tensor:
+        if self.observation_dim == ACTOR_OBS_V2_DIM:
+            return (observation[..., V2_PREDICATES.start + 1] > 0.5).to(
+                torch.float32
+            )
         forces = observation[..., CONTACT_FORCE].reshape(*observation.shape[:-1], 8, 3)
         magnitude = forces.norm(dim=-1)
         thumb = magnitude[..., 1:4].amax(dim=-1) > 2.0
@@ -186,13 +232,17 @@ class GpuReferenceLibrary:
         return (thumb & support).to(torch.float32)
 
     def clean_context(self, observation: torch.Tensor) -> torch.Tensor:
-        if observation.shape != (self.num_envs, ACTOR_OBS_DIM):
+        if observation.shape != (self.num_envs, self.observation_dim):
             raise ValueError("Reference context observation has the wrong shape")
         rows = self.episode_rows
         future = self.indices[:, None] + self.future_offsets
         future = torch.minimum(future, self.lengths[rows, None] - 1)
         reference_observations = self.observations[rows[:, None], future]
         reference_actions = self.actions[rows[:, None], future]
+        if self.observation_dim == ACTOR_OBS_V2_DIM:
+            return self._clean_context_v2(
+                observation, rows, future, reference_observations, reference_actions
+            )
         reference_object = (
             reference_observations[..., OBJECT_POS_BODY]
             + self.reference_object_offset[:, None]
@@ -210,6 +260,68 @@ class GpuReferenceLibrary:
         context = torch.cat((frames.flatten(1), phase[:, None]), dim=-1)
         if context.shape != (self.num_envs, REFERENCE_CONTEXT_DIM):
             raise RuntimeError("Reference context layout mismatch")
+        return context
+
+    def _clean_context_v2(
+        self,
+        observation: torch.Tensor,
+        rows: torch.Tensor,
+        future: torch.Tensor,
+        reference_observations: torch.Tensor,
+        reference_actions: torch.Tensor,
+    ) -> torch.Tensor:
+        del future
+        frame_offsets = self.future_offsets[None].expand(self.num_envs, -1)
+        remaining = self.lengths[rows, None] - 1 - self.indices[:, None]
+        dt = torch.minimum(frame_offsets, remaining.clamp_min(0)).float() / 50.0
+        root_velocity = reference_observations[..., 89:95]
+        root_delta = torch.stack(
+            (root_velocity[..., 0] * dt, root_velocity[..., 1] * dt,
+             root_velocity[..., 5] * dt),
+            dim=-1,
+        )
+        primary = (
+            reference_observations[..., V2_PRIMARY_POS]
+            + self.reference_object_offset[:, None]
+        )
+        primary_delta = primary - observation[:, None, V2_PRIMARY_POS]
+        auxiliary_delta = (
+            reference_observations[..., V2_AUXILIARY_POS]
+            - observation[:, None, V2_AUXILIARY_POS]
+        )
+        interactions = reference_observations[..., V2_PREDICATES.start:V2_PREDICATES.start + 4]
+        articulation = reference_observations[..., V2_ARTICULATION]
+        present = articulation[..., (0, 4)] > 0.5
+        target_delta = articulation[..., (3, 7)].abs()
+        minimum = torch.where(
+            present,
+            target_delta,
+            torch.ones_like(target_delta),
+        ).amin(dim=-1)
+        articulation_progress = (1.0 - minimum.clamp(max=1.0))[..., None]
+        stage = reference_observations[..., V2_STAGE].argmax(dim=-1).float()[..., None] / 7.0
+        frames = torch.cat(
+            (
+                reference_actions,
+                root_delta,
+                primary_delta,
+                auxiliary_delta,
+                interactions,
+                articulation_progress,
+                stage,
+            ),
+            dim=-1,
+        )
+        if frames.shape != (
+            self.num_envs,
+            len(REFERENCE_FUTURE_OFFSETS),
+            REFERENCE_FRAME_V2_DIM,
+        ):
+            raise RuntimeError("V2 reference frame layout mismatch")
+        phase = self.indices.float() / (self.lengths[rows] - 1).clamp_min(1)
+        context = torch.cat((frames.flatten(1), phase[:, None]), dim=-1)
+        if context.shape != (self.num_envs, REFERENCE_CONTEXT_V2_DIM):
+            raise RuntimeError("V2 reference context layout mismatch")
         return context
 
     def policy_context(

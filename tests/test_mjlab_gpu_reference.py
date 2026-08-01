@@ -9,6 +9,7 @@ from simple.grasp_rl.reference import build_reference_context
 from simple.grasp_rl.schema import (
     ACTION_DIM,
     ACTOR_OBS_DIM,
+    ACTOR_OBS_V2_DIM,
     REFERENCE_FRAME_DIM,
     REFERENCE_FUTURE_OFFSETS,
 )
@@ -49,6 +50,41 @@ def test_gpu_clean_reference_context_matches_legacy_builder(tmp_path) -> None:
     clean = library.clean_context(current)
     expected = build_reference_context(observations, actions, 0, observations[0])
     torch.testing.assert_close(clean[0], torch.from_numpy(expected))
+
+
+def test_gpu_clean_reference_context_matches_v2_builder(tmp_path) -> None:
+    root = tmp_path / "processed_v2"
+    source = root / "bc"
+    source.mkdir(parents=True)
+    length = 60
+    observations = np.zeros((length, ACTOR_OBS_V2_DIM), dtype=np.float32)
+    actions = np.linspace(-0.25, 0.25, length * ACTION_DIM, dtype=np.float32).reshape(
+        length, ACTION_DIM
+    )
+    observations[:, 89] = 0.1
+    observations[:, 94] = 0.2
+    observations[:, 163] = np.linspace(0.0, 0.3, length)
+    observations[:, 201] = 0.4
+    observations[:, 301] = 1.0
+    observations[:, 308] = 1.0
+    observations[:, 311] = np.linspace(1.0, 0.0, length)
+    observations[:, 322] = 1.0
+    (root / "manifest.json").write_text(
+        json.dumps({"splits": {"train": [0], "val": [], "test": []}})
+    )
+    np.savez(
+        source / "episode_000000.npz",
+        observations=observations,
+        raw_actions=actions,
+    )
+    library = GpuReferenceLibrary(root, num_envs=1, device="cpu")
+    current = torch.from_numpy(observations[:1]).clone()
+    library.reset(current, episode_rows=torch.tensor([0]))
+    expected = build_reference_context(observations, actions, 0, current[0].numpy())
+    torch.testing.assert_close(
+        library.clean_context(current)[0], torch.from_numpy(expected)
+    )
+    assert library.metadata()["observation_dim"] == ACTOR_OBS_V2_DIM
 
 
 def test_reference_noise_changes_policy_view_but_not_clean_contact_truth(

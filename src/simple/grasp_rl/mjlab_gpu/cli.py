@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,9 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--dr-initial-strength", type=float)
+    parser.add_argument("--dr-warmup-steps", type=int)
+    parser.add_argument("--dr-ramp-steps", type=int)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -55,10 +59,20 @@ def _parser() -> argparse.ArgumentParser:
         choices=("adaptive", "fixed"),
         help="Override the PPO learning-rate schedule",
     )
+    train.add_argument(
+        "--exploration-std",
+        type=float,
+        help="Override the fixed Gaussian PPO action standard deviation",
+    )
 
     evaluate = commands.add_parser("evaluate")
     _common(evaluate)
-    evaluate.add_argument("--checkpoint", type=Path, required=True)
+    evaluate.add_argument("--checkpoint", type=Path)
+    evaluate.add_argument(
+        "--reference-only",
+        action="store_true",
+        help="Execute the replay reference directly without constructing a PPO actor",
+    )
     evaluate.add_argument("--episodes", type=int, default=200)
     evaluate.add_argument(
         "--stress-domain-randomization",
@@ -89,7 +103,7 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         raise RuntimeError(
             "Set CUDA_VISIBLE_DEVICES=<physical GPU>; the process uses logical cuda:0"
         )
-    return MjlabPpoConfig(
+    config = MjlabPpoConfig(
         task=args.task,
         asset_bundle=str(args.asset_bundle.resolve()),
         num_envs=args.num_envs,
@@ -99,6 +113,23 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         reference_processed=str(args.reference_processed.resolve()),
         reference_source=args.reference_source,
     )
+    dr_overrides = {
+        name: value
+        for name, value in (
+            ("curriculum_initial_strength", args.dr_initial_strength),
+            ("curriculum_warmup_steps", args.dr_warmup_steps),
+            ("curriculum_ramp_steps", args.dr_ramp_steps),
+        )
+        if value is not None
+    }
+    if dr_overrides:
+        config = replace(
+            config,
+            domain_randomization=replace(
+                config.domain_randomization, **dr_overrides
+            ),
+        )
+    return config
 
 
 def _train(args: argparse.Namespace) -> dict[str, object]:
@@ -108,6 +139,8 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("initial-vector-step must be non-negative")
     if args.learning_rate is not None and args.learning_rate <= 0.0:
         raise ValueError("learning-rate must be positive")
+    if args.exploration_std is not None and args.exploration_std <= 0.0:
+        raise ValueError("exploration-std must be positive")
     if args.resume is not None and args.warm_start is not None:
         raise ValueError("resume and warm-start are mutually exclusive")
     if args.resume is not None and args.initial_vector_step:
@@ -129,6 +162,7 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
     train_config = ppo_train_config(
         smoke=config.smoke_mode,
         plan_conditioned_actor=plan_conditioned_actor,
+        exploration_std=args.exploration_std,
     )
     train_config["seed"] = config.seed
     if args.learning_rate is not None:
@@ -181,7 +215,14 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
 def _evaluate(args: argparse.Namespace) -> dict[str, object]:
     if args.episodes < 1:
         raise ValueError("episodes must be positive")
+    if not args.reference_only and args.checkpoint is None:
+        raise ValueError("policy evaluation requires --checkpoint")
     config = _config(args)
+    if args.episodes > config.num_envs:
+        raise ValueError(
+            "paired evaluation requires episodes <= num-envs so each result "
+            "comes from one unique initial world"
+        )
     env = GpuGraspVecEnv(
         config,
         training=False,
@@ -193,13 +234,18 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
             curriculum.curriculum_warmup_steps + curriculum.curriculum_ramp_steps
         )
         env._reset(torch.arange(env.num_envs, device=env.device))
-    train_config = ppo_train_config(
-        smoke=True,
-        plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(args.checkpoint),
-    )
-    runner = GpuPpoRunner(env, train_config, log_dir=None)
-    runner.load_actor_warm_start(args.checkpoint.resolve())
-    actor = runner.alg.get_policy().eval()
+    actor = None
+    if not args.reference_only:
+        assert args.checkpoint is not None
+        train_config = ppo_train_config(
+            smoke=True,
+            plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(
+                args.checkpoint
+            ),
+        )
+        runner = GpuPpoRunner(env, train_config, log_dir=None)
+        runner.load_actor_warm_start(args.checkpoint.resolve())
+        actor = runner.alg.get_policy().eval()
     observations = env.get_observations()
     successes = 0
     failures = 0
@@ -215,8 +261,19 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
     episode_had_grasp = torch.zeros_like(episode_native_success)
     completed_max_lift: list[float] = []
     completed_max_grasp_quality: list[float] = []
+    completed_world = torch.zeros(
+        env.num_envs, dtype=torch.bool, device=env.device
+    )
+    evaluation_world = torch.arange(env.num_envs, device=env.device) < args.episodes
+    outcomes = torch.full(
+        (env.num_envs,), -1, dtype=torch.int8, device=env.device
+    )
     while episodes < args.episodes:
-        actions = actor(observations, stochastic_output=False)
+        actions = (
+            env.reference.current_action().clone()
+            if actor is None
+            else actor(observations, stochastic_output=False)
+        )
         observations, _, dones, _ = env.step(actions)
         assert env.last_terms is not None
         terms = env.last_terms
@@ -226,10 +283,11 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         )
         episode_native_success.logical_or_(terms.native_success)
         episode_had_grasp.logical_or_(terms.is_grasp)
-        finished = dones.nonzero(as_tuple=False).flatten()
+        finished = (
+            dones & evaluation_world & ~completed_world
+        ).nonzero(as_tuple=False).flatten()
         if len(finished):
-            remaining = args.episodes - episodes
-            selected = finished[:remaining]
+            selected = finished
             successes += int(terms.success[selected].sum().item())
             failures += int(terms.failure[selected].sum().item())
             timeouts += int(terms.timeout[selected].sum().item())
@@ -242,12 +300,21 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
                 episode_max_grasp_quality[selected].detach().cpu().tolist()
             )
             episodes += len(selected)
+            completed_world[selected] = True
+            outcomes[selected] = torch.where(
+                terms.success[selected],
+                torch.ones_like(outcomes[selected]),
+                torch.zeros_like(outcomes[selected]),
+            )
             episode_max_lift[finished] = -torch.inf
             episode_max_grasp_quality[finished] = 0.0
             episode_native_success[finished] = False
             episode_had_grasp[finished] = False
     return {
-        "checkpoint": str(args.checkpoint.resolve()),
+        "mode": "reference_only" if args.reference_only else "ppo",
+        "checkpoint": (
+            None if args.checkpoint is None else str(args.checkpoint.resolve())
+        ),
         "episodes": episodes,
         "successes": successes,
         "success_rate": successes / episodes,
@@ -263,6 +330,12 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         "domain_randomization": bool(args.stress_domain_randomization),
         "reference_noise": bool(args.stress_domain_randomization),
         "device": config.device,
+        "success_world_ids": (
+            (outcomes == 1).nonzero(as_tuple=False).flatten().cpu().tolist()
+        ),
+        "failed_world_ids": (
+            (outcomes == 0).nonzero(as_tuple=False).flatten().cpu().tolist()
+        ),
     }
 
 

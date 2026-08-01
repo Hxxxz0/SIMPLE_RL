@@ -71,6 +71,11 @@ def _parser() -> argparse.ArgumentParser:
     export_mjlab.add_argument("--seed", type=int, default=42)
     export_mjlab.add_argument("--target-object")
     export_mjlab.add_argument("--warmup-steps", type=int, default=60)
+    export_mjlab.add_argument(
+        "--base-episode",
+        type=int,
+        help="Freeze the exact recorded scene used by this reference episode",
+    )
 
     validate_mjlab = commands.add_parser("validate-mjlab-assets")
     validate_mjlab.set_defaults(task=DEFAULT_TASK)
@@ -559,6 +564,7 @@ def main() -> None:
             seed=args.seed,
             target_object=args.target_object,
             warmup_steps=args.warmup_steps,
+            base_episode=args.base_episode,
         )
     elif args.command == "validate-mjlab-assets":
         result = validate_asset_bundle(args.bundle)

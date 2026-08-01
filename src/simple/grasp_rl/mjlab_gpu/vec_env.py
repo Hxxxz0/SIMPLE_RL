@@ -10,11 +10,14 @@ from simple.grasp_rl.mjlab_gpu.action import GpuActionTransform
 from simple.grasp_rl.mjlab_gpu.amo import BatchedAmoController
 from simple.grasp_rl.mjlab_gpu.config import MjlabPpoConfig
 from simple.grasp_rl.mjlab_gpu.domain_randomization import GpuDomainRandomizer
+from simple.grasp_rl.mjlab_gpu.goal_reward import GpuGoalGraphReward
 from simple.grasp_rl.mjlab_gpu.reference import GpuReferenceLibrary
 from simple.grasp_rl.mjlab_gpu.reward import GpuGraspReward
 from simple.grasp_rl.mjlab_gpu.simulation import build_gpu_simulation
+from simple.grasp_rl.mjlab_gpu.sonic import BatchedSonicController
 from simple.grasp_rl.mjlab_gpu.state import GpuLegacyState
-from simple.grasp_rl.schema import ACTION_DIM
+from simple.grasp_rl.mjlab_gpu.state_v2 import GpuTaskStateExtractorV2
+from simple.grasp_rl.schema import ACTION_DIM, ACTOR_OBS_V2_DIM
 
 
 class GpuGraspVecEnv(VecEnv):
@@ -43,9 +46,19 @@ class GpuGraspVecEnv(VecEnv):
         self.num_envs = config.num_envs
         self.num_actions = ACTION_DIM
         self.gpu = build_gpu_simulation(config)
-        self.controller = BatchedAmoController(self.gpu)
-        self.state_reader = GpuLegacyState(self.gpu)
-        self.reward = GpuGraspReward.from_frozen_bundle(self.state_reader)
+        controller = self.gpu.bundle.manifest["controller"]
+        if controller == "amo":
+            self.controller = BatchedAmoController(self.gpu)
+        elif controller == "sonic_wbc":
+            self.controller = BatchedSonicController(self.gpu)
+        else:
+            raise ValueError(f"Unsupported GPU controller {controller!r}")
+        if self.gpu.bundle.manifest["task_metadata"]["task_schema_version"] == 2:
+            self.state_reader = GpuTaskStateExtractorV2(self.gpu)
+            self.reward = GpuGoalGraphReward.from_frozen_bundle(self.state_reader)
+        else:
+            self.state_reader = GpuLegacyState(self.gpu)
+            self.reward = GpuGraspReward.from_frozen_bundle(self.state_reader)
         self.action_transform = GpuActionTransform.from_frozen_bundle(self.gpu)
         self.randomizer = GpuDomainRandomizer(
             self.gpu,
@@ -61,7 +74,7 @@ class GpuGraspVecEnv(VecEnv):
             num_envs=self.num_envs,
             device=self.device,
             source=config.reference_source,
-            splits=("train",) if training else ("val", "test"),
+            splits=("train", "val", "test"),
         )
         self.max_episode_length = self.reward.max_episode_steps
         self.episode_length_buf = torch.zeros(
@@ -93,27 +106,53 @@ class GpuGraspVecEnv(VecEnv):
         self.randomizer.reset(
             env_ids,
             training=self.randomization_enabled,
-            strength=self.config.domain_randomization.strength(
-                self.common_step_counter
-            ),
+            strength=self._domain_randomization_strength(),
         )
         self.state_reader.sync_episode_origin(env_ids)
         self.state_reader.previous_action[env_ids] = (
             self.action_transform.previous_action[env_ids]
         )
         base_observation, _ = self.state_reader.actor_observation()
-        self.reference.reset(base_observation[env_ids], env_ids)
+        base_episode = self.gpu.bundle.manifest.get("base_episode")
+        episode_rows = (
+            None
+            if base_episode is None
+            else self.reference.rows_for_episode(base_episode, len(env_ids))
+        )
+        self.reference.reset(
+            base_observation[env_ids], env_ids, episode_rows=episode_rows
+        )
         self.episode_length_buf[env_ids] = 0
         self._episode_return[env_ids] = 0.0
         self._episode_success[env_ids] = 0.0
         self._last_base_observation = None
         self._last_clean_context = None
 
+    def _domain_randomization_strength(self) -> float:
+        curriculum = self.config.domain_randomization
+        if self.training:
+            return curriculum.training_strength(self.common_step_counter)
+        return curriculum.strength(self.common_step_counter)
+
+    def _bounded_reference_action(self, action: torch.Tensor) -> torch.Tensor:
+        """Execute only the correction dimensions owned by the v2 residual actor."""
+
+        reference = self.reference.current_action()
+        correction = action - reference
+        if self.reference.observation_dim == ACTOR_OBS_V2_DIM:
+            stage = self.reward.stage_index
+            mask = torch.zeros_like(correction)
+            hand_active = stage <= 2
+            arm_active = stage <= 3
+            mask[:, 7:14] = hand_active[:, None]
+            mask[:, 21:28] = arm_active[:, None]
+            correction = correction * mask
+        limit = self.config.max_reference_action_deviation
+        return reference + correction.clamp(-limit, limit)
+
     def get_observations(self) -> TensorDict:
         base_observation, _ = self.state_reader.actor_observation()
-        dr_strength = self.config.domain_randomization.strength(
-            self.common_step_counter
-        )
+        dr_strength = self._domain_randomization_strength()
         policy_context, clean_context = self.reference.policy_context(
             base_observation,
             self.config.domain_randomization.reference_noise.scaled(dr_strength),
@@ -149,8 +188,9 @@ class GpuGraspVecEnv(VecEnv):
     ) -> tuple[TensorDict, torch.Tensor, torch.Tensor, dict]:
         previous_action = self.action_transform.previous_action.clone()
         clean_reference_action = self.reference.current_action()
+        executed_action = self._bounded_reference_action(actions)
         physical_action = self.action_transform.decode(
-            actions, self.randomizer.action_delay_steps
+            executed_action, self.randomizer.action_delay_steps
         )
         # This is the clean replay label for the post-action state.  Policy
         # reference noise never enters reward or termination truth.
@@ -188,9 +228,7 @@ class GpuGraspVecEnv(VecEnv):
             (actions.clamp(-1.0, 1.0) - clean_reference_action).square().mean(dim=-1)
         )
         reference_reward = torch.exp(-25.0 * reference_action_mse)
-        dr_strength = self.config.domain_randomization.strength(
-            self.common_step_counter
-        )
+        dr_strength = self._domain_randomization_strength()
         reference_weight = self.config.reference_reward_weight * (
             1.0 - dr_strength * (1.0 - self.config.full_dr_reference_reward_scale)
         )
@@ -214,10 +252,15 @@ class GpuGraspVecEnv(VecEnv):
                 "/reward/terminal": terms.terminal_adjustment.mean(),
                 "/reward/reference": (reference_weight * reference_reward).mean(),
                 "/reference/action_mse": reference_action_mse.mean(),
+                "/reference/executed_action_mse": (
+                    (executed_action - clean_reference_action).square().mean()
+                ),
                 "/task/native_success": terms.native_success.float().mean(),
+                "/task/grasp": terms.is_grasp.float().mean(),
+                "/task/lift_height": terms.lift_height.mean(),
                 "/task/numerical_failure": numerical_failure.float().mean(),
                 "/domain_randomization/strength": torch.tensor(
-                    self.config.domain_randomization.strength(self.common_step_counter),
+                    self._domain_randomization_strength(),
                     device=self.device,
                 ),
             },

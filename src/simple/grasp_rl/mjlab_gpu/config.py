@@ -77,8 +77,9 @@ class DomainRandomizationConfig:
     joint_damping_scale: tuple[float, float] = (0.9, 1.1)
     actuator_strength_scale: tuple[float, float] = (0.9, 1.1)
     action_delay_max_steps: int = 1
-    curriculum_warmup_steps: int = 1_200
-    curriculum_ramp_steps: int = 3_600
+    curriculum_initial_strength: float = 0.10
+    curriculum_warmup_steps: int = 0
+    curriculum_ramp_steps: int = 2_400
     sync_reference_scene_transform: bool = True
     reference_noise: ReferenceNoiseConfig = field(default_factory=ReferenceNoiseConfig)
 
@@ -100,6 +101,8 @@ class DomainRandomizationConfig:
             raise ValueError("target_yaw_jitter must be non-negative")
         if self.action_delay_max_steps not in (0, 1):
             raise ValueError("action_delay_max_steps must be 0 or 1")
+        if not 0.0 <= self.curriculum_initial_strength <= 1.0:
+            raise ValueError("curriculum_initial_strength must be in [0, 1]")
         if self.curriculum_warmup_steps < 0 or self.curriculum_ramp_steps < 1:
             raise ValueError("DR curriculum steps must be non-negative/positive")
         if self.enabled and not self.sync_reference_scene_transform:
@@ -115,6 +118,13 @@ class DomainRandomizationConfig:
         )
         return min(max(progress, 0.0), 1.0)
 
+    def training_strength(self, vector_step: int) -> float:
+        """Keep reset worlds decorrelated before the main DR ramp starts."""
+
+        if not self.enabled:
+            return 0.0
+        return max(self.curriculum_initial_strength, self.strength(vector_step))
+
 
 @dataclass(frozen=True)
 class MjlabPpoConfig:
@@ -128,7 +138,8 @@ class MjlabPpoConfig:
     smoke_mode: bool = False
     reference_processed: str | None = None
     reference_source: str = "bc"
-    reference_reward_weight: float = 0.005
+    reference_reward_weight: float = 0.05
+    max_reference_action_deviation: float = 0.35
     full_dr_reference_reward_scale: float = 0.2
     sensor_schema_version: int = GPU_SENSOR_SCHEMA_VERSION
     domain_randomization: DomainRandomizationConfig = field(
@@ -153,6 +164,8 @@ class MjlabPpoConfig:
             raise ValueError("reference_source must be non-empty")
         if self.reference_reward_weight < 0.0:
             raise ValueError("reference_reward_weight must be non-negative")
+        if not 0.0 < self.max_reference_action_deviation <= 2.0:
+            raise ValueError("max_reference_action_deviation must be in (0, 2]")
         if not 0.0 <= self.full_dr_reference_reward_scale <= 1.0:
             raise ValueError("full_dr_reference_reward_scale must be in [0, 1]")
         if not self.device.startswith("cuda:"):

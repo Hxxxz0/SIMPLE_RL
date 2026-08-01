@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 import torch
 from mjlab.managers.event_manager import RecomputeLevel
 
-from simple.grasp_rl.mjlab_gpu.amo import BatchedAmoController
 from simple.grasp_rl.mjlab_gpu.config import DomainRandomizationConfig
 from simple.grasp_rl.mjlab_gpu.simulation import GpuSimulation, _is_descendant
 from simple.grasp_rl.schema import JOINT_NAMES
@@ -19,6 +20,11 @@ MODEL_FIELDS = (
     "actuator_biasprm",
     "actuator_forcerange",
 )
+
+
+class _GpuController(Protocol):
+    logical_actuator_indices: torch.Tensor
+    actuator_strength_scale: torch.Tensor
 
 
 def _uniform(
@@ -40,7 +46,7 @@ class GpuDomainRandomizer:
     def __init__(
         self,
         gpu: GpuSimulation,
-        controller: BatchedAmoController,
+        controller: _GpuController,
         config: DomainRandomizationConfig,
         *,
         seed: int,
@@ -53,9 +59,13 @@ class GpuDomainRandomizer:
         self.generator = torch.Generator(device=self.device).manual_seed(seed)
         model = self.sim.mj_model
         target_name = gpu.bundle.manifest["roles"]["primary"]
-        table_name = gpu.bundle.manifest["roles"]["destination"]
+        roles = gpu.bundle.manifest["roles"]
+        contact_role_names = {
+            name
+            for role in ("destination", "support", "auxiliary")
+            if (name := roles.get(role)) is not None
+        }
         self.target_body_id = model.body(target_name).id
-        table_body_id = model.body(table_name).id
         target_joint_id = int(model.body_jntadr[self.target_body_id])
         if target_joint_id < 0:
             raise ValueError("Randomized target must have a free joint")
@@ -71,11 +81,18 @@ class GpuDomainRandomizer:
             dtype=torch.long,
             device=self.device,
         )
-        self.table_geom_ids = torch.tensor(
+        self.contact_geom_ids = torch.tensor(
             [
                 index
                 for index in range(model.ngeom)
-                if _is_descendant(model, int(model.geom_bodyid[index]), table_body_id)
+                if any(
+                    _is_descendant(
+                        model,
+                        int(model.geom_bodyid[index]),
+                        model.body(name).id,
+                    )
+                    for name in contact_role_names
+                )
             ],
             dtype=torch.long,
             device=self.device,
@@ -213,7 +230,7 @@ class GpuDomainRandomizer:
         model.body_inertia[env_ids, self.target_body_id] = (
             self.defaults["body_inertia"][self.target_body_id] * mass_scale[:, None]
         )
-        geom_ids = torch.cat((self.target_geom_ids, self.table_geom_ids))
+        geom_ids = torch.cat((self.target_geom_ids, self.contact_geom_ids)).unique()
         env_grid, geom_grid = torch.meshgrid(env_ids, geom_ids, indexing="ij")
         model.geom_friction[env_grid, geom_grid] = (
             self.defaults["geom_friction"][geom_ids][None] * friction_scale

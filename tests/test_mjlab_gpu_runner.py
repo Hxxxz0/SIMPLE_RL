@@ -42,3 +42,8 @@ def test_legacy_plan_actor_marker_selects_compatible_model(tmp_path) -> None:
     assert checkpoint_uses_plan_conditioned_actor(checkpoint)
     config = ppo_train_config(plan_conditioned_actor=True)
     assert config["actor"]["class_name"].endswith("PlanConditionedMLPModel")
+
+
+def test_train_config_allows_explicit_exploration_std() -> None:
+    config = ppo_train_config(exploration_std=0.05)
+    assert config["actor"]["distribution_cfg"]["init_std"] == 0.05

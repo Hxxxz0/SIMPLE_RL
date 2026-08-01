@@ -94,7 +94,9 @@ def test_domain_randomization_curriculum_reaches_full_strength() -> None:
         curriculum_warmup_steps=10, curriculum_ramp_steps=20
     )
     assert config.strength(10) == 0.0
+    assert config.training_strength(10) == 0.10
     assert config.strength(20) == 0.5
+    assert config.training_strength(20) == 0.5
     assert config.strength(30) == 1.0
     assert config.reference_noise.scaled(0.5).action_std == pytest.approx(
         0.5 * config.reference_noise.action_std

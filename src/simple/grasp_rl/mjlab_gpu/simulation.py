@@ -14,7 +14,12 @@ import torch
 from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
 
 from simple.grasp_rl.mjlab_gpu.config import MjlabPpoConfig
-from simple.grasp_rl.schema import RIGHT_CONTACT_LINK_NAMES, RIGHT_DISTAL_LINK_NAMES
+from simple.grasp_rl.schema import (
+    LEFT_CONTACT_LINK_NAMES,
+    LEFT_DISTAL_LINK_NAMES,
+    RIGHT_CONTACT_LINK_NAMES,
+    RIGHT_DISTAL_LINK_NAMES,
+)
 
 CUDA_DATA_FIELDS = (
     "qpos",
@@ -110,7 +115,7 @@ class FrozenAssetBundle:
 class GpuSimulation:
     bundle: FrozenAssetBundle
     sim: Simulation
-    sensors: "GpuSensorLayout | None"
+    sensors: "GpuSensorLayout | GpuV2SensorLayout | None"
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """Restore the frozen warm state for all or a CUDA subset of worlds."""
@@ -131,6 +136,23 @@ class GpuSensorLayout:
     distal_linear_velocity: tuple[slice, ...]
     pelvis_linear_velocity: slice
     pelvis_angular_velocity: slice
+
+
+@dataclass(frozen=True)
+class GpuV2SensorLayout:
+    primary_force: tuple[tuple[slice, ...], tuple[slice, ...]]
+    auxiliary_force: tuple[tuple[slice, ...], tuple[slice, ...]] | None
+    hand_support_force: tuple[
+        tuple[slice, ...], tuple[slice, ...]
+    ] | None
+    primary_destination_force: slice | None
+    primary_auxiliary_force: slice | None
+    auxiliary_destination_force: slice | None
+    fingertip_distance: tuple[
+        tuple[tuple[slice, ...], ...], tuple[tuple[slice, ...], ...]
+    ]
+    linear_velocity: dict[str, slice]
+    angular_velocity: dict[str, slice]
 
 
 def _sensor_slice(model: mujoco.MjModel, name: str) -> slice:
@@ -292,6 +314,183 @@ def _augment_legacy_sensors(
     return model, layout
 
 
+def _augment_v2_sensors(
+    bundle: FrozenAssetBundle,
+) -> tuple[mujoco.MjModel, GpuV2SensorLayout]:
+    """Append the contact, distance and velocity sensors required by 331-D v2."""
+
+    scene = _bundle_file(bundle.root, bundle.manifest["scene_file"])
+    spec = mujoco.MjSpec.from_file(str(scene))
+    for index, geom in enumerate(spec.geoms):
+        if not geom.name:
+            geom.name = f"gpu_geom_{index:04d}_{geom.parent.name}"
+    named_model = spec.compile()
+    roles = bundle.manifest["roles"]
+    primary = roles.get("primary")
+    destination = roles.get("destination")
+    auxiliary = roles.get("auxiliary")
+    if not primary:
+        raise ValueError("V2 GPU sensors require a primary role")
+
+    def add_contact(name: str, first: str, second: str) -> str:
+        spec.add_sensor(
+            name=name,
+            type=mujoco.mjtSensor.mjSENS_CONTACT,
+            objtype=mujoco.mjtObj.mjOBJ_BODY,
+            objname=first,
+            reftype=mujoco.mjtObj.mjOBJ_XBODY,
+            refname=second,
+            intprm=[1 << 1, 3, 1],
+        )
+        return name
+
+    primary_force_names: list[list[str]] = [[], []]
+    for hand_index, links in enumerate(
+        (LEFT_CONTACT_LINK_NAMES, RIGHT_CONTACT_LINK_NAMES)
+    ):
+        for link_index, link in enumerate(links):
+            primary_force_names[hand_index].append(
+                add_contact(
+                    f"gpu_v2_primary_force_{hand_index}_{link_index}", link, primary
+                )
+            )
+
+    auxiliary_force_names: list[list[str]] | None = None
+    if auxiliary:
+        auxiliary_force_names = [[], []]
+        for hand_index, links in enumerate(
+            (LEFT_CONTACT_LINK_NAMES, RIGHT_CONTACT_LINK_NAMES)
+        ):
+            for link_index, link in enumerate(links):
+                auxiliary_force_names[hand_index].append(
+                    add_contact(
+                        f"gpu_v2_auxiliary_force_{hand_index}_{link_index}",
+                        link,
+                        auxiliary,
+                    )
+                )
+
+    support_name = roles.get("support") or destination
+    hand_support_names: list[list[str]] | None = None
+    if support_name:
+        hand_support_names = [[], []]
+        for hand_index, links in enumerate(
+            (LEFT_CONTACT_LINK_NAMES, RIGHT_CONTACT_LINK_NAMES)
+        ):
+            for link_index, link in enumerate(links):
+                hand_support_names[hand_index].append(
+                    add_contact(
+                        f"gpu_v2_support_{hand_index}_{link_index}",
+                        link,
+                        support_name,
+                    )
+                )
+    primary_destination_name = (
+        add_contact("gpu_v2_primary_destination", primary, destination)
+        if destination else None
+    )
+    primary_auxiliary_name = (
+        add_contact("gpu_v2_primary_auxiliary", primary, auxiliary)
+        if auxiliary else None
+    )
+    auxiliary_destination_name = (
+        add_contact("gpu_v2_auxiliary_destination", auxiliary, destination)
+        if auxiliary and destination else None
+    )
+
+    target_geoms = _subtree_geom_names(named_model, primary)
+    distance_names: list[list[list[str]]] = [[], []]
+    for hand_index, links in enumerate((LEFT_DISTAL_LINK_NAMES, RIGHT_DISTAL_LINK_NAMES)):
+        for finger_index, link in enumerate(links):
+            names = []
+            for pair_index, (finger_geom, target_geom) in enumerate(
+                (finger, target)
+                for finger in _subtree_geom_names(named_model, link)
+                for target in target_geoms
+            ):
+                name = f"gpu_v2_distance_{hand_index}_{finger_index}_{pair_index}"
+                spec.add_sensor(
+                    name=name,
+                    type=mujoco.mjtSensor.mjSENS_GEOMDIST,
+                    objtype=mujoco.mjtObj.mjOBJ_GEOM,
+                    objname=finger_geom,
+                    reftype=mujoco.mjtObj.mjOBJ_GEOM,
+                    refname=target_geom,
+                    cutoff=2.0,
+                )
+                names.append(name)
+            if not names:
+                raise ValueError(f"No v2 geom-distance pairs for {link}")
+            distance_names[hand_index].append(names)
+
+    velocity_bodies = {
+        "pelvis": "pelvis",
+        "left_hand": "left_wrist_yaw_link",
+        "right_hand": "right_wrist_yaw_link",
+        "primary": primary,
+    }
+    if destination:
+        velocity_bodies["destination"] = destination
+    if auxiliary:
+        velocity_bodies["auxiliary"] = auxiliary
+    linear_names, angular_names = {}, {}
+    for role, body in velocity_bodies.items():
+        linear = f"gpu_v2_{role}_linear_velocity"
+        angular = f"gpu_v2_{role}_angular_velocity"
+        for name, sensor_type in (
+            (linear, mujoco.mjtSensor.mjSENS_FRAMELINVEL),
+            (angular, mujoco.mjtSensor.mjSENS_FRAMEANGVEL),
+        ):
+            spec.add_sensor(
+                name=name,
+                type=sensor_type,
+                objtype=mujoco.mjtObj.mjOBJ_BODY,
+                objname=body,
+            )
+        linear_names[role] = linear
+        angular_names[role] = angular
+
+    model = spec.compile()
+    def contact_slices(names: list[str]) -> tuple[slice, ...]:
+        return tuple(_sensor_slice(model, name) for name in names)
+    layout = GpuV2SensorLayout(
+        primary_force=tuple(
+            contact_slices(names) for names in primary_force_names
+        ),
+        auxiliary_force=(
+            tuple(contact_slices(names) for names in auxiliary_force_names)
+            if auxiliary_force_names is not None else None
+        ),
+        hand_support_force=(
+            tuple(contact_slices(names) for names in hand_support_names)
+            if hand_support_names is not None else None
+        ),
+        primary_destination_force=(
+            _sensor_slice(model, primary_destination_name)
+            if primary_destination_name is not None else None
+        ),
+        primary_auxiliary_force=(
+            _sensor_slice(model, primary_auxiliary_name)
+            if primary_auxiliary_name is not None else None
+        ),
+        auxiliary_destination_force=(
+            _sensor_slice(model, auxiliary_destination_name)
+            if auxiliary_destination_name is not None else None
+        ),
+        fingertip_distance=tuple(
+            tuple(contact_slices(names) for names in hand)
+            for hand in distance_names
+        ),
+        linear_velocity={
+            role: _sensor_slice(model, name) for role, name in linear_names.items()
+        },
+        angular_velocity={
+            role: _sensor_slice(model, name) for role, name in angular_names.items()
+        },
+    )
+    return model, layout
+
+
 def _physics_config(manifest: dict[str, Any]) -> MujocoCfg:
     physics = manifest["physics"]
     return MujocoCfg(
@@ -384,7 +583,9 @@ def build_gpu_simulation(
     bundle = FrozenAssetBundle.load(config.asset_bundle, expected_task=config.task)
     model = bundle.model
     sensors = None
-    if bundle.manifest.get("controller") == "amo":
+    if bundle.manifest["task_metadata"].get("task_schema_version") == 2:
+        model, sensors = _augment_v2_sensors(bundle)
+    elif bundle.manifest.get("controller") == "amo":
         model, sensors = _augment_legacy_sensors(bundle)
     sim = Simulation(
         num_envs=config.num_envs,
