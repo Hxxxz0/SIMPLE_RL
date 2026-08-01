@@ -1,0 +1,18 @@
+[project]
+name = "simple-mjlab-gpu"
+version = "0.1.0"
+description = "Pinned GPU runtime for SIMPLE MuJoCo-Warp PPO"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+  "mjlab",
+  "torch>=2.10,<2.11",
+  "rsl-rl-lib==5.2.0",
+  "tensordict>=0.11,<0.12",
+  "numpy>=1.26",
+]
+
+[tool.uv.sources]
+mjlab = { git = "https://github.com/mujocolab/mjlab.git", rev = "731fa27" }
+
+[tool.uv]
+package = false

@@ -16,6 +16,7 @@ from simple.grasp_rl.collect import collect_policy_dataset
 from simple.grasp_rl.diffusion import DiffusionTrainConfig, train_diffusion
 from simple.grasp_rl.evaluate import evaluate_policy
 from simple.grasp_rl.hard_targets import mine_hard_targets
+from simple.grasp_rl.mjlab_assets import export_mjlab_scene, validate_asset_bundle
 from simple.grasp_rl.policy import build_knn_actor_checkpoint
 from simple.grasp_rl.paired import compare_paired_evaluations
 from simple.grasp_rl.rewards import (
@@ -60,6 +61,17 @@ def _parser() -> argparse.ArgumentParser:
 
     list_tasks = commands.add_parser("list-tasks")
     list_tasks.set_defaults(task=DEFAULT_TASK)
+
+    export_mjlab = commands.add_parser("export-mjlab-assets")
+    export_mjlab.add_argument("--task", default=DEFAULT_TASK)
+    export_mjlab.add_argument("--output", type=Path, required=True)
+    export_mjlab.add_argument("--seed", type=int, default=42)
+    export_mjlab.add_argument("--target-object")
+    export_mjlab.add_argument("--warmup-steps", type=int, default=60)
+
+    validate_mjlab = commands.add_parser("validate-mjlab-assets")
+    validate_mjlab.set_defaults(task=DEFAULT_TASK)
+    validate_mjlab.add_argument("--bundle", type=Path, required=True)
 
     compare_paired = commands.add_parser("compare-paired")
     compare_paired.set_defaults(task=DEFAULT_TASK)
@@ -532,6 +544,16 @@ def main() -> None:
         result = {
             name: get_task_spec(name).metadata() for name in task_names()
         }
+    elif args.command == "export-mjlab-assets":
+        result = export_mjlab_scene(
+            task_spec.name,
+            args.output,
+            seed=args.seed,
+            target_object=args.target_object,
+            warmup_steps=args.warmup_steps,
+        )
+    elif args.command == "validate-mjlab-assets":
+        result = validate_asset_bundle(args.bundle)
     elif args.command == "compare-paired":
         result = compare_paired_evaluations(
             args.policy_evaluation,

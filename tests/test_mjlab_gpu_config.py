@@ -1,0 +1,102 @@
+from dataclasses import replace
+
+import pytest
+import torch
+
+from simple.grasp_rl.mjlab_gpu.config import (
+    DomainRandomizationConfig,
+    MjlabPpoConfig,
+    ReferenceNoiseConfig,
+)
+from simple.grasp_rl.mjlab_gpu.reference_noise import (
+    apply_reference_noise,
+    transform_reference_positions,
+)
+from simple.grasp_rl.schema import REFERENCE_CONTEXT_DIM, REFERENCE_FRAME_DIM
+
+
+def test_gpu_ppo_config_rejects_cpu_and_small_long_runs(tmp_path) -> None:
+    with pytest.raises(ValueError, match="cuda"):
+        MjlabPpoConfig("tabletop_grasp", str(tmp_path), device="cpu")
+    with pytest.raises(ValueError, match="2048"):
+        MjlabPpoConfig("tabletop_grasp", str(tmp_path), num_envs=1024)
+    smoke = MjlabPpoConfig(
+        "tabletop_grasp", str(tmp_path), num_envs=16, smoke_mode=True
+    )
+    assert smoke.num_envs == 16
+
+
+def test_reference_noise_is_checkpoint_versioned(tmp_path) -> None:
+    config = MjlabPpoConfig("tabletop_grasp", str(tmp_path))
+    changed = replace(
+        config,
+        domain_randomization=replace(
+            config.domain_randomization,
+            reference_noise=replace(
+                config.domain_randomization.reference_noise, phase_std=0.02
+            ),
+        ),
+    )
+    first = config.checkpoint_metadata()
+    assert first == config.checkpoint_metadata()
+    assert first["resolved_sha256"] != changed.checkpoint_metadata()["resolved_sha256"]
+    config.assert_resume_compatible(first)
+    with pytest.raises(ValueError, match="hash mismatch"):
+        changed.assert_resume_compatible(first)
+
+
+def test_reference_noise_only_changes_intended_policy_inputs() -> None:
+    context = torch.zeros(2, REFERENCE_CONTEXT_DIM, device="cpu")
+    frames = context[:, :-1].reshape(2, -1, REFERENCE_FRAME_DIM)
+    frames[..., -1] = 1.0  # contact truth inside the policy reference context
+    context[:, -1] = 0.5
+    original = context.clone()
+    untouched = apply_reference_noise(
+        context,
+        ReferenceNoiseConfig(),
+        enabled=False,
+    )
+    assert untouched.data_ptr() == context.data_ptr()
+
+    generator = torch.Generator().manual_seed(7)
+    noisy = apply_reference_noise(
+        context,
+        ReferenceNoiseConfig(future_dropout_probability=0.0),
+        enabled=True,
+        generator=generator,
+    )
+    noisy_frames = noisy[:, :-1].reshape(2, -1, REFERENCE_FRAME_DIM)
+    assert torch.count_nonzero(noisy_frames[..., :39]) > 0
+    assert torch.equal(noisy_frames[..., -1], frames[..., -1])
+    assert torch.all((0.0 <= noisy[:, -1]) & (noisy[:, -1] <= 1.0))
+    assert torch.equal(context, original)
+
+
+def test_reference_scene_transform_matches_sampled_scene_pose() -> None:
+    positions = torch.tensor([[[1.0, 0.0, 0.2], [0.0, 1.0, 0.3]]])
+    transformed = transform_reference_positions(
+        positions,
+        translation_xy=torch.tensor([[0.1, -0.2]]),
+        yaw=torch.tensor([torch.pi / 2]),
+        origin_xy=torch.zeros(1, 2),
+    )
+    expected = torch.tensor([[[0.1, 0.8, 0.2], [-0.9, -0.2, 0.3]]])
+    torch.testing.assert_close(transformed, expected)
+
+
+def test_enabled_dr_requires_synchronized_reference_transform() -> None:
+    with pytest.raises(ValueError, match="sync_reference"):
+        DomainRandomizationConfig(sync_reference_scene_transform=False)
+
+
+def test_domain_randomization_curriculum_reaches_full_strength() -> None:
+    config = DomainRandomizationConfig(
+        curriculum_warmup_steps=10, curriculum_ramp_steps=20
+    )
+    assert config.strength(10) == 0.0
+    assert config.strength(20) == 0.5
+    assert config.strength(30) == 1.0
+    assert config.reference_noise.scaled(0.5).action_std == pytest.approx(
+        0.5 * config.reference_noise.action_std
+    )
+    assert config.reference_noise.action_std == pytest.approx(0.002)

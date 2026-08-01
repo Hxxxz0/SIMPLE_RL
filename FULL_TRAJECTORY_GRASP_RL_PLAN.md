@@ -1,80 +1,28 @@
-# SIMPLE 抓取任务：真实 PPO 训练与验收计划
+# SIMPLE 全轨迹抓取：mjlab GPU PPO 执行方案
 
 更新日期：2026-08-01
 
-本文档是当前唯一执行口径，替代此前关于 diffusion/SMP、旧 GRAIL-v7、reference-test、
-小样本 production 和旧发布 checkpoint 的结论。旧输出只用于诊断，不得作为新版 PPO
-发布证据。
+本文是新 GPU 路径的唯一执行口径。旧 CPU PPO、36-env 实验、SMP/diffusion
+reward 和旧成功率只能作为兼容性资料，不能作为新版 PPO 的发布证据。
 
-## 1. 目标
+## 1. 目标与当前边界
 
-对每个 pick 相关任务分别训练真实的 on-policy PPO policy。策略必须在随机目标和 dynamics
-扰动下稳定完成任务，最终在锁定的 200 个 unseen test targets 上通过统计验收。
+- 使用真实 `mjlab + MuJoCo-Warp + RSL-RL 5.2 PPO`，simulation、AMO、actor、
+  critic、rollout、loss 和 Adam state 全部留在 GPU。
+- 正式训练从 2048 env 起步，显存允许时提升到 4096 env；小 env 仅用于 smoke。
+- 每个任务独立训练、独立 frozen asset bundle、独立 reward audit 和 locked test。
+- locked test-200 的目标是成功率 70% 以上，优选 90% 以上；未达到不得声称完成。
+- 旧 CPU 环境、命令和 checkpoint loader 保持可用，但不会被包装成 GPU 结果。
 
-当前纳入六个任务：
+当前已经接通 GPU 的是 legacy AMO + 192D state + 401D reference 的
+`tabletop_grasp` 和 `bend_pick`。Sonic/v2 的 `bend_pick_teleop`、
+`bend_pick_and_place`、`xmove_pick`、`xmove_bend_pick`，以及虽然使用 AMO、但仍是
+v2 schema 的 `locomotion_pick_between_tables`，必须在各自 batch controller、842D
+observation 和 goal-graph reward 完成 GPU parity 后再训练；当前不得宣称它们已迁移完成。
 
-| task | 类型 | 当前正式输出 |
-| --- | --- | --- |
-| `tabletop_grasp` | 最简单桌面抓取 | `tabletop_grasp/ppo_curriculum_clean_v1_seed42_to3200` |
-| `bend_pick_teleop` | 弯腰抓取 | `bend_pick_teleop/ppo_curriculum_v1_seed42_winner_to3200` |
-| `bend_pick_and_place` | 弯腰抓放 | `bend_pick_and_place/ppo_curriculum_v1_seed42_winner_to3200` |
-| `xmove_pick` | 移动抓取 | `xmove_pick/ppo_curriculum_clean_v2_seed42_to3200` |
-| `xmove_bend_pick` | 移动并弯腰抓取 | `xmove_bend_pick/ppo_curriculum_clean_v1_seed42_to3200` |
-| `locomotion_pick_between_tables` | 跨桌抓放 | `locomotion_pick_between_tables/ppo_curriculum_v1_seed42_winner_to3200` |
+## 2. 不可伪造的 PPO 条件
 
-旧 `bend_pick` MP 实验不计入这六条正式结果；如再次训练，也必须完整采用本文方法。
-
-## 2. 不可放宽的发布门槛
-
-每个任务必须同时满足：
-
-1. final evaluation 恰好使用 200 个预先锁定、训练阶段从未使用的 test targets；
-2. PPO 至少成功 153/200；
-3. Wilson 95% success-rate lower bound 严格大于 70%；
-4. 相对同状态 reference-only baseline 至少提升 5 percentage points；
-5. paired exact McNemar test `p < 0.05`；
-6. 初始 `qpos/qvel`、目标 pose、base episode 和 reference episode 必须逐对完全相同；
-7. policy checkpoint 必须通过 PPO 完整性审计。
-
-任何单独的 70% raw success、小样本 20/20、多个 rank 的 union、只保存成功轨迹，或
-reference playback 都不能替代上述门槛。若某任务的 reference baseline 高于 95%，则
-“提升 5pp”在数学上不可实现；必须在 final test 前预注册更有区分度的随机目标分布，不能
-看完 test 后修改协议。
-
-## 3. 数据隔离
-
-- 原始 `data/simple` 保持只读；派生数据写入 `data/grasp_rl`。
-- BC 初始化只训练 `train`，以 `val` 做 early stopping，不读 `test`。
-- PPO 的 reference library 固定为 `--reference-splits train,val`。
-- hard-target mining 只允许来自 `train` 或 `val` failure manifest。
-- checkpoint 选择、reward 调整和 curriculum 调整只看 development validation。
-- final test manifest 在 validation 达标之前保持锁定且不可读取。
-- 使用过 test reference、继承过污染 PPO history 或训练扰动范围不一致的目录必须写入
-  `NOT_RELEASE_CANDIDATE.json`，不得继续 resume 为发布候选。
-
-已知不可发布的旧分支包括旧 `xmove_pick/ppo_curriculum_v1*`、
-`xmove_pick/ppo_curriculum_clean_v1*`、旧 `xmove_bend_pick/ppo_curriculum_v1*`，以及
-`tabletop_grasp` 的旧 `ppo_task_random_stable_v1_300`。旧 Tabletop run 使用过
-`reference_splits=train,val,test`，也没有新版逐 update 完整性日志。
-
-## 4. Policy 与真实 PPO 定义
-
-### 4.1 Policy 接口
-
-- v2 任务 actor 输入为 331D 在线 MuJoCo/task state 加 511D retrieved plan context，共 842D。
-- legacy `tabletop_grasp` 输入为 192D 在线状态加 401D plan context，共 593D。
-- actor 直接输出最终 normalized 36D tracker command。
-- PPO distribution、sample、log-prob 和 clipped surrogate 都定义在这 36D policy action 上。
-- 不允许在 PPO 外部播放 reference action，再把结果称作 RL policy。
-- retrieved plan 只是 policy observation/context；最终命令由 actor distribution 产生。
-- v2 task 使用 task-specific `ActionTransform` 后交给 Sonic 或 AMO tracker。
-
-v2 任务从 train-only plan-conditioned BC actor 初始化。`tabletop_grasp` 新分支从零 correction
-的 plan-conditioned actor 初始化，不继承旧的 test 污染 PPO checkpoint。
-
-### 4.2 每个 update 的完整性条件
-
-`ppo_integrity.jsonl` 每行必须满足：
+每个 update 的 `ppo_integrity.jsonl` 必须证明：
 
 ```text
 algorithm == rsl_rl.algorithms.ppo.PPO
@@ -83,143 +31,145 @@ rollout_reused == false
 transitions == num_envs * num_steps_per_env
 optimizer_steps == num_learning_epochs * num_mini_batches
 actor_parameter_delta_l2 > 0
-policy_version_collected == update
+critic_parameter_delta_l2 > 0
 ```
 
-正式配置为 36 env、24 steps，因此每个 update 必须包含 864 条 fresh transitions；
-5 PPO epochs × 4 mini-batches，因此每个 update 必须有 20 次 optimizer step。只有 checkpoint
-文件而没有这些证据，不足以证明 PPO 有效执行。
+还必须检查 Adam `capturable=True`，optimizer tensor state 全在 `cuda:0`。AMO
+TorchScript 内部固定使用逻辑 `cuda:0`，因此一张物理 GPU 启动一个进程，并通过
+`CUDA_VISIBLE_DEVICES=<physical GPU>` 选择设备。
 
-## 5. 统一训练预算
+reference action 只能作为 actor observation/context 或独立 baseline。禁止在 PPO 外部
+播放 reference action，再把成功称作 PPO policy success。最终 36D command 必须来自
+actor distribution，并参与 PPO log-prob 和 clipped surrogate。
 
-- `num_envs = 36`
-- `num_steps_per_env = 24`
-- `iterations = 3200`，update 编号为 0–3199
-- 总预算 `36 × 24 × 3200 = 2,764,800 transitions/task`
-- `ppo_epochs = 5`
-- `num_mini_batches = 4`
-- 每 50 updates 保存 checkpoint
-- seed 42 为主训练 seed；必要时用独立 seed 验证，不用 seed union 隐藏失败
-- 同时最多运行三条 36-env 训练，避免 GPU/CPU contention 破坏吞吐和 rollout timing
+## 3. Frozen asset 与前向兼容
 
-任务特定的保守 actor 设置：
+每个 GPU task bundle 固定并校验：
 
-| task family | base LR | actor LR scale | manipulation std | task/ref reward |
-| --- | ---: | ---: | ---: | ---: |
-| bend grasp | 3e-4 | 0.10 | 0.03 | 默认 / 0.005 |
-| xmove grasp | 3e-4 | 0.05 | 0.05 | 0.02 / 0.005 |
-| tabletop | 3e-4 | 0.02 | 0.01 | 0.02 / 0.005 |
-| locomotion place | 1e-4 | 0.02 | 0.015 | 0.05 / 0.001 |
+- portable `scene.xml` 与全部 mesh hash；
+- MuJoCo timestep、solver、cone、impratio 等 physics 参数；
+- reset qpos/qvel/ctrl/qacc、目标/桌子角色和 reward spec；
+- task-specific `action_transform.npz`；
+- AMO policy、adapter、normalization stats 及 warm controller state；
+- AMO 的 history、last action、gait、initial quaternion 和 flags。
 
-BC 初始化任务冻结 actor normalizer；Tabletop 从零 actor 开始，允许 normalizer 用新 rollout
-更新。locomotion 额外使用很小的 teacher anchor 防止已学会的 walking/place tail 被擦除。
+GPU 代码按 joint/body/actuator/sensor 名称解析索引，不依赖 XML 数字顺序。旧 CPU
+checkpoint 可作为显式 warm start；新版 GPU checkpoint 额外保存 config、asset、reward、
+reference hash、DR RNG、reference-noise RNG、adaptive LR 和 next iteration，严格 resume。
+loader 根据旧 checkpoint 的 `_plan_conditioned_actor` marker 恢复原来的
+`reference proposal + PPO correction` 语义；不能把 correction 当成完整 command。
 
-## 6. Curriculum 与 domain randomization
+## 4. Reference 与 domain randomization
 
-抓取任务使用 `configs/grasp_rl/pick_grasp_curriculum_v1.json`，抓放任务使用
-`configs/grasp_rl/pick_place_curriculum_v1.json`。两个 curriculum 都包含三个阶段：
+reference 分成两个视图：
 
-| updates | RSI probability | reference rank max | reference noise | mass scale | friction scale | action delay |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0–1064 | 0.70 | 2 | 0.01 | 0.95–1.05 | 0.90–1.10 | 0 |
-| 1065–2394 | 0.50 | 4 | 0.02 | 0.90–1.10 | 0.85–1.15 | 0–1 |
-| 2395–3199 | 0.25 | 4 | 0.025 | 0.85–1.15 | 0.80–1.20 | 0–1 |
+- actor：训练时使用 noisy reference；
+- critic：始终使用 clean reference；
+- reward/success/failure/termination：只使用 clean replay 标签和当前仿真真值；
+- locked eval：关闭物理 DR 和 reference noise。
 
-每阶段 target mix 固定为 50% uniform、35% hard、15% native。抓取 RSI 在
-`pregrasp/grasp_to_lift` 间按 60/40 采样；抓放 RSI 覆盖 approach、grasp、lift、transport。
-课程后期逐步减少 RSI、增加 full-start rollout，同时扩大 dynamics、action noise 和 delay。
+训练 reference noise 默认包含 normalized action、物体相对位置、phase 和 future-frame
+dropout 的小扰动。action std 固定为经 200-episode ablation 验证的 `0.002`；旧候选
+`0.015` 会让 plan-conditioned actor 把白噪声直接带入完整 command，已弃用。噪声使用
+独立 CUDA RNG，同一 simulation step 重复读取保持一致，不能改变之后的物理 DR 序列。
+目标 XY jitter 通过 object offset 同步进 reference；target yaw 作为当前物体姿态扰动由
+在线 base observation 提供，不能伪造进 reward truth。
 
-移动任务和新版 Tabletop 的正式训练/验证 envelope 为目标 x/y jitter `±4/5 cm`、yaw
-`±0.25 rad`。其他 bend 任务当前 development screen 使用 `±2.5/3 cm`、`±0.15 rad`；
-训练与最终验证若改变 envelope，必须生成新版本协议并保持 train/validation 一致。
+物理 DR 真实写入 MuJoCo-Warp per-world model field：目标质量/惯量、摩擦、joint damping、
+actuator strength、目标 XY/yaw 和 0–1 step action delay。训练不从 full DR 硬启动：
 
-## 7. Reward 方法
+| vector steps | DR strength | 目的 |
+| ---: | ---: | --- |
+| 0–1199 | 0 | 先修正 BC 闭环漂移 |
+| 1200–4799 | 0 → 1 | 同步放大 physics 与 reference noise |
+| 4800+ | 1 | 完整随机化训练与 robustness 验收 |
 
-- 每个任务在训练前必须通过真实 tracker/MuJoCo expert replay reward audit。
-- 抓取使用 `grail_release_v1` 的 approach、bilateral grasp、finger direction、lift、stability、
-  table/contact penalty 和 residual-rate penalty。
-- 抓放使用 ordered goal graph：approach → grasp → lift → transport → place → release/settle。
-- success 必须来自当前物理状态并连续保持，不能只因进入 stage 或短暂接触而成功。
-- reference reward 只是低权重 shaping，不能压过 task reward。
-- 当前正式方法不使用 diffusion/SMP reward；旧 SMP 对照不进入发布路径。
-- 训练中持续记录 task component、reference contribution、各 stage、drop、table contact、
-  success RSI/full-start 和 domain-randomization telemetry。
+数值发散按 world 标记为 `numerical_failure` 并 subset reset，不能让单个异常 world 杀死
+全部 rollout，也不能静默当作正常 transition。
 
-如果 return 上升但 success 不升，首先检查 reward farming、stage transition 和成功保持条件，
-不能只继续增大 reward scale。
+## 5. Reward 原则
 
-## 8. Checkpoint 选择与验证阶梯
+legacy 抓取继续使用 frozen `grail_release_v1`：pregrasp、双侧 contact、finger
+opposition、lift、stability、approach/table/action-rate penalty，以及连续 hold success。
+success 必须来自当前物体真实 lift + grasp；reference contact 只表达接触意图。
 
-1. 训练前生成 `model_initial` 的 paired val-40 baseline。
-2. 训练中按固定 seed 对 checkpoint 做 paired val-40；早期可额外测 model50。
-3. 同一 target 上分别运行 PPO 与 `--reference-action-override all`。
-4. `compare-paired` 必须验证配对状态完全一致，并输出 rescue、regression、Wilson lower 和
-   exact McNemar p-value。
-5. 选择 validation 最佳 checkpoint，不默认选择最后一个 checkpoint。
-6. 任一 checkpoint 达到至少 28/40 后，先扩大到预注册的 val-100，再到 val-200。
-7. 只有扩大 validation 后仍稳定达标，才允许一次性运行锁定的 final test-200。
-8. final test 不用于调参、重训、选择 seed 或选择 checkpoint。
+训练前必须先通过 clean expert replay：成功率至少 90%，contact、lift 和 terminal 状态与
+CPU 基线一致。若 expert replay 失败，先修 simulation/controller/reward，禁止靠调 reward
+掩盖迁移错误。
 
-val-40 只是快速筛选，不能据此宣称最终 70% 成功率。`28/40` 也不满足 Wilson lower >70%；
-它只是启动更大 validation 的门槛。
+## 6. Tabletop 训练阶梯
 
-## 9. 退化和 plateau 的处理
+1. **Parity gate**：CPU/GPU first-step、10-step、完整 expert trajectory；clean expert
+   replay 至少 90%。
+2. **Initial baseline**：BC 在同一 locked validation 上记录 success、failure、timeout、
+   max lift、grasp rate；不因 BC loss 很低就假定闭环成功。
+3. **Clean PPO**：2048 env，24 steps/env，5 epochs，4 mini-batches；先跑 50–200 updates，
+   以真实 success 而非 return 选择是否继续。
+4. **DR ramp**：继续训练到 strength=1，观察 numerical failure、contact、lift 和 success，
+   不允许 reward 上升但 success 长期不升。
+5. **Capacity**：记录实际 contact/constraint 峰值后降低过度保守的 `nconmax/njmax`，再从
+   2048 提升到 4096；每次扩容重跑 PPO integrity 和 checkpoint resume。
+6. **Validation**：固定 val-40 快筛，达到 28/40 后扩大到 val-100/200；只按 validation
+   选择 checkpoint。
+7. **Final**：一次性 locked test-200，不用于调参。
 
-- 曲线先升后降：保留历史最佳，不用 last checkpoint 覆盖；从最佳点建立独立低 actor-LR
-  continuation，并减小 reference/task reward imbalance。
-- success 长期低于 70%：按 approach、contact、grasp、lift、place 分解失败，先修复占比最高
-  的阶段；每个分支只改变一个主要因素。
-- PPO actor delta 为零、rollout 被复用或 reference override 泄漏：立即判定该 run 无效。
-- reference-only 很强：扩大预注册随机化难度或提升 robustness，不能把 reference playback
-  计为 PPO success。
-- final checkpoint 退化：发布选择仍使用 validation 最佳 checkpoint。
-- test 泄漏：整个 ancestry 标记不可发布，从 clean BC 重新开始。
+从已有强 policy 做 DR continuation 时，首轮 150 updates、4096 env 已包含
+`4096 * 24 * 150 = 14,745,600` 条 fresh transitions，应按 25-update checkpoint 的
+full-DR 曲线决定是否追加；从头训练仍建议至少 3000 updates。训练中每 25–50 updates
+保存 checkpoint，避免长任务因异常丢失全部进度，也避免默认把 last 当作 best。
 
-## 10. 资源队列
+## 7. 70%–90% 验收
 
-最多同时保留三条正式训练：
+每个 task release candidate 同时满足：
 
-1. 当前运行 `bend_pick_teleop`、`bend_pick_and_place`、`xmove_pick clean v2`；
-2. bend 完成并完成 final validation screen 后，在同一资源槽启动 `xmove_bend_pick clean`；
-3. place 完成后启动 `locomotion_pick_between_tables`；
-4. xmove_pick 完成并生成 `paired_val_model3199_40.json` 后启动 `tabletop_grasp clean`。
+1. locked clean test 恰好 200 个未参与训练/调参的 targets；
+2. raw success 至少 140/200；推荐至少 180/200；
+3. 若声明“统计上高于 70%”，Wilson 95% lower bound 必须大于 70%（约需 153/200）；
+4. full-DR robustness validation 单独报告，不与 clean test 混算；
+5. 相同初态的 pre-PPO/BC、reference-only、PPO 三方 paired 对比；
+6. PPO integrity、CUDA optimizer、asset/reward/reference hash 全部通过；
+7. 报告 failure、timeout、native lift、grasp episode rate、mean/max lift 和 numerical failure。
 
-所有 watcher 只等待 checkpoint/paired report，不得抢先读取 test，也不得把正在等待的 watcher
-误杀。每条新训练启动后，先检查首个 `ppo_integrity.jsonl` 记录，再允许继续长训。
+“PPO 明显有效”至少要求 PPO 相对 pre-PPO BC 的 paired success 有实际提升，并且 actor
+参数变化来自 fresh on-policy optimizer steps。单独的 expert/reference replay 100%、短 smoke
+actor delta 或训练 return 上升，都不能替代最终成功率。
 
-## 11. 当前状态快照
+## 8. 多任务迁移队列
 
-以下仅是 2026-08-01 development validation 快照，不是 final test：
+多 GPU 只并行已经通过 parity gate 的任务，避免同时修改共享实现：
 
-| task | update / 3199 | transitions | 当前最佳 val-40 | reference | exact p | 状态 |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `bend_pick_teleop` | 2347 | 2,028,672 | 21/40 (52.5%) | 8/40 | 0.000244 | 训练中 |
-| `bend_pick_and_place` | 2066 | 1,785,888 | 26/40 (65.0%) | 19/40 | 0.143 | 训练中 |
-| `xmove_pick` | 686 | 593,568 | 14/40 (35.0%) | 4/40 | 0.00195 | 训练中 |
-| `xmove_bend_pick` | — | — | — | — | — | 已排队 |
-| `locomotion_pick_between_tables` | — | — | initial 0/40 | — | — | 已排队 |
-| `tabletop_grasp` | — | — | 待新版 wide-envelope baseline | — | — | 已排队 |
+1. `tabletop_grasp`：4096-env full-DR PPO 已完成，`model_149` 通过 robustness gate；
+2. `bend_pick`：独立 AMO bundle、expert replay、旧 policy GPU parity 和 4096-env
+   full-DR PPO 已完成；当前 robustness 最好为 547/800，尚未通过 70% gate；
+3. Sonic grasp tasks：先实现 frozen Sonic batch controller 与 842D GPU state parity；
+4. place tasks：在 Sonic parity 之后迁移 ordered goal-graph reward；
+5. 每个任务达到同一验收门槛后才标记 release candidate。
 
-当前没有任何任务获准运行 final test-200。最接近 raw 70% 的是
-`bend_pick_and_place/model_1700.pt`，但只有 26/40，且相对 reference 的 McNemar 结果不显著。
+任何任务未达到 70% 时，交付真实诊断与 checkpoint，不用其它 task、seed union、成功样本
+筛选或 reference override 替代该任务的失败结果。
 
-新版 Tabletop 已完成隔离 smoke：真实 `rsl_rl PPO`、20 optimizer steps、actor delta
-`0.0229`、`on_policy=true`、`rollout_reused=false`。正式 run 使用 36 env；旧 99/100 结果只
-证明任务容易，不是新版合规 PPO 结果。
+## 9. 2026-08-01 已完成的实测 gate
 
-## 12. 最终交付物
-
-每个任务的发布包必须包含：
-
-- 选定的 PPO checkpoint 与 SHA256；
-- 完整训练 `config.json` 和 resolved curriculum；
-- 全量 `ppo_integrity.jsonl`；
-- reward audit；
-- train/val/test manifest hash 和 split provenance；
-- paired val-40、扩大 validation 和 locked final test-200 报告；
-- reference-only paired baseline；
-- success/failure stage breakdown；
-- 至少若干从保存初态重新闭环运行的成功与失败视频；
-- 明确记录未达标项，禁止只发布成功样本。
-
-只有六项任务级门槛全部通过后，才能把对应 checkpoint 标记为 release candidate。
+- `tabletop_grasp` clean expert replay：16/16；clean locked parity：200/200。locked
+  parity 的 200 个 world 可能共享等价初态，因此只用于检查回归，不能冒充 200 个独立
+  robustness target。
+- reference action noise 的 200-episode 消融中，`0.015` 会把 plan-conditioned 完整
+  command 破坏到 0/200；正式值已锁定为 `0.002`。full-DR 评估同时开启 physics DR
+  和 reference noise，critic/reward/success 仍使用 clean truth。
+- `tabletop_grasp` full-DR warm-start 基线在 seed 142/143/144 为
+  140/132/133，合计 405/600（67.5%）。4096-env adaptive PPO `model_149` 为
+  158/157/157，合计 472/600（78.67%），提升 67 个成功样本、11.17 个百分点；
+  三个单 seed 的 Wilson 95% lower bound 均高于 72%。
+- 同任务 fixed `1e-5` 的 `model_100` 为 145/141/143，合计 429/600
+  （71.5%），虽然有效但显著弱于 adaptive final，因此不选作 release candidate。
+- `bend_pick` clean expert replay：16/16；clean locked parity：200/200。原 adaptive
+  `model_100` 在 seed 144/145/146/147 为 129/142/138/135，合计 544/800
+  （68%）。从该 checkpoint 以 fixed `1e-5` 在 full DR 下稳定化 25 updates 后为
+  129/142/144/132，合计 547/800（68.38%），是当前最佳，但仍未达到发布门槛。
+  作为对照，从 stronger-clean `model_49` 出发的 adaptive `model_100` 为
+  128/141/142/133（544/800），从 clean policy 开始的 fixed `1e-5 model_75` 为
+  128/144/136/132（540/800），fixed `3e-5 model_75` 为 129/141/142/131
+  （543/800）；增加训练量或更换学习率均未稳定越过 70%，不得宣称 Bend 已达标。
+- 正式 PPO 每 update 使用 4096×24=98,304 条 fresh transitions、5 epochs、4
+  mini-batches、20 optimizer steps；`tabletop_grasp model_149` 累计 14,745,600
+  条 fresh transitions。actor/critic delta 均非零，rollout 未复用，Adam state 全在 CUDA。
