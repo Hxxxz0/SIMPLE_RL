@@ -15,7 +15,7 @@ from simple.grasp_rl.mjlab_gpu.state_v2 import (
 from simple.grasp_rl.schema import JOINT_NAMES
 from simple.grasp_rl.task_spec import GoalStageSpec, TaskSpecV2
 
-GPU_GOAL_REWARD_SCHEMA_VERSION = 6
+GPU_GOAL_REWARD_SCHEMA_VERSION = 7
 
 
 def _json_hash(payload: object) -> str:
@@ -66,6 +66,15 @@ def _approach_progress(
         -15.0 * fingertip_distances.mean(dim=-1).clamp_min(0.0)
     )
     return multi_finger, nearest
+
+
+def _lift_grasp_progress(
+    lift_progress: torch.Tensor,
+    grasp_quality: torch.Tensor,
+) -> torch.Tensor:
+    """Give dense lift credit only while force-verified grasp is retained."""
+
+    return lift_progress.clamp(0.0, 1.0) * grasp_quality.clamp(0.0, 1.0)
 
 
 class GpuGoalGraphReward:
@@ -388,6 +397,16 @@ class GpuGoalGraphReward:
                 else:
                     selected = state.fingertip_distances[:, 1]
                 stage_reward_progress, _ = _approach_progress(selected)
+            elif stage.primitive == "lift":
+                if stage.hand == "left":
+                    selected_quality = left_quality
+                elif stage.hand == "both":
+                    selected_quality = torch.minimum(left_quality, right_quality)
+                else:
+                    selected_quality = right_quality
+                stage_reward_progress = _lift_grasp_progress(
+                    stage_progress, selected_quality
+                )
             active = self.stage_index == index
             progress = torch.where(active, stage_progress, progress)
             reward_progress = torch.where(

@@ -82,11 +82,13 @@ critic 使用 clean reference；reward、success、failure 和 termination 不�
 
 ## 5. Reward 与完整任务成功
 
-当前 GPU goal-graph reward schema 为 v6：
+当前 GPU goal-graph reward schema 为 v7：
 
 - ordered stages：`approach -> grasp -> lift`，place 类任务继续执行 transport/place/settle；
 - approach 和 grasp 使用 multi-finger shaping；
 - grasp stage 使用真实 contact force 验证；
+- lift 的 dense potential 必须同时保有对应手的真实 force-grasp quality，避免 PPO
+  通过碰撞或松手后的物体位移获取虚假抬升奖励；
 - stage shaping 使用 potential delta，不重复乘 discount；
 - success `+40`、failure `-10`、timeout `-5`；
 - reference contact 只表达 clean reference 的接触意图，不控制 success；
@@ -138,13 +140,20 @@ stretch target，因此不能描述为 70% 成功率。
 
 GPU 工程路径已经覆盖，但当前 checkpoint 尚未通过“完整成功大幅高于 reference-only”：
 
-- `bend_pick_and_place`：reference-only clean `0/128`；一次真实 4096-env、512-step
-  PPO update 后仍为 `0/128`。抓取不能代替 place/settle 成功。
-- `xmove_bend_pick`：已有 checkpoint clean `0/128`；一次真实 4096-env、300-step
-  PPO update 后仍为 `0/128`。
-- `bend_pick_teleop`：当前 clean `0/128`，尚无可发布 GPU PPO checkpoint。
+- `bend_pick_and_place`：reference-only clean `0/128`；最新 reward-v7 的真实
+  8192-env、240-step PPO update 后仍为 `0/128`。虽 `128/128` 曾形成抓取、
+  `117/128` 进入 lift stage，但最大抬升仅约 `1.46 mm`；抓取不能代替
+  place/settle 成功。
+- `xmove_bend_pick`：reward-v7 的真实 8192-env、240-step PPO update 后 clean
+  仍为 `0/128`，grasp episode 为 `0/128`。
+- `bend_pick_teleop`：reward-v7 的真实 8192-env、240-step PPO update 后 clean
+  仍为 `0/128`，grasp episode 为 `0/128`。
 - `locomotion_pick_between_tables`：当前 clean `0/128`；能抓取和抬升，但未完成
   transport/place/settle。
+
+三个 reward-v7 update 均收集 `1,966,080` 条 fresh transition、执行 4 次 CUDA
+Adam step，actor/critic 参数变化均非零；它们是有效 PPO 训练，但没有达到完整任务验收，
+因此不发布这些 checkpoint。
 
 因此本轮可以发布的是 `xmove_pick`，不能宣称所有 task 的策略效果都已通过。
 
