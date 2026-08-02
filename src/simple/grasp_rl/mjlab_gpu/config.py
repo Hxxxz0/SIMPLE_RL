@@ -194,6 +194,7 @@ class MjlabPpoConfig:
     reference_source: str = "bc"
     reference_reward_weight: float = 0.05
     reference_target_x_arm_gains: tuple[float, float] = (0.0, 0.0)
+    reference_target_y_arm_gains: tuple[float, float] = (0.0, 0.0)
     max_reference_action_deviation: float = 0.35
     full_dr_reference_reward_scale: float = 0.2
     sensor_schema_version: int = GPU_SENSOR_SCHEMA_VERSION
@@ -220,11 +221,16 @@ class MjlabPpoConfig:
         if self.reference_reward_weight < 0.0:
             raise ValueError("reference_reward_weight must be non-negative")
         if len(self.reference_target_x_arm_gains) != 2 or not all(
-            math.isfinite(float(value))
-            for value in self.reference_target_x_arm_gains
+            math.isfinite(float(value)) for value in self.reference_target_x_arm_gains
         ):
             raise ValueError(
                 "reference_target_x_arm_gains must contain two finite values"
+            )
+        if len(self.reference_target_y_arm_gains) != 2 or not all(
+            math.isfinite(float(value)) for value in self.reference_target_y_arm_gains
+        ):
+            raise ValueError(
+                "reference_target_y_arm_gains must contain two finite values"
             )
         if not 0.0 < self.max_reference_action_deviation <= 2.0:
             raise ValueError("max_reference_action_deviation must be in (0, 2]")
@@ -265,17 +271,18 @@ class MjlabPpoConfig:
             raise ValueError("checkpoint is not from the mjlab MuJoCo-Warp backend")
         if metadata.get("resolved_sha256") == expected["resolved_sha256"]:
             return
-        # Checkpoints released before optional reference retargeting lack this
-        # zero-default field.  Preserve exact resume only when the new behavior
-        # is disabled and every other resolved value still matches.
+        # Checkpoints released before optional reference retargeting lack these
+        # zero-default fields.  Preserve exact resume only when each missing
+        # behavior is disabled and every other resolved value still matches.
         legacy = metadata.get("resolved")
-        if (
-            self.reference_target_x_arm_gains == (0.0, 0.0)
-            and isinstance(legacy, dict)
-            and "reference_target_x_arm_gains" not in legacy
-        ):
+        if isinstance(legacy, dict):
             normalized = dict(legacy)
-            normalized["reference_target_x_arm_gains"] = [0.0, 0.0]
+            for name, gains in (
+                ("reference_target_x_arm_gains", self.reference_target_x_arm_gains),
+                ("reference_target_y_arm_gains", self.reference_target_y_arm_gains),
+            ):
+                if name not in normalized and gains == (0.0, 0.0):
+                    normalized[name] = [0.0, 0.0]
             if _canonical_hash(normalized) == expected["resolved_sha256"]:
                 return
         raise ValueError("checkpoint mjlab PPO configuration hash mismatch")

@@ -52,8 +52,15 @@ def test_train_config_allows_explicit_exploration_std() -> None:
 
 def test_zero_retarget_accepts_legacy_reference_metadata() -> None:
     legacy = {"source": "bc", "observation_dim": 331}
-    expected = {**legacy, "target_x_arm_gains": [0.0, 0.0]}
+    expected = {
+        **legacy,
+        "target_x_arm_gains": [0.0, 0.0],
+        "target_y_arm_gains": [0.0, 0.0],
+    }
     assert _reference_metadata_matches(legacy, expected)
     assert not _reference_metadata_matches(
         legacy, {**legacy, "target_x_arm_gains": [-10.0, 2.0]}
+    )
+    assert not _reference_metadata_matches(
+        legacy, {**legacy, "target_y_arm_gains": [5.0, -3.5]}
     )

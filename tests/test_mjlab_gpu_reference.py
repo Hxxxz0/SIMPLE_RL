@@ -88,7 +88,7 @@ def test_gpu_clean_reference_context_matches_v2_builder(tmp_path) -> None:
     assert library.metadata()["observation_dim"] == ACTOR_OBS_V2_DIM
 
 
-def test_v2_reference_retargets_proposal_from_observed_target_x(tmp_path) -> None:
+def test_v2_reference_retargets_proposal_from_observed_target_pose(tmp_path) -> None:
     root = tmp_path / "retarget_v2"
     source = root / "bc"
     source.mkdir(parents=True)
@@ -107,18 +107,24 @@ def test_v2_reference_retargets_proposal_from_observed_target_x(tmp_path) -> Non
         num_envs=1,
         device="cpu",
         target_x_arm_gains=(-10.0, 2.0),
+        target_y_arm_gains=(5.0, -3.5),
     )
     current = torch.from_numpy(observations[:1]).clone()
     current[:, 163] = 0.02
+    current[:, 164] = -0.03
     library.reset(current, episode_rows=torch.tensor([0]))
 
     torch.testing.assert_close(library.current_action()[0, 21], torch.tensor(-0.2))
     torch.testing.assert_close(library.current_action()[0, 24], torch.tensor(0.04))
+    torch.testing.assert_close(library.current_action()[0, 23], torch.tensor(-0.15))
+    torch.testing.assert_close(library.current_action()[0, 27], torch.tensor(0.105))
     frames = library.clean_context(current)[:, :-1].reshape(
         1, len(REFERENCE_FUTURE_OFFSETS), REFERENCE_FRAME_V2_DIM
     )
     torch.testing.assert_close(frames[0, 0, 21], torch.tensor(-0.2))
     torch.testing.assert_close(frames[0, 0, 24], torch.tensor(0.04))
+    torch.testing.assert_close(frames[0, 0, 23], torch.tensor(-0.15))
+    torch.testing.assert_close(frames[0, 0, 27], torch.tensor(0.105))
 
 
 def test_reference_noise_changes_policy_view_but_not_clean_contact_truth(

@@ -47,7 +47,7 @@ def test_train_cli_accepts_full_trajectory_rollout_override() -> None:
     assert args.ppo_steps_per_env == 240
 
 
-def test_train_cli_accepts_reference_target_x_retarget_gains() -> None:
+def test_train_cli_accepts_reference_target_pose_retarget_gains() -> None:
     args = _parser().parse_args(
         [
             "train",
@@ -60,9 +60,13 @@ def test_train_cli_accepts_reference_target_x_retarget_gains() -> None:
             "--reference-target-x-arm-gains",
             "-10",
             "2",
+            "--reference-target-y-arm-gains",
+            "5",
+            "-3.5",
         ]
     )
     assert args.reference_target_x_arm_gains == [-10.0, 2.0]
+    assert args.reference_target_y_arm_gains == [5.0, -3.5]
 
 
 def test_gpu_entrypoints_seed_torch_and_cuda(monkeypatch) -> None:
@@ -101,17 +105,20 @@ def test_zero_retarget_accepts_legacy_checkpoint_metadata(tmp_path) -> None:
     metadata = config.checkpoint_metadata()
     legacy_resolved = dict(metadata["resolved"])
     legacy_resolved.pop("reference_target_x_arm_gains")
+    legacy_resolved.pop("reference_target_y_arm_gains")
     metadata["resolved"] = legacy_resolved
     metadata["resolved_sha256"] = hashlib.sha256(
-        json.dumps(
-            legacy_resolved, sort_keys=True, separators=(",", ":")
-        ).encode()
+        json.dumps(legacy_resolved, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
 
     config.assert_resume_compatible(metadata)
     with pytest.raises(ValueError, match="hash mismatch"):
         replace(
             config, reference_target_x_arm_gains=(-10.0, 2.0)
+        ).assert_resume_compatible(metadata)
+    with pytest.raises(ValueError, match="hash mismatch"):
+        replace(
+            config, reference_target_y_arm_gains=(5.0, -3.5)
         ).assert_resume_compatible(metadata)
 
 

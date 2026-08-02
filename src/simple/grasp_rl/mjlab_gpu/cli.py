@@ -40,6 +40,18 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
             "per metre of observed target-X offset; default keeps legacy replay"
         ),
     )
+    parser.add_argument(
+        "--reference-target-y-arm-gains",
+        type=float,
+        nargs=2,
+        default=(0.0, 0.0),
+        metavar=("SHOULDER_YAW", "WRIST_YAW"),
+        help=(
+            "Retarget normalized right shoulder-yaw/wrist-yaw reference "
+            "actions per metre of observed target-Y offset; default keeps "
+            "legacy replay"
+        ),
+    )
     parser.add_argument("--dr-initial-strength", type=float)
     parser.add_argument("--dr-warmup-steps", type=int)
     parser.add_argument("--dr-ramp-steps", type=int)
@@ -187,6 +199,7 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         reference_processed=str(args.reference_processed.resolve()),
         reference_source=args.reference_source,
         reference_target_x_arm_gains=tuple(args.reference_target_x_arm_gains),
+        reference_target_y_arm_gains=tuple(args.reference_target_y_arm_gains),
     )
     dr_overrides = {
         name: value
@@ -200,9 +213,7 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
     if dr_overrides:
         config = replace(
             config,
-            domain_randomization=replace(
-                config.domain_randomization, **dr_overrides
-            ),
+            domain_randomization=replace(config.domain_randomization, **dr_overrides),
         )
     if args.dr_profile == "pose_only":
         config = replace(
@@ -371,8 +382,7 @@ def _evaluation_dr_strength(args: argparse.Namespace) -> float:
 def _set_evaluation_dr_strength(env: GpuGraspVecEnv, strength: float) -> None:
     curriculum = env.config.domain_randomization
     env.common_step_counter = round(
-        curriculum.curriculum_warmup_steps
-        + strength * curriculum.curriculum_ramp_steps
+        curriculum.curriculum_warmup_steps + strength * curriculum.curriculum_ramp_steps
     )
     env._reset(torch.arange(env.num_envs, device=env.device))
 
@@ -423,19 +433,13 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         env.num_envs, dtype=torch.bool, device=env.device
     )
     episode_had_grasp = torch.zeros_like(episode_native_success)
-    episode_max_stage = torch.zeros(
-        env.num_envs, dtype=torch.long, device=env.device
-    )
+    episode_max_stage = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
     completed_max_lift: list[float] = []
     completed_max_grasp_quality: list[float] = []
     completed_max_stage: list[int] = []
-    completed_world = torch.zeros(
-        env.num_envs, dtype=torch.bool, device=env.device
-    )
+    completed_world = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     evaluation_world = torch.arange(env.num_envs, device=env.device) < args.episodes
-    outcomes = torch.full(
-        (env.num_envs,), -1, dtype=torch.int8, device=env.device
-    )
+    outcomes = torch.full((env.num_envs,), -1, dtype=torch.int8, device=env.device)
     while episodes < args.episodes:
         stage_index = getattr(env.reward, "stage_index", None)
         if stage_index is not None:
@@ -455,8 +459,10 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         episode_native_success.logical_or_(terms.native_success)
         episode_had_grasp.logical_or_(terms.is_grasp)
         finished = (
-            dones & evaluation_world & ~completed_world
-        ).nonzero(as_tuple=False).flatten()
+            (dones & evaluation_world & ~completed_world)
+            .nonzero(as_tuple=False)
+            .flatten()
+        )
         if len(finished):
             selected = finished
             successes += int(terms.success[selected].sum().item())
@@ -488,9 +494,7 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
     stage_names = getattr(getattr(env.state_reader, "spec", None), "stages", ())
     max_stage_counts = {
         (
-            stage_names[index].name
-            if index < len(stage_names)
-            else str(index)
+            stage_names[index].name if index < len(stage_names) else str(index)
         ): completed_max_stage.count(index)
         for index in sorted(set(completed_max_stage))
     }
@@ -515,8 +519,7 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         "domain_randomization": dr_strength > 0.0,
         "evaluation_dr_strength": dr_strength,
         "reference_noise": bool(
-            dr_strength > 0.0
-            and config.domain_randomization.reference_noise.enabled
+            dr_strength > 0.0 and config.domain_randomization.reference_noise.enabled
         ),
         "dr_profile": args.dr_profile,
         "device": config.device,

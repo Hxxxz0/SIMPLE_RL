@@ -77,6 +77,7 @@ class GpuGraspVecEnv(VecEnv):
             source=config.reference_source,
             splits=("train", "val", "test"),
             target_x_arm_gains=config.reference_target_x_arm_gains,
+            target_y_arm_gains=config.reference_target_y_arm_gains,
         )
         self.max_episode_length = self.reward.max_episode_steps
         self.episode_length_buf = torch.zeros(

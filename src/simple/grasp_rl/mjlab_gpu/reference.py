@@ -61,12 +61,14 @@ class GpuReferenceLibrary:
         source: str = "bc",
         splits: tuple[str, ...] = ("train", "val", "test"),
         target_x_arm_gains: tuple[float, float] = (0.0, 0.0),
+        target_y_arm_gains: tuple[float, float] = (0.0, 0.0),
     ):
         self.root = Path(processed_dir).resolve()
         self.device = device
         self.num_envs = int(num_envs)
         self.source = source
         self.target_x_arm_gains = tuple(float(value) for value in target_x_arm_gains)
+        self.target_y_arm_gains = tuple(float(value) for value in target_y_arm_gains)
         manifest_path = self.root / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
         episode_ids = sorted(
@@ -92,7 +94,9 @@ class GpuReferenceLibrary:
             if observation_dim is None:
                 observation_dim = int(episode_observations.shape[1])
             elif episode_observations.shape[1] != observation_dim:
-                raise ValueError("Reference episodes mix incompatible observation schemas")
+                raise ValueError(
+                    "Reference episodes mix incompatible observation schemas"
+                )
             if episode_actions.shape != (len(episode_observations), ACTION_DIM):
                 raise ValueError(f"Episode {episode} has invalid actions")
             observations.append(episode_observations)
@@ -100,8 +104,12 @@ class GpuReferenceLibrary:
 
         assert observation_dim is not None
         self.observation_dim = observation_dim
-        if any(self.target_x_arm_gains) and observation_dim != ACTOR_OBS_V2_DIM:
-            raise ValueError("target-X reference retargeting requires v2 observations")
+        if (
+            any(self.target_x_arm_gains) or any(self.target_y_arm_gains)
+        ) and observation_dim != ACTOR_OBS_V2_DIM:
+            raise ValueError(
+                "target-pose reference retargeting requires v2 observations"
+            )
         self.context_dim = (
             REFERENCE_CONTEXT_V2_DIM
             if observation_dim == ACTOR_OBS_V2_DIM
@@ -163,6 +171,7 @@ class GpuReferenceLibrary:
             "data_sha256": self.data_sha256,
             "observation_dim": self.observation_dim,
             "target_x_arm_gains": list(self.target_x_arm_gains),
+            "target_y_arm_gains": list(self.target_y_arm_gains),
         }
 
     def _retarget_actions(self, actions: torch.Tensor) -> torch.Tensor:
@@ -171,20 +180,26 @@ class GpuReferenceLibrary:
         if actions.shape[0] != self.num_envs or actions.shape[-1] != ACTION_DIM:
             raise ValueError("Retarget actions have an incompatible shape")
         shoulder_gain, elbow_gain = self.target_x_arm_gains
-        if shoulder_gain == 0.0 and elbow_gain == 0.0:
+        shoulder_yaw_gain, wrist_yaw_gain = self.target_y_arm_gains
+        if not any((*self.target_x_arm_gains, *self.target_y_arm_gains)):
             return actions
-        offset_x = self.reference_object_offset[:, 0]
+        offset_x, offset_y = self.reference_object_offset[:, :2].unbind(-1)
         for _ in range(actions.ndim - 2):
             offset_x = offset_x.unsqueeze(-1)
+            offset_y = offset_y.unsqueeze(-1)
         result = actions.clone()
         result[..., 21].add_(offset_x, alpha=shoulder_gain)
         result[..., 24].add_(offset_x, alpha=elbow_gain)
+        result[..., 23].add_(offset_y, alpha=shoulder_yaw_gain)
+        result[..., 27].add_(offset_y, alpha=wrist_yaw_gain)
         return result.clamp(-1.0, 1.0)
 
     def rows_for_episode(self, episode: int, count: int) -> torch.Tensor:
         matches = (self.episode_ids == int(episode)).nonzero(as_tuple=False).flatten()
         if len(matches) != 1:
-            raise ValueError(f"Reference episode {episode} is unavailable or duplicated")
+            raise ValueError(
+                f"Reference episode {episode} is unavailable or duplicated"
+            )
         return matches[0].expand(count)
 
     def reset(
@@ -243,9 +258,7 @@ class GpuReferenceLibrary:
 
     def _contact_label(self, observation: torch.Tensor) -> torch.Tensor:
         if self.observation_dim == ACTOR_OBS_V2_DIM:
-            return (observation[..., V2_PREDICATES.start + 1] > 0.5).to(
-                torch.float32
-            )
+            return (observation[..., V2_PREDICATES.start + 1] > 0.5).to(torch.float32)
         forces = observation[..., CONTACT_FORCE].reshape(*observation.shape[:-1], 8, 3)
         magnitude = forces.norm(dim=-1)
         thumb = magnitude[..., 1:4].amax(dim=-1) > 2.0
@@ -298,8 +311,11 @@ class GpuReferenceLibrary:
         dt = torch.minimum(frame_offsets, remaining.clamp_min(0)).float() / 50.0
         root_velocity = reference_observations[..., 89:95]
         root_delta = torch.stack(
-            (root_velocity[..., 0] * dt, root_velocity[..., 1] * dt,
-             root_velocity[..., 5] * dt),
+            (
+                root_velocity[..., 0] * dt,
+                root_velocity[..., 1] * dt,
+                root_velocity[..., 5] * dt,
+            ),
             dim=-1,
         )
         primary = (
@@ -311,7 +327,9 @@ class GpuReferenceLibrary:
             reference_observations[..., V2_AUXILIARY_POS]
             - observation[:, None, V2_AUXILIARY_POS]
         )
-        interactions = reference_observations[..., V2_PREDICATES.start:V2_PREDICATES.start + 4]
+        interactions = reference_observations[
+            ..., V2_PREDICATES.start : V2_PREDICATES.start + 4
+        ]
         articulation = reference_observations[..., V2_ARTICULATION]
         present = articulation[..., (0, 4)] > 0.5
         target_delta = articulation[..., (3, 7)].abs()
@@ -321,7 +339,10 @@ class GpuReferenceLibrary:
             torch.ones_like(target_delta),
         ).amin(dim=-1)
         articulation_progress = (1.0 - minimum.clamp(max=1.0))[..., None]
-        stage = reference_observations[..., V2_STAGE].argmax(dim=-1).float()[..., None] / 7.0
+        stage = (
+            reference_observations[..., V2_STAGE].argmax(dim=-1).float()[..., None]
+            / 7.0
+        )
         frames = torch.cat(
             (
                 reference_actions,

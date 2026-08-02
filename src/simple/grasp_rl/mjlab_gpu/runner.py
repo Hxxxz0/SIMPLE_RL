@@ -118,9 +118,7 @@ def checkpoint_uses_plan_conditioned_actor(checkpoint: str | Path) -> bool:
     return "_plan_conditioned_actor" in state
 
 
-def _reference_metadata_matches(
-    actual: object, expected: dict[str, object]
-) -> bool:
+def _reference_metadata_matches(actual: object, expected: dict[str, object]) -> bool:
     """Accept pre-retarget metadata only for the unchanged zero-gain path."""
 
     if actual == expected:
@@ -128,11 +126,9 @@ def _reference_metadata_matches(
     if not isinstance(actual, dict):
         return False
     normalized = dict(actual)
-    if (
-        "target_x_arm_gains" not in normalized
-        and expected.get("target_x_arm_gains") == [0.0, 0.0]
-    ):
-        normalized["target_x_arm_gains"] = [0.0, 0.0]
+    for name in ("target_x_arm_gains", "target_y_arm_gains"):
+        if name not in normalized and expected.get(name) == [0.0, 0.0]:
+            normalized[name] = [0.0, 0.0]
     return normalized == expected
 
 
@@ -223,7 +219,9 @@ class GpuPpoRunner(OnPolicyRunner):
         normalizer = getattr(self.alg.get_policy(), "obs_normalizer", None)
         count = getattr(normalizer, "count", None)
         if normalizer is None or count is None or not hasattr(normalizer, "until"):
-            raise ValueError("Actor does not expose a freezeable observation normalizer")
+            raise ValueError(
+                "Actor does not expose a freezeable observation normalizer"
+            )
         normalizer.until = int(count.item())
 
     def assert_cuda_integrity(self, *, require_optimizer_state: bool) -> None:
