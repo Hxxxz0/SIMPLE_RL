@@ -15,13 +15,45 @@ from simple.grasp_rl.mjlab_gpu.state_v2 import (
 from simple.grasp_rl.schema import JOINT_NAMES
 from simple.grasp_rl.task_spec import GoalStageSpec, TaskSpecV2
 
-
-GPU_GOAL_REWARD_SCHEMA_VERSION = 1
+GPU_GOAL_REWARD_SCHEMA_VERSION = 4
 
 
 def _json_hash(payload: object) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _terminal_adjustment(
+    success: torch.Tensor,
+    failure: torch.Tensor,
+    timeout: torch.Tensor,
+) -> torch.Tensor:
+    """Keep terminal incentives identical across goal-graph task families."""
+
+    zeros = torch.zeros_like(success, dtype=torch.float32)
+    return torch.where(
+        success,
+        torch.full_like(zeros, 20.0),
+        torch.where(
+            failure,
+            torch.full_like(zeros, -10.0),
+            torch.where(timeout, torch.full_like(zeros, -5.0), zeros),
+        ),
+    )
+
+
+def _supported_grasp_progress(
+    fingertip_distances: torch.Tensor,
+    lift_height: torch.Tensor,
+    quality: torch.Tensor,
+) -> torch.Tensor:
+    """Shape pre-contact grasping without rewarding a displaced object."""
+
+    multi_finger_reach = torch.exp(
+        -15.0 * fingertip_distances.mean(dim=-1).clamp_min(0.0)
+    )
+    support = torch.exp(-40.0 * (-lift_height).clamp_min(0.0))
+    return torch.maximum(quality, 0.25 * multi_finger_reach * support)
 
 
 class GpuGoalGraphReward:
@@ -212,11 +244,17 @@ class GpuGoalGraphReward:
                 active = state.predicates[:, 1].bool()
             return active.float(), active
         if stage.primitive == "grasp":
-            return (
+            hand_index = 0 if stage.hand == "left" else 1
+            quality, active = (
                 (left_quality, left_grasp)
                 if stage.hand == "left"
                 else (right_quality, right_grasp)
             )
+            lift = state.primary.pos_w[:, 2] - state.initial_primary_pos[:, 2]
+            progress = _supported_grasp_progress(
+                state.fingertip_distances[:, hand_index], lift, quality
+            )
+            return progress, active
         if stage.primitive == "bimanual":
             active = state.predicates[:, 0].bool() & state.predicates[:, 1].bool()
             return torch.minimum(left_quality, right_quality), active
@@ -346,7 +384,10 @@ class GpuGoalGraphReward:
         self.stage_hold[advance] = 0
         progress = torch.where(advance, torch.zeros_like(progress), progress)
         potential = self.stage_index.float() + progress.clamp(0.0, 1.0)
-        potential_delta = 0.99 * potential - self.previous_potential
+        # PPO discounts returns already.  Discounting the shaping potential a
+        # second time charges a negative reward for every unchanged valid hold,
+        # which is especially harmful for long transport/place trajectories.
+        potential_delta = potential - self.previous_potential
         graph_target = 5.0 * potential_delta.clamp(-0.25, 1.0)
         graph_target = graph_target + 2.0 * completed.float()
         self.previous_potential.copy_(potential)
@@ -418,15 +459,11 @@ class GpuGoalGraphReward:
         raw_action_rate = normalized_delta.square().mean(dim=-1)
         joint_limit = self._joint_limit_penalty()
         if use_grail:
-            lift_progress = (
-                lift_height / max(self.spec.lift_height, 1e-3)
-            ).clamp(0.0, 1.0)
-            target = (
-                5.0 * grail_grasp
-                + 10.0 * grail_finger
-                + 5.0 * lift_progress
-                + graph_target
-            )
+            # The ordered graph already uses force-verified grasp quality and
+            # lift progress as a discounted potential difference.  Adding
+            # their absolute values every step makes an endless static grasp
+            # more valuable than completing the lift and terminating.
+            target = graph_target
             penalty = (
                 state.predicates[:, 7]
                 + 0.01 * raw_action_rate
@@ -439,19 +476,7 @@ class GpuGoalGraphReward:
                 + 0.5 * dangerous.float()
                 + joint_limit
             )
-        terminal = torch.where(
-            success,
-            torch.full_like(progress, 20.0),
-            torch.where(
-                failure,
-                torch.full_like(progress, -10.0),
-                torch.where(
-                    timeout & (not use_grail),
-                    torch.full_like(progress, -5.0),
-                    torch.zeros_like(progress),
-                ),
-            ),
-        )
+        terminal = _terminal_adjustment(success, failure, timeout)
         self.stage_progress.copy_(progress)
         self.state_reader.set_stage(self.stage_index, self.stage_progress)
         quality = torch.maximum(left_quality, right_quality)

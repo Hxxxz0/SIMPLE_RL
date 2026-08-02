@@ -9,11 +9,22 @@ import pytest
 import torch
 from tensordict import TensorDict
 
+from simple.grasp_rl.collect import _filter_replay_gated_rows
+from simple.grasp_rl.data_v2 import (
+    _successful_replay_transform,
+    _usable_replay_episode_ids,
+    repair_cross_table_actions,
+)
 from simple.grasp_rl.diffusion import DDPMScheduler, DiffusionDenoiser, _loss
 from simple.grasp_rl.distribution import TemporallyCorrelatedGaussianDistribution
+from simple.grasp_rl.evaluate import (
+    _filter_evaluation_split,
+    reference_action_from_observation,
+)
+from simple.grasp_rl.goal_reward import GoalGraphReward
 from simple.grasp_rl.motion import frames_to_features
-from simple.grasp_rl.policy import KnnBcActor, make_actor
 from simple.grasp_rl.paired import exact_mcnemar_p_value
+from simple.grasp_rl.policy import KnnBcActor, make_actor
 from simple.grasp_rl.reference import (
     ReferenceLibrary,
     ReferenceTracker,
@@ -25,45 +36,34 @@ from simple.grasp_rl.rewards import GraspReward, compose_reward
 from simple.grasp_rl.schema import (
     ACTION_DIM,
     ACTOR_OBS_DIM,
+    ACTOR_OBS_V2_DIM,
     JOINT_NAMES,
+    MAX_EPISODE_STEPS,
     MOTION_FEATURE_DIM,
     MOTION_FRAME_DIM,
     MOTION_WINDOW,
-    MAX_EPISODE_STEPS,
     REFERENCE_ACTOR_OBS_DIM,
-    REFERENCE_CONTEXT_DIM,
-    ACTOR_OBS_V2_DIM,
-    REFERENCE_CONTEXT_V2_DIM,
     REFERENCE_ACTOR_OBS_V2_DIM,
+    REFERENCE_CONTEXT_DIM,
+    REFERENCE_CONTEXT_V2_DIM,
 )
-from simple.grasp_rl.data_v2 import (
-    _successful_replay_transform,
-    _usable_replay_episode_ids,
-    repair_cross_table_actions,
-)
-from simple.grasp_rl.collect import _filter_replay_gated_rows
-from simple.grasp_rl.evaluate import (
-    _filter_evaluation_split,
-    reference_action_from_observation,
-)
-from simple.grasp_rl.goal_reward import GoalGraphReward
 from simple.grasp_rl.state_v2 import V2_SLICES
-from simple.grasp_rl.train import PpoTrainConfig, rsl_config
-from simple.grasp_rl.vec_env import (
-    apply_reference_action_bias,
-    reference_residual_action_rate,
+from simple.grasp_rl.task_spec import (
+    TaskSpecV2,
+    checkpoint_task_metadata,
+    get_task_spec,
+    task_names,
+    validate_task_metadata,
 )
 from simple.grasp_rl.tracker import (
     ActionTransform,
     compute_action_transform,
     upper_joints_from_tracker,
 )
-from simple.grasp_rl.task_spec import (
-    checkpoint_task_metadata,
-    get_task_spec,
-    task_names,
-    TaskSpecV2,
-    validate_task_metadata,
+from simple.grasp_rl.train import PpoTrainConfig, rsl_config
+from simple.grasp_rl.vec_env import (
+    apply_reference_action_bias,
+    reference_residual_action_rate,
 )
 
 
@@ -185,9 +185,10 @@ def test_v2_plan_correction_preserves_non_manipulation_and_release() -> None:
         ]
         linear[-1].bias.fill_(1.0)
 
-    def command(stage: int) -> np.ndarray:
+    def command(stage: int, family: int = 1) -> np.ndarray:
         observation = torch.zeros(1, REFERENCE_ACTOR_OBS_V2_DIM)
         observation[:, ACTOR_OBS_V2_DIM:ACTOR_OBS_V2_DIM + ACTION_DIM] = .25
+        observation[:, 316 + family] = 1.0
         observation[:, 322 + stage] = 1.0
         result = actor(
             TensorDict({"actor": observation}, batch_size=[1]),
@@ -198,13 +199,22 @@ def test_v2_plan_correction_preserves_non_manipulation_and_release() -> None:
     approach = command(0)
     transport = command(3)
     place = command(4)
+    release = command(5)
     np.testing.assert_allclose(approach[7:14], 1.25)
     np.testing.assert_allclose(approach[21:28], 1.25)
     np.testing.assert_allclose(approach[:7], .25)
     np.testing.assert_allclose(approach[28:], .25)
-    np.testing.assert_allclose(transport[7:14], .25)
+    np.testing.assert_allclose(transport[7:14], 1.25)
     np.testing.assert_allclose(transport[21:28], 1.25)
-    np.testing.assert_allclose(place, .25)
+    np.testing.assert_allclose(place[7:14], 1.25)
+    np.testing.assert_allclose(place[21:28], 1.25)
+    np.testing.assert_allclose(place[:7], .25)
+    np.testing.assert_allclose(place[28:], .25)
+    np.testing.assert_allclose(release, .25)
+    handover_place = command(3, family=2)
+    np.testing.assert_allclose(handover_place[7:14], 1.25)
+    np.testing.assert_allclose(handover_place[21:28], 1.25)
+    np.testing.assert_allclose(command(4, family=2), .25)
 
 
 def test_bend_pick_adapter_preserves_policy_contract_and_native_goal() -> None:
@@ -569,6 +579,28 @@ def test_v2_plan_conditioned_actor_uses_complete_command_slot() -> None:
     proposal = observation[:, ACTOR_OBS_V2_DIM:ACTOR_OBS_V2_DIM + ACTION_DIM]
     output = actor(TensorDict({"actor": observation}, batch_size=[2]), stochastic_output=False)
     torch.testing.assert_close(output, proposal)
+
+
+def test_v2_plan_conditioned_actor_keeps_residual_through_place_only() -> None:
+    actor = make_actor("cpu", REFERENCE_ACTOR_OBS_V2_DIM, plan_conditioned=True)
+    for parameter in actor.mlp.parameters():
+        torch.nn.init.zeros_(parameter)
+    linear_layers = [
+        module for module in actor.mlp.modules() if isinstance(module, torch.nn.Linear)
+    ]
+    torch.nn.init.ones_(linear_layers[-1].bias)
+    observation = torch.zeros(2, REFERENCE_ACTOR_OBS_V2_DIM)
+    observation[0, 322 + 4] = 1.0  # place
+    observation[1, 322 + 5] = 1.0  # release/settle
+
+    output = actor(
+        TensorDict({"actor": observation}, batch_size=[2]),
+        stochastic_output=False,
+    )
+    expected = torch.zeros_like(output)
+    expected[0, 7:14] = 1.0
+    expected[0, 21:28] = 1.0
+    torch.testing.assert_close(output, expected)
 
 
 def test_collection_can_try_exact_base_plan_before_neighbor_ranks() -> None:

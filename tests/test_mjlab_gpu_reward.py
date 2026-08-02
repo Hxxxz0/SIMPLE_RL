@@ -3,6 +3,10 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
+from simple.grasp_rl.mjlab_gpu.goal_reward import (
+    _supported_grasp_progress,
+    _terminal_adjustment,
+)
 from simple.grasp_rl.mjlab_gpu.reward import GpuGraspReward
 from simple.grasp_rl.schema import JOINT_NAMES
 from simple.grasp_rl.task_spec import GraspLiftRewardSpec
@@ -104,3 +108,22 @@ def test_clean_reference_contact_does_not_control_success_truth() -> None:
     terms = reward.compute(_state(), actions, actions, torch.ones(36))
     assert terms.grail_grasp.tolist() == [0.0, 0.0]
     assert terms.success.tolist() == [True, False]
+
+
+def test_goal_graph_timeout_penalty_applies_to_grasp_tasks() -> None:
+    terminal = _terminal_adjustment(
+        torch.tensor([True, False, False, False]),
+        torch.tensor([False, True, False, False]),
+        torch.tensor([False, False, True, False]),
+    )
+    torch.testing.assert_close(terminal, torch.tensor([20.0, -10.0, -5.0, 0.0]))
+
+
+def test_grasp_progress_rewards_supported_multi_finger_reach() -> None:
+    distances = torch.tensor([[0.02, 0.03, 0.04]]).repeat(3, 1)
+    lift = torch.tensor([0.0, -0.03, 0.0])
+    quality = torch.tensor([0.0, 0.0, 0.8])
+    progress = _supported_grasp_progress(distances, lift, quality)
+
+    assert progress[0] > progress[1]
+    torch.testing.assert_close(progress[2], torch.tensor(0.8))

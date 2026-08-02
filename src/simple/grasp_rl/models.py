@@ -14,6 +14,9 @@ from simple.grasp_rl.schema import (
     base_observation_dim,
 )
 
+V2_RESIDUAL_LAST_ACTIVE_STAGE = 4
+V2_HANDOVER_FAMILY_INDEX = 2
+
 
 class ClippedEmpiricalNormalization(EmpiricalNormalization):
     """Empirical normalization with a bounded out-of-distribution response.
@@ -69,11 +72,12 @@ class PlanConditionedMLPModel(ClippedMLPModel):
     The first future-reference frame contains the generator's current 36-D
     tracker command.  A zero-initialized policy therefore starts exactly on
     the generated trajectory.  For v2 multi-stage tasks, PPO correction is
-    restricted to the right arm/hand during approach, grasp and lift; the
-    audited plan owns locomotion, transport, placement and release.  The
-    distribution is defined
-    over the *complete command* (not over a separately executed residual), so
-    rollout actions and PPO log-probabilities remain consistent.
+    restricted to the right arm/hand through placement; the audited plan owns
+    locomotion and release/settle.  Keeping the grasp residual active during
+    transport prevents a delayed policy stage from inheriting a prematurely
+    opening replay command.  The distribution is defined over the *complete
+    command* (not over a separately executed residual), so rollout actions and
+    PPO log-probabilities remain consistent.
 
     During the current replay ablation the proposal comes from the recorded
     trajectory.  In the final system this slot must be populated by the SMP
@@ -106,14 +110,22 @@ class PlanConditionedMLPModel(ClippedMLPModel):
         correction = self.mlp(latent)
         if self.obs_dim == REFERENCE_ACTOR_OBS_V2_DIM:
             # V2 task-context stage one-hot is at base-state indices 322:330.
-            # For the flagship task, stages 0..2 are approach/grasp/lift and
-            # stage 3 is transport.  Arm correction follows the moved object
-            # through transport; finger correction stops after lift.
-            hand_active = raw[..., 322:325].sum(-1, keepdim=True).clamp(0.0, 1.0)
-            arm_active = raw[..., 322:326].sum(-1, keepdim=True).clamp(0.0, 1.0)
+            # Most pick tasks use stages 0..4 for approach through place and
+            # stage 5 for release/settle.  Handover is shorter: its stage 4 is
+            # already release/settle, so exclude that family/stage pair too.
+            # The environment applies the same mask after sampling, so
+            # exploration noise cannot bypass it.
+            active = raw[
+                ..., 322 : 323 + V2_RESIDUAL_LAST_ACTIVE_STAGE
+            ].sum(-1, keepdim=True).clamp(0.0, 1.0)
+            handover_release = (
+                raw[..., 316 + V2_HANDOVER_FAMILY_INDEX : 317 + V2_HANDOVER_FAMILY_INDEX]
+                * raw[..., 326:327]
+            )
+            active = (active - handover_release).clamp(0.0, 1.0)
             correction_mask = torch.zeros_like(correction)
-            correction_mask[..., 7:14] = hand_active
-            correction_mask[..., 21:28] = arm_active
+            correction_mask[..., 7:14] = active
+            correction_mask[..., 21:28] = active
             correction = correction * correction_mask
         complete_command = proposal + correction
         if self.distribution is not None:

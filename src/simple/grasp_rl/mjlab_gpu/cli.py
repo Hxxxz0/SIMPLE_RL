@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import torch
 
 from simple.grasp_rl.mjlab_gpu.config import MjlabPpoConfig
+from simple.grasp_rl.mjlab_gpu.recording import record_success_videos
 from simple.grasp_rl.mjlab_gpu.runner import (
     GpuPpoRunner,
     checkpoint_uses_plan_conditioned_actor,
     ppo_train_config,
 )
-from simple.grasp_rl.mjlab_gpu.recording import record_success_videos
 from simple.grasp_rl.mjlab_gpu.vec_env import GpuGraspVecEnv
 
 
@@ -29,14 +29,25 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument(
+        "--reference-target-x-arm-gains",
+        type=float,
+        nargs=2,
+        default=(0.0, 0.0),
+        metavar=("SHOULDER", "ELBOW"),
+        help=(
+            "Retarget normalized right shoulder-pitch/elbow reference actions "
+            "per metre of observed target-X offset; default keeps legacy replay"
+        ),
+    )
     parser.add_argument("--dr-initial-strength", type=float)
     parser.add_argument("--dr-warmup-steps", type=int)
     parser.add_argument("--dr-ramp-steps", type=int)
     parser.add_argument(
         "--dr-profile",
-        choices=("full", "pose_only"),
+        choices=("full", "pose_only", "target_x_only"),
         default="full",
-        help="Stage target-pose adaptation before the unchanged full-DR profile",
+        help="Stage diagnosed target-pose adaptation before the full-DR profile",
     )
 
 
@@ -48,12 +59,33 @@ def _parser() -> argparse.ArgumentParser:
     train.add_argument("--output", type=Path, required=True)
     train.add_argument("--iterations", type=int, default=10_000)
     train.add_argument("--warm-start", type=Path)
+    train.add_argument(
+        "--warm-start-critic",
+        action="store_true",
+        help=(
+            "With --warm-start, also restore the critic from an audited GPU "
+            "checkpoint while starting a fresh optimizer"
+        ),
+    )
     train.add_argument("--resume", type=Path)
     train.add_argument(
         "--initial-vector-step",
         type=int,
         default=0,
         help="Start a warm-start run at this DR curriculum vector step",
+    )
+    train.add_argument(
+        "--resume-vector-step",
+        type=int,
+        help=(
+            "After an exact PPO resume, reset worlds at this DR curriculum "
+            "vector step while preserving critic and Adam state"
+        ),
+    )
+    train.add_argument(
+        "--reset-resume-optimizer",
+        action="store_true",
+        help="Reset Adam moments after an exact resume while retaining actor/critic",
     )
     train.add_argument(
         "--learning-rate",
@@ -70,6 +102,26 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         help="Override the fixed Gaussian PPO action standard deviation",
     )
+    train.add_argument(
+        "--ppo-clip-param",
+        type=float,
+        help="Override the PPO probability-ratio clipping radius",
+    )
+    train.add_argument(
+        "--ppo-learning-epochs",
+        type=int,
+        help="Override the number of fresh-rollout PPO optimization epochs",
+    )
+    train.add_argument(
+        "--ppo-steps-per-env",
+        type=int,
+        help="Override fresh rollout length per environment and PPO update",
+    )
+    train.add_argument(
+        "--freeze-actor-normalizer",
+        action="store_true",
+        help="Keep warm-start actor observation statistics fixed during PPO",
+    )
 
     evaluate = commands.add_parser("evaluate")
     _common(evaluate)
@@ -84,6 +136,11 @@ def _parser() -> argparse.ArgumentParser:
         "--stress-domain-randomization",
         action="store_true",
         help="Evaluate deterministic policy under full physics/reference DR",
+    )
+    evaluate.add_argument(
+        "--evaluation-dr-strength",
+        type=float,
+        help="Evaluate at an exact staged DR strength in [0, 1]",
     )
 
     record = commands.add_parser("record")
@@ -100,6 +157,11 @@ def _parser() -> argparse.ArgumentParser:
         "--stress-domain-randomization",
         action="store_true",
         help="Record deterministic policy under full physics/reference DR",
+    )
+    record.add_argument(
+        "--evaluation-dr-strength",
+        type=float,
+        help="Record at an exact staged DR strength in [0, 1]",
     )
     return parser
 
@@ -118,6 +180,7 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         smoke_mode=args.smoke,
         reference_processed=str(args.reference_processed.resolve()),
         reference_source=args.reference_source,
+        reference_target_x_arm_gains=tuple(args.reference_target_x_arm_gains),
     )
     dr_overrides = {
         name: value
@@ -140,6 +203,11 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
             config,
             domain_randomization=config.domain_randomization.pose_only(),
         )
+    elif args.dr_profile == "target_x_only":
+        config = replace(
+            config,
+            domain_randomization=config.domain_randomization.target_x_only(),
+        )
     return config
 
 
@@ -148,14 +216,28 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("iterations must be positive")
     if args.initial_vector_step < 0:
         raise ValueError("initial-vector-step must be non-negative")
+    if args.resume_vector_step is not None and args.resume_vector_step < 0:
+        raise ValueError("resume-vector-step must be non-negative")
     if args.learning_rate is not None and args.learning_rate <= 0.0:
         raise ValueError("learning-rate must be positive")
     if args.exploration_std is not None and args.exploration_std <= 0.0:
         raise ValueError("exploration-std must be positive")
+    if args.ppo_clip_param is not None and not 0.0 < args.ppo_clip_param <= 1.0:
+        raise ValueError("ppo-clip-param must be in (0, 1]")
+    if args.ppo_learning_epochs is not None and args.ppo_learning_epochs < 1:
+        raise ValueError("ppo-learning-epochs must be positive")
+    if args.ppo_steps_per_env is not None and args.ppo_steps_per_env < 1:
+        raise ValueError("ppo-steps-per-env must be positive")
     if args.resume is not None and args.warm_start is not None:
         raise ValueError("resume and warm-start are mutually exclusive")
     if args.resume is not None and args.initial_vector_step:
         raise ValueError("resume restores vector step; do not override it")
+    if args.resume_vector_step is not None and args.resume is None:
+        raise ValueError("resume-vector-step requires --resume")
+    if args.reset_resume_optimizer and args.resume is None:
+        raise ValueError("reset-resume-optimizer requires --resume")
+    if args.warm_start_critic and args.warm_start is None:
+        raise ValueError("warm-start-critic requires --warm-start")
     config = _config(args)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -180,12 +262,22 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         train_config["algorithm"]["learning_rate"] = args.learning_rate
     if args.schedule is not None:
         train_config["algorithm"]["schedule"] = args.schedule
+    if args.ppo_clip_param is not None:
+        train_config["algorithm"]["clip_param"] = args.ppo_clip_param
+    if args.ppo_learning_epochs is not None:
+        train_config["algorithm"]["num_learning_epochs"] = args.ppo_learning_epochs
+    if args.ppo_steps_per_env is not None:
+        train_config["num_steps_per_env"] = args.ppo_steps_per_env
     (output / "config.json").write_text(
         json.dumps(
             {
                 "environment": config.resolved(),
                 "ppo": train_config,
                 "initial_vector_step": args.initial_vector_step,
+                "resume_vector_step": args.resume_vector_step,
+                "reset_resume_optimizer": args.reset_resume_optimizer,
+                "warm_start_critic": args.warm_start_critic,
+                "freeze_actor_normalizer": args.freeze_actor_normalizer,
             },
             indent=2,
             default=list,
@@ -199,8 +291,28 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
     )
     if args.resume is not None:
         runner.load(str(args.resume.resolve()))
+        if args.reset_resume_optimizer:
+            runner.alg.optimizer.state.clear()
+        if args.learning_rate is not None:
+            runner.alg.learning_rate = args.learning_rate
+            for group in runner.alg.optimizer.param_groups:
+                group["lr"] = args.learning_rate
+        if args.exploration_std is not None:
+            distribution = runner.alg.get_policy().distribution
+            std_param = getattr(distribution, "std_param", None)
+            if std_param is None:
+                raise ValueError("exploration-std requires scalar Gaussian std")
+            with torch.no_grad():
+                std_param.fill_(args.exploration_std)
+        if args.resume_vector_step is not None:
+            env.common_step_counter = args.resume_vector_step
+            env._reset(torch.arange(env.num_envs, device=env.device))
     elif args.warm_start is not None:
         runner.load_actor_warm_start(args.warm_start.resolve())
+        if args.warm_start_critic:
+            runner.load_critic_warm_start(args.warm_start.resolve())
+    if args.freeze_actor_normalizer:
+        runner.freeze_actor_normalizer()
     runner.assert_cuda_integrity(
         require_optimizer_state=bool(runner.alg.optimizer.state)
     )
@@ -222,6 +334,27 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def _evaluation_dr_strength(args: argparse.Namespace) -> float:
+    staged = args.evaluation_dr_strength
+    if staged is not None and not 0.0 <= staged <= 1.0:
+        raise ValueError("evaluation-dr-strength must be in [0, 1]")
+    if args.stress_domain_randomization and staged is not None:
+        raise ValueError(
+            "stress-domain-randomization and evaluation-dr-strength are "
+            "mutually exclusive"
+        )
+    return 1.0 if args.stress_domain_randomization else float(staged or 0.0)
+
+
+def _set_evaluation_dr_strength(env: GpuGraspVecEnv, strength: float) -> None:
+    curriculum = env.config.domain_randomization
+    env.common_step_counter = round(
+        curriculum.curriculum_warmup_steps
+        + strength * curriculum.curriculum_ramp_steps
+    )
+    env._reset(torch.arange(env.num_envs, device=env.device))
+
+
 @torch.inference_mode()
 def _evaluate(args: argparse.Namespace) -> dict[str, object]:
     if args.episodes < 1:
@@ -234,17 +367,14 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
             "paired evaluation requires episodes <= num-envs so each result "
             "comes from one unique initial world"
         )
+    dr_strength = _evaluation_dr_strength(args)
     env = GpuGraspVecEnv(
         config,
         training=False,
-        randomization_enabled=args.stress_domain_randomization,
+        randomization_enabled=dr_strength > 0.0,
     )
-    if args.stress_domain_randomization:
-        curriculum = config.domain_randomization
-        env.common_step_counter = (
-            curriculum.curriculum_warmup_steps + curriculum.curriculum_ramp_steps
-        )
-        env._reset(torch.arange(env.num_envs, device=env.device))
+    if dr_strength > 0.0:
+        _set_evaluation_dr_strength(env, dr_strength)
     actor = None
     if not args.reference_only:
         assert args.checkpoint is not None
@@ -338,9 +468,10 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         "mean_max_lift": sum(completed_max_lift) / episodes,
         "max_lift": max(completed_max_lift),
         "mean_max_grasp_quality": sum(completed_max_grasp_quality) / episodes,
-        "domain_randomization": bool(args.stress_domain_randomization),
+        "domain_randomization": dr_strength > 0.0,
+        "evaluation_dr_strength": dr_strength,
         "reference_noise": bool(
-            args.stress_domain_randomization
+            dr_strength > 0.0
             and config.domain_randomization.reference_noise.enabled
         ),
         "dr_profile": args.dr_profile,
@@ -360,18 +491,15 @@ def _record(args: argparse.Namespace) -> dict[str, object]:
         if getattr(args, name) < 1:
             raise ValueError(f"{name.replace('_', '-')} must be positive")
     config = _config(args)
+    dr_strength = _evaluation_dr_strength(args)
     env = GpuGraspVecEnv(
         config,
         training=False,
-        randomization_enabled=args.stress_domain_randomization,
+        randomization_enabled=dr_strength > 0.0,
         capture_terminal_qpos=True,
     )
-    if args.stress_domain_randomization:
-        curriculum = config.domain_randomization
-        env.common_step_counter = (
-            curriculum.curriculum_warmup_steps + curriculum.curriculum_ramp_steps
-        )
-        env._reset(torch.arange(env.num_envs, device=env.device))
+    if dr_strength > 0.0:
+        _set_evaluation_dr_strength(env, dr_strength)
     train_config = ppo_train_config(
         smoke=True,
         plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(args.checkpoint),

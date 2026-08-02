@@ -1,8 +1,12 @@
+import hashlib
+import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 import torch
 
+from simple.grasp_rl.mjlab_gpu.cli import _evaluation_dr_strength, _parser
 from simple.grasp_rl.mjlab_gpu.config import (
     DomainRandomizationConfig,
     MjlabPpoConfig,
@@ -26,6 +30,41 @@ def test_gpu_ppo_config_rejects_cpu_and_small_long_runs(tmp_path) -> None:
     assert smoke.num_envs == 16
 
 
+def test_train_cli_accepts_full_trajectory_rollout_override() -> None:
+    args = _parser().parse_args(
+        [
+            "train",
+            "--asset-bundle",
+            "assets",
+            "--reference-processed",
+            "reference",
+            "--output",
+            "output",
+            "--ppo-steps-per-env",
+            "240",
+        ]
+    )
+    assert args.ppo_steps_per_env == 240
+
+
+def test_train_cli_accepts_reference_target_x_retarget_gains() -> None:
+    args = _parser().parse_args(
+        [
+            "train",
+            "--asset-bundle",
+            "assets",
+            "--reference-processed",
+            "reference",
+            "--output",
+            "output",
+            "--reference-target-x-arm-gains",
+            "-10",
+            "2",
+        ]
+    )
+    assert args.reference_target_x_arm_gains == [-10.0, 2.0]
+
+
 def test_reference_noise_is_checkpoint_versioned(tmp_path) -> None:
     config = MjlabPpoConfig("tabletop_grasp", str(tmp_path))
     changed = replace(
@@ -43,6 +82,25 @@ def test_reference_noise_is_checkpoint_versioned(tmp_path) -> None:
     config.assert_resume_compatible(first)
     with pytest.raises(ValueError, match="hash mismatch"):
         changed.assert_resume_compatible(first)
+
+
+def test_zero_retarget_accepts_legacy_checkpoint_metadata(tmp_path) -> None:
+    config = MjlabPpoConfig("tabletop_grasp", str(tmp_path))
+    metadata = config.checkpoint_metadata()
+    legacy_resolved = dict(metadata["resolved"])
+    legacy_resolved.pop("reference_target_x_arm_gains")
+    metadata["resolved"] = legacy_resolved
+    metadata["resolved_sha256"] = hashlib.sha256(
+        json.dumps(
+            legacy_resolved, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+
+    config.assert_resume_compatible(metadata)
+    with pytest.raises(ValueError, match="hash mismatch"):
+        replace(
+            config, reference_target_x_arm_gains=(-10.0, 2.0)
+        ).assert_resume_compatible(metadata)
 
 
 def test_reference_noise_only_changes_intended_policy_inputs() -> None:
@@ -109,6 +167,7 @@ def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
         curriculum_initial_strength=0.25, curriculum_ramp_steps=19_200
     )
     pose = full.pose_only()
+    target_x = full.target_x_only()
 
     assert pose.target_position_jitter_xy == full.target_position_jitter_xy
     assert pose.target_yaw_jitter == full.target_yaw_jitter
@@ -127,3 +186,28 @@ def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
     )
     assert full.reference_noise.enabled
     assert not pose.reference_noise.enabled
+    assert target_x.target_position_jitter_xy == (
+        full.target_position_jitter_xy[0],
+        0.0,
+    )
+    assert target_x.target_yaw_jitter == 0.0
+    assert not target_x.reference_noise.enabled
+
+
+def test_evaluation_dr_strength_is_explicit_and_backward_compatible() -> None:
+    staged = SimpleNamespace(
+        evaluation_dr_strength=0.375, stress_domain_randomization=False
+    )
+    full = SimpleNamespace(
+        evaluation_dr_strength=None, stress_domain_randomization=True
+    )
+    assert _evaluation_dr_strength(staged) == 0.375
+    assert _evaluation_dr_strength(full) == 1.0
+
+    staged.stress_domain_randomization = True
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _evaluation_dr_strength(staged)
+    staged.stress_domain_randomization = False
+    staged.evaluation_dr_strength = 1.01
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        _evaluation_dr_strength(staged)

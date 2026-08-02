@@ -60,11 +60,13 @@ class GpuReferenceLibrary:
         device: str,
         source: str = "bc",
         splits: tuple[str, ...] = ("train", "val", "test"),
+        target_x_arm_gains: tuple[float, float] = (0.0, 0.0),
     ):
         self.root = Path(processed_dir).resolve()
         self.device = device
         self.num_envs = int(num_envs)
         self.source = source
+        self.target_x_arm_gains = tuple(float(value) for value in target_x_arm_gains)
         manifest_path = self.root / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
         episode_ids = sorted(
@@ -98,6 +100,8 @@ class GpuReferenceLibrary:
 
         assert observation_dim is not None
         self.observation_dim = observation_dim
+        if any(self.target_x_arm_gains) and observation_dim != ACTOR_OBS_V2_DIM:
+            raise ValueError("target-X reference retargeting requires v2 observations")
         self.context_dim = (
             REFERENCE_CONTEXT_V2_DIM
             if observation_dim == ACTOR_OBS_V2_DIM
@@ -158,7 +162,24 @@ class GpuReferenceLibrary:
             "episodes": self.episode_ids.tolist(),
             "data_sha256": self.data_sha256,
             "observation_dim": self.observation_dim,
+            "target_x_arm_gains": list(self.target_x_arm_gains),
         }
+
+    def _retarget_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        """Shift the proposal using the observed scene/reference X offset."""
+
+        if actions.shape[0] != self.num_envs or actions.shape[-1] != ACTION_DIM:
+            raise ValueError("Retarget actions have an incompatible shape")
+        shoulder_gain, elbow_gain = self.target_x_arm_gains
+        if shoulder_gain == 0.0 and elbow_gain == 0.0:
+            return actions
+        offset_x = self.reference_object_offset[:, 0]
+        for _ in range(actions.ndim - 2):
+            offset_x = offset_x.unsqueeze(-1)
+        result = actions.clone()
+        result[..., 21].add_(offset_x, alpha=shoulder_gain)
+        result[..., 24].add_(offset_x, alpha=elbow_gain)
+        return result.clamp(-1.0, 1.0)
 
     def rows_for_episode(self, episode: int, count: int) -> torch.Tensor:
         matches = (self.episode_ids == int(episode)).nonzero(as_tuple=False).flatten()
@@ -271,6 +292,7 @@ class GpuReferenceLibrary:
         reference_actions: torch.Tensor,
     ) -> torch.Tensor:
         del future
+        reference_actions = self._retarget_actions(reference_actions)
         frame_offsets = self.future_offsets[None].expand(self.num_envs, -1)
         remaining = self.lengths[rows, None] - 1 - self.indices[:, None]
         dt = torch.minimum(frame_offsets, remaining.clamp_min(0)).float() / 50.0
@@ -350,7 +372,8 @@ class GpuReferenceLibrary:
         return self._contact_label(self.observations[rows, following])
 
     def current_action(self) -> torch.Tensor:
-        return self.actions[self.episode_rows, self.indices]
+        action = self.actions[self.episode_rows, self.indices]
+        return self._retarget_actions(action)
 
     def advance(self) -> None:
         rows = self.episode_rows

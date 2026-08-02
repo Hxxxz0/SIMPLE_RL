@@ -11,6 +11,7 @@ from simple.grasp_rl.schema import (
     ACTOR_OBS_DIM,
     ACTOR_OBS_V2_DIM,
     REFERENCE_FRAME_DIM,
+    REFERENCE_FRAME_V2_DIM,
     REFERENCE_FUTURE_OFFSETS,
 )
 
@@ -85,6 +86,39 @@ def test_gpu_clean_reference_context_matches_v2_builder(tmp_path) -> None:
         library.clean_context(current)[0], torch.from_numpy(expected)
     )
     assert library.metadata()["observation_dim"] == ACTOR_OBS_V2_DIM
+
+
+def test_v2_reference_retargets_proposal_from_observed_target_x(tmp_path) -> None:
+    root = tmp_path / "retarget_v2"
+    source = root / "bc"
+    source.mkdir(parents=True)
+    observations = np.zeros((60, ACTOR_OBS_V2_DIM), dtype=np.float32)
+    actions = np.zeros((60, ACTION_DIM), dtype=np.float32)
+    (root / "manifest.json").write_text(
+        json.dumps({"splits": {"train": [0], "val": [], "test": []}})
+    )
+    np.savez(
+        source / "episode_000000.npz",
+        observations=observations,
+        raw_actions=actions,
+    )
+    library = GpuReferenceLibrary(
+        root,
+        num_envs=1,
+        device="cpu",
+        target_x_arm_gains=(-10.0, 2.0),
+    )
+    current = torch.from_numpy(observations[:1]).clone()
+    current[:, 163] = 0.02
+    library.reset(current, episode_rows=torch.tensor([0]))
+
+    torch.testing.assert_close(library.current_action()[0, 21], torch.tensor(-0.2))
+    torch.testing.assert_close(library.current_action()[0, 24], torch.tensor(0.04))
+    frames = library.clean_context(current)[:, :-1].reshape(
+        1, len(REFERENCE_FUTURE_OFFSETS), REFERENCE_FRAME_V2_DIM
+    )
+    torch.testing.assert_close(frames[0, 0, 21], torch.tensor(-0.2))
+    torch.testing.assert_close(frames[0, 0, 24], torch.tensor(0.04))
 
 
 def test_reference_noise_changes_policy_view_but_not_clean_contact_truth(

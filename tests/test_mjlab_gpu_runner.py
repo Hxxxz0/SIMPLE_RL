@@ -2,6 +2,7 @@ import torch
 
 from simple.grasp_rl.mjlab_gpu.runner import (
     _load_policy_warm_start,
+    _reference_metadata_matches,
     checkpoint_uses_plan_conditioned_actor,
     ppo_train_config,
 )
@@ -47,3 +48,12 @@ def test_legacy_plan_actor_marker_selects_compatible_model(tmp_path) -> None:
 def test_train_config_allows_explicit_exploration_std() -> None:
     config = ppo_train_config(exploration_std=0.05)
     assert config["actor"]["distribution_cfg"]["init_std"] == 0.05
+
+
+def test_zero_retarget_accepts_legacy_reference_metadata() -> None:
+    legacy = {"source": "bc", "observation_dim": 331}
+    expected = {**legacy, "target_x_arm_gains": [0.0, 0.0]}
+    assert _reference_metadata_matches(legacy, expected)
+    assert not _reference_metadata_matches(
+        legacy, {**legacy, "target_x_arm_gains": [-10.0, 2.0]}
+    )

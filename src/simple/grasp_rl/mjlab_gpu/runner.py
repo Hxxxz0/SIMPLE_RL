@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import warnings
 from copy import deepcopy
 from pathlib import Path
-import warnings
 
 import torch
 from rsl_rl.runners import OnPolicyRunner
@@ -118,6 +118,24 @@ def checkpoint_uses_plan_conditioned_actor(checkpoint: str | Path) -> bool:
     return "_plan_conditioned_actor" in state
 
 
+def _reference_metadata_matches(
+    actual: object, expected: dict[str, object]
+) -> bool:
+    """Accept pre-retarget metadata only for the unchanged zero-gain path."""
+
+    if actual == expected:
+        return True
+    if not isinstance(actual, dict):
+        return False
+    normalized = dict(actual)
+    if (
+        "target_x_arm_gains" not in normalized
+        and expected.get("target_x_arm_gains") == [0.0, 0.0]
+    ):
+        normalized["target_x_arm_gains"] = [0.0, 0.0]
+    return normalized == expected
+
+
 class GpuPpoRunner(OnPolicyRunner):
     """On-policy runner that refuses fake PPO and CPU optimizer state."""
 
@@ -174,6 +192,39 @@ class GpuPpoRunner(OnPolicyRunner):
         # Warm-start the network and observation normalizer, but keep the PPO
         # run's reviewed exploration settings (notably init_std) authoritative.
         _load_policy_warm_start(self.alg.get_policy(), state)
+
+    def load_critic_warm_start(self, checkpoint: str | Path) -> None:
+        """Restore an audited GPU critic without importing optimizer state."""
+
+        payload = torch.load(checkpoint, map_location=self.device, weights_only=False)
+        metadata = payload.get("mjlab_gpu_metadata")
+        if metadata is None:
+            raise ValueError("critic warm start requires an audited GPU checkpoint")
+        bundle = self.env.gpu.bundle
+        resolved = metadata.get("config", {}).get("resolved", {})
+        if resolved.get("task") != self.env.config.task:
+            raise ValueError("GPU checkpoint task does not match this environment")
+        if metadata.get("asset_manifest_hash") != bundle.manifest["manifest_hash"]:
+            raise ValueError("GPU checkpoint asset bundle does not match")
+        state = payload.get("critic_state_dict")
+        if not isinstance(state, dict):
+            raise ValueError("Checkpoint does not contain a critic_state_dict")
+        expected_observation_dim = (
+            self.env.reference.observation_dim + self.env.reference.context_dim
+        )
+        first_weight = state.get("mlp.0.weight")
+        if first_weight is None or first_weight.shape[1] != expected_observation_dim:
+            raise ValueError("Critic warm start observation dimension does not match")
+        self.alg._raw_critic.load_state_dict(state, strict=True)
+
+    def freeze_actor_normalizer(self) -> None:
+        """Freeze loaded actor statistics while the critic keeps adapting."""
+
+        normalizer = getattr(self.alg.get_policy(), "obs_normalizer", None)
+        count = getattr(normalizer, "count", None)
+        if normalizer is None or count is None or not hasattr(normalizer, "until"):
+            raise ValueError("Actor does not expose a freezeable observation normalizer")
+        normalizer.until = int(count.item())
 
     def assert_cuda_integrity(self, *, require_optimizer_state: bool) -> None:
         expected = self.device
@@ -253,7 +304,12 @@ class GpuPpoRunner(OnPolicyRunner):
             self.env.config.assert_resume_compatible(metadata["config"])
             expected = self.checkpoint_metadata()
             for key in ("asset_manifest_hash", "reward", "reference"):
-                if metadata.get(key) != expected[key]:
+                matches = (
+                    _reference_metadata_matches(metadata.get(key), expected[key])
+                    if key == "reference"
+                    else metadata.get(key) == expected[key]
+                )
+                if not matches:
                     raise ValueError(f"Checkpoint {key} metadata mismatch")
         load_iteration = self.alg.load(payload, load_cfg, strict)
         _move_optimizer_state(self.alg.optimizer, self.device)

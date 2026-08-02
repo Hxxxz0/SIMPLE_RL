@@ -17,6 +17,7 @@ from simple.grasp_rl.mjlab_gpu.simulation import build_gpu_simulation
 from simple.grasp_rl.mjlab_gpu.sonic import BatchedSonicController
 from simple.grasp_rl.mjlab_gpu.state import GpuLegacyState
 from simple.grasp_rl.mjlab_gpu.state_v2 import GpuTaskStateExtractorV2
+from simple.grasp_rl.models import V2_RESIDUAL_LAST_ACTIVE_STAGE
 from simple.grasp_rl.schema import ACTION_DIM, ACTOR_OBS_V2_DIM
 
 
@@ -75,6 +76,7 @@ class GpuGraspVecEnv(VecEnv):
             device=self.device,
             source=config.reference_source,
             splits=("train", "val", "test"),
+            target_x_arm_gains=config.reference_target_x_arm_gains,
         )
         self.max_episode_length = self.reward.max_episode_steps
         self.episode_length_buf = torch.zeros(
@@ -142,10 +144,11 @@ class GpuGraspVecEnv(VecEnv):
         if self.reference.observation_dim == ACTOR_OBS_V2_DIM:
             stage = self.reward.stage_index
             mask = torch.zeros_like(correction)
-            hand_active = stage <= 2
-            arm_active = stage <= 3
-            mask[:, 7:14] = hand_active[:, None]
-            mask[:, 21:28] = arm_active[:, None]
+            active = stage <= V2_RESIDUAL_LAST_ACTIVE_STAGE
+            if self.state_reader.spec.family == "handover":
+                active = active & (stage < 4)
+            mask[:, 7:14] = active[:, None]
+            mask[:, 21:28] = active[:, None]
             correction = correction * mask
         limit = self.config.max_reference_action_deviation
         return reference + correction.clamp(-limit, limit)
