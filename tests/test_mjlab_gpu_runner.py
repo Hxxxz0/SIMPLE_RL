@@ -56,6 +56,7 @@ def test_zero_retarget_accepts_legacy_reference_metadata() -> None:
         **legacy,
         "target_x_arm_gains": [0.0, 0.0],
         "target_y_arm_gains": [0.0, 0.0],
+        "target_yaw_arm_gains": [0.0, 0.0],
     }
     assert _reference_metadata_matches(legacy, expected)
     assert not _reference_metadata_matches(
@@ -63,4 +64,7 @@ def test_zero_retarget_accepts_legacy_reference_metadata() -> None:
     )
     assert not _reference_metadata_matches(
         legacy, {**legacy, "target_y_arm_gains": [5.0, -3.5]}
+    )
+    assert not _reference_metadata_matches(
+        legacy, {**legacy, "target_yaw_arm_gains": [1.0, -2.0]}
     )

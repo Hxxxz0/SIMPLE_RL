@@ -78,6 +78,7 @@ class GpuGraspVecEnv(VecEnv):
             splits=("train", "val", "test"),
             target_x_arm_gains=config.reference_target_x_arm_gains,
             target_y_arm_gains=config.reference_target_y_arm_gains,
+            target_yaw_arm_gains=config.reference_target_yaw_arm_gains,
         )
         self.max_episode_length = self.reward.max_episode_steps
         self.episode_length_buf = torch.zeros(
@@ -123,7 +124,10 @@ class GpuGraspVecEnv(VecEnv):
             else self.reference.rows_for_episode(base_episode, len(env_ids))
         )
         self.reference.reset(
-            base_observation[env_ids], env_ids, episode_rows=episode_rows
+            base_observation[env_ids],
+            env_ids,
+            episode_rows=episode_rows,
+            target_yaw_offset=self.randomizer.target_yaw[env_ids],
         )
         self.episode_length_buf[env_ids] = 0
         self._episode_return[env_ids] = 0.0
@@ -296,6 +300,9 @@ class GpuGraspVecEnv(VecEnv):
                 "episode_rows": self.reference.episode_rows.clone(),
                 "indices": self.reference.indices.clone(),
                 "object_offset": self.reference.reference_object_offset.clone(),
+                "object_yaw_offset": (
+                    self.reference.reference_object_yaw_offset.clone()
+                ),
             },
             "reward_metadata": self.reward.metadata(),
             "reference_metadata": self.reference.metadata(),

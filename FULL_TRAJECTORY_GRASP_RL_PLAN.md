@@ -77,6 +77,11 @@ full-DR 同时包含：
 target pose 的场景变换会同步到 reference geometry。reference noise 只进入 actor view；
 critic 使用 clean reference；reward、success、failure 和 termination 不读取 noisy reference。
 
+reference action 还可通过 `--reference-target-x-arm-gains`、
+`--reference-target-y-arm-gains` 和 `--reference-target-yaw-arm-gains` 对采样目标姿态做确定性
+retarget。yaw 输入是 randomizer 施加到物体的相对旋转，不是绝对世界朝向。三个选项默认都为
+零，因此旧 CPU 命令、旧 GPU 命令和缺少这些 metadata 字段的零增益 checkpoint 保持兼容。
+
 为了诊断单轴瓶颈，CLI 还支持 `pose_only`、`target_x_only`、`target_y_only` 和
 `target_yaw_only`。这些 profile 只能用于 curriculum，最终评测必须使用 `full`。
 
@@ -139,6 +144,58 @@ stretch target，因此不能描述为 70% 成功率。
 
 在开发用的 `0.6875` DR 强度上，`v192` 相比上一 PPO checkpoint `v184` 的 paired
 结果为 seed42 `62 -> 64/128`、seed43 `58 -> 60/128`，两个 seed 都无回退。
+
+### target-pose retarget + PPO 最终验收
+
+对 X/Y/yaw 联合随机化做单轴诊断后，保留的 reference retarget 参数为：
+
+```text
+target X shoulder/elbow:       (-12.5, 4.0)
+target Y shoulder-yaw/wrist:   (5.0, -3.5)
+target yaw shoulder-yaw/wrist: (0.0, 0.5)
+```
+
+从已审计的 `v223/model_0.pt` warm-start，在 GPU 4--6 并行跑三条 pose-only 分支；每条均为
+8192 env、240 steps/env、1 PPO epoch、4 minibatches。未见 seed99 的 128-world 筛选结果为：
+
+| learning rate | checkpoint | pose-only 完整成功 |
+|---:|---|---:|
+| 2.5e-8 | v242/model_0.pt | 55/128 (43.0%) |
+| 5e-8 | v243/model_0.pt | 52/128 (40.6%) |
+| 1e-7 | v244/model_0.pt | 51/128 (39.8%) |
+
+保留最低学习率的 checkpoint：
+
+```text
+outputs/grasp_rl/mjlab_gpu/xmove_pick/
+v242_reward8_pose_x125_yaw05_from_v223m0_seed103_env8192_roll240_lr25e9_std02_freezenorm/model_0.pt
+```
+
+`v242` 的 PPO integrity audit 为：
+
+```text
+algorithm: rsl_rl.algorithms.ppo.PPO
+on_policy: true
+rollout_reused: false
+transitions: 1,966,080
+optimizer_steps: 4
+actor_parameter_delta_l2: 3.91959198e-5
+critic_parameter_delta_l2: 6.77114541e-5
+optimizer_state_cuda: true
+```
+
+最终验收使用同一未见 seed99、同一批 128 worlds、相同 retarget 参数，分别执行 PPO 和
+`--reference-only`：
+
+| profile | reference-only | v242 PPO | 绝对提升 |
+|---|---:|---:|---:|
+| pose-only DR | 0/128 (0%) | 55/128 (43.0%) | +43.0 pp |
+| full DR（含 physics + reference noise） | 0/128 (0%) | 45/128 (35.2%) | +35.2 pp |
+
+因此 `v242` 通过当前“明显超过 reference-only”的完成标准。这里证明的是完整的累计 PPO
+policy 相比直接 replay reference 有显著作用；不能把 +35.2/+43.0 pp 归因于最后一次
+update，也不能把单 seed 结果描述为 70% 成功率。`v192` 仍是双 seed、400 episodes
+覆盖更充分的正式发布候选，`v242` 是新 retarget 路径的已验收 checkpoint。
 
 ### full-DR reward-v7 长训复核
 
@@ -207,14 +264,15 @@ PYTHONPATH=src CUDA_VISIBLE_DEVICES=4 mjlab_gpu/.venv/bin/python \
   --task xmove_pick \
   --asset-bundle outputs/grasp_rl/mjlab_assets/xmove_pick/episode82 \
   --reference-processed data/grasp_rl/G1WholebodyXMovePickTeleop-v0/v2 \
-  --reference-target-x-arm-gains -10 2 \
+  --reference-target-x-arm-gains -12.5 4 \
+  --reference-target-y-arm-gains 5 -3.5 \
+  --reference-target-yaw-arm-gains 0 0.5 \
   --num-envs 8192 --device cuda:0 --iterations 1 \
   --warm-start <audited-checkpoint.pt> --warm-start-critic \
-  --learning-rate 5e-7 --schedule fixed --exploration-std 0.02 \
+  --learning-rate 2.5e-8 --schedule fixed --exploration-std 0.02 \
   --ppo-clip-param 0.025 --ppo-learning-epochs 1 \
   --ppo-steps-per-env 240 --freeze-actor-normalizer \
-  --dr-initial-strength <fixed-stage-strength> \
-  --dr-ramp-steps 240000 --dr-profile full \
+  --dr-initial-strength 1 --dr-ramp-steps 240000 --dr-profile pose_only \
   --output <output-dir>
 ```
 

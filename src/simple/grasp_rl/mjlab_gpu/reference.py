@@ -62,6 +62,7 @@ class GpuReferenceLibrary:
         splits: tuple[str, ...] = ("train", "val", "test"),
         target_x_arm_gains: tuple[float, float] = (0.0, 0.0),
         target_y_arm_gains: tuple[float, float] = (0.0, 0.0),
+        target_yaw_arm_gains: tuple[float, float] = (0.0, 0.0),
     ):
         self.root = Path(processed_dir).resolve()
         self.device = device
@@ -69,6 +70,9 @@ class GpuReferenceLibrary:
         self.source = source
         self.target_x_arm_gains = tuple(float(value) for value in target_x_arm_gains)
         self.target_y_arm_gains = tuple(float(value) for value in target_y_arm_gains)
+        self.target_yaw_arm_gains = tuple(
+            float(value) for value in target_yaw_arm_gains
+        )
         manifest_path = self.root / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
         episode_ids = sorted(
@@ -105,7 +109,9 @@ class GpuReferenceLibrary:
         assert observation_dim is not None
         self.observation_dim = observation_dim
         if (
-            any(self.target_x_arm_gains) or any(self.target_y_arm_gains)
+            any(self.target_x_arm_gains)
+            or any(self.target_y_arm_gains)
+            or any(self.target_yaw_arm_gains)
         ) and observation_dim != ACTOR_OBS_V2_DIM:
             raise ValueError(
                 "target-pose reference retargeting requires v2 observations"
@@ -156,6 +162,9 @@ class GpuReferenceLibrary:
         self.reference_object_offset = torch.zeros(
             self.num_envs, 3, dtype=torch.float32, device=device
         )
+        self.reference_object_yaw_offset = torch.zeros(
+            self.num_envs, dtype=torch.float32, device=device
+        )
         self.future_offsets = torch.tensor(
             REFERENCE_FUTURE_OFFSETS, dtype=torch.long, device=device
         )
@@ -172,6 +181,7 @@ class GpuReferenceLibrary:
             "observation_dim": self.observation_dim,
             "target_x_arm_gains": list(self.target_x_arm_gains),
             "target_y_arm_gains": list(self.target_y_arm_gains),
+            "target_yaw_arm_gains": list(self.target_yaw_arm_gains),
         }
 
     def _retarget_actions(self, actions: torch.Tensor) -> torch.Tensor:
@@ -181,17 +191,30 @@ class GpuReferenceLibrary:
             raise ValueError("Retarget actions have an incompatible shape")
         shoulder_gain, elbow_gain = self.target_x_arm_gains
         shoulder_yaw_gain, wrist_yaw_gain = self.target_y_arm_gains
-        if not any((*self.target_x_arm_gains, *self.target_y_arm_gains)):
+        shoulder_target_yaw_gain, wrist_target_yaw_gain = (
+            self.target_yaw_arm_gains
+        )
+        if not any(
+            (
+                *self.target_x_arm_gains,
+                *self.target_y_arm_gains,
+                *self.target_yaw_arm_gains,
+            )
+        ):
             return actions
         offset_x, offset_y = self.reference_object_offset[:, :2].unbind(-1)
+        offset_yaw = self.reference_object_yaw_offset
         for _ in range(actions.ndim - 2):
             offset_x = offset_x.unsqueeze(-1)
             offset_y = offset_y.unsqueeze(-1)
+            offset_yaw = offset_yaw.unsqueeze(-1)
         result = actions.clone()
         result[..., 21].add_(offset_x, alpha=shoulder_gain)
         result[..., 24].add_(offset_x, alpha=elbow_gain)
         result[..., 23].add_(offset_y, alpha=shoulder_yaw_gain)
         result[..., 27].add_(offset_y, alpha=wrist_yaw_gain)
+        result[..., 23].add_(offset_yaw, alpha=shoulder_target_yaw_gain)
+        result[..., 27].add_(offset_yaw, alpha=wrist_target_yaw_gain)
         return result.clamp(-1.0, 1.0)
 
     def rows_for_episode(self, episode: int, count: int) -> torch.Tensor:
@@ -209,6 +232,7 @@ class GpuReferenceLibrary:
         *,
         episode_rows: torch.Tensor | None = None,
         start_indices: torch.Tensor | None = None,
+        target_yaw_offset: torch.Tensor | None = None,
         rank: int = 0,
     ) -> None:
         ids = (
@@ -253,6 +277,14 @@ class GpuReferenceLibrary:
         self.reference_object_offset[ids] = (
             observation[:, position_slice] - initial_reference
         )
+        yaw_offset = (
+            torch.zeros(len(ids), dtype=torch.float32, device=self.device)
+            if target_yaw_offset is None
+            else target_yaw_offset.to(device=self.device, dtype=torch.float32)
+        )
+        if yaw_offset.shape != (len(ids),):
+            raise ValueError("target_yaw_offset has the wrong shape")
+        self.reference_object_yaw_offset[ids] = yaw_offset
         self._generation += 1
         self._cached_policy_context = None
 

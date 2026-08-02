@@ -126,7 +126,11 @@ def _reference_metadata_matches(actual: object, expected: dict[str, object]) -> 
     if not isinstance(actual, dict):
         return False
     normalized = dict(actual)
-    for name in ("target_x_arm_gains", "target_y_arm_gains"):
+    for name in (
+        "target_x_arm_gains",
+        "target_y_arm_gains",
+        "target_yaw_arm_gains",
+    ):
         if name not in normalized and expected.get(name) == [0.0, 0.0]:
             normalized[name] = [0.0, 0.0]
     return normalized == expected

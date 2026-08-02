@@ -61,6 +61,17 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
             "legacy replay"
         ),
     )
+    parser.add_argument(
+        "--reference-target-yaw-arm-gains",
+        type=float,
+        nargs=2,
+        default=(0.0, 0.0),
+        metavar=("SHOULDER_YAW", "WRIST_YAW"),
+        help=(
+            "Retarget normalized right shoulder-yaw/wrist-yaw reference "
+            "actions per radian of sampled target yaw; default keeps legacy replay"
+        ),
+    )
     parser.add_argument("--dr-initial-strength", type=float)
     parser.add_argument("--dr-warmup-steps", type=int)
     parser.add_argument("--dr-ramp-steps", type=int)
@@ -210,6 +221,7 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         max_reference_action_deviation=args.max_reference_action_deviation,
         reference_target_x_arm_gains=tuple(args.reference_target_x_arm_gains),
         reference_target_y_arm_gains=tuple(args.reference_target_y_arm_gains),
+        reference_target_yaw_arm_gains=tuple(args.reference_target_yaw_arm_gains),
     )
     dr_overrides = {
         name: value
