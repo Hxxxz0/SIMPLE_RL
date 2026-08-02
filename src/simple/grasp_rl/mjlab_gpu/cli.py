@@ -227,6 +227,13 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
     return config
 
 
+def _seed_torch(seed: int) -> None:
+    """Make runner construction reproducible on the selected CUDA device."""
+
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+
+
 def _train(args: argparse.Namespace) -> dict[str, object]:
     if args.iterations < 1:
         raise ValueError("iterations must be positive")
@@ -257,8 +264,7 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
     config = _config(args)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    torch.manual_seed(config.seed)
-    torch.cuda.manual_seed(config.seed)
+    _seed_torch(config.seed)
     env = GpuGraspVecEnv(config, training=True)
     if args.initial_vector_step:
         env.common_step_counter = args.initial_vector_step
@@ -378,6 +384,7 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
     if not args.reference_only and args.checkpoint is None:
         raise ValueError("policy evaluation requires --checkpoint")
     config = _config(args)
+    _seed_torch(config.seed)
     if args.episodes > config.num_envs:
         raise ValueError(
             "paired evaluation requires episodes <= num-envs so each result "
@@ -528,6 +535,7 @@ def _record(args: argparse.Namespace) -> dict[str, object]:
         if getattr(args, name) < 1:
             raise ValueError(f"{name.replace('_', '-')} must be positive")
     config = _config(args)
+    _seed_torch(config.seed)
     dr_strength = _evaluation_dr_strength(args)
     env = GpuGraspVecEnv(
         config,

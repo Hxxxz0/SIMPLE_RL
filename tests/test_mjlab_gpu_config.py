@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from simple.grasp_rl.mjlab_gpu.cli import _evaluation_dr_strength, _parser
+from simple.grasp_rl.mjlab_gpu.cli import _evaluation_dr_strength, _parser, _seed_torch
 from simple.grasp_rl.mjlab_gpu.config import (
     DomainRandomizationConfig,
     MjlabPpoConfig,
@@ -63,6 +63,18 @@ def test_train_cli_accepts_reference_target_x_retarget_gains() -> None:
         ]
     )
     assert args.reference_target_x_arm_gains == [-10.0, 2.0]
+
+
+def test_gpu_entrypoints_seed_torch_and_cuda(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(torch, "manual_seed", lambda seed: calls.append(("cpu", seed)))
+    monkeypatch.setattr(
+        torch.cuda, "manual_seed", lambda seed: calls.append(("cuda", seed))
+    )
+
+    _seed_torch(17)
+
+    assert calls == [("cpu", 17), ("cuda", 17)]
 
 
 def test_reference_noise_is_checkpoint_versioned(tmp_path) -> None:

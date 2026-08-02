@@ -136,6 +136,22 @@ stretch target，因此不能描述为 70% 成功率。
 在开发用的 `0.6875` DR 强度上，`v192` 相比上一 PPO checkpoint `v184` 的 paired
 结果为 seed42 `62 -> 64/128`、seed43 `58 -> 60/128`，两个 seed 都无回退。
 
+### full-DR reward-v7 长训复核
+
+从 reward-v7 的三条 8192-env 分支分别 exact-resume 4 个 update；每条分支累计采集
+`9,830,400` 条 fresh on-policy transition，每个 update 执行 4 次 CUDA Adam step，
+actor/critic 参数变化均非零。相同 seed42、128 个 full-DR worlds 的筛选结果为：
+
+| policy | 完整成功 | reference-only | 绝对提升 |
+|---|---:|---:|---:|
+| v208/model_4.pt | 37/128 (28.9%) | 0/128 (0%) | +28.9 pp |
+| v209/model_4.pt | 29/128 (22.7%) | 0/128 (0%) | +22.7 pp |
+| v210/model_4.pt | 36/128 (28.1%) | 0/128 (0%) | +28.1 pp |
+
+三条长训都再次满足“明显超过 reference-only”的完成标准，但单 seed 小筛选存在
+MuJoCo-Warp 接触波动，且没有形成稳定超过现有候选的证据。因此不以这组 128-world
+开发筛选替换经过双 seed、400 episodes 正式评测的 `v192`。
+
 ### 其他任务
 
 GPU 工程路径已经覆盖，但当前 checkpoint 尚未通过“完整成功大幅高于 reference-only”：
