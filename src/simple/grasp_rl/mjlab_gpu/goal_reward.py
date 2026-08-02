@@ -15,7 +15,7 @@ from simple.grasp_rl.mjlab_gpu.state_v2 import (
 from simple.grasp_rl.schema import JOINT_NAMES
 from simple.grasp_rl.task_spec import GoalStageSpec, TaskSpecV2
 
-GPU_GOAL_REWARD_SCHEMA_VERSION = 4
+GPU_GOAL_REWARD_SCHEMA_VERSION = 6
 
 
 def _json_hash(payload: object) -> str:
@@ -33,7 +33,7 @@ def _terminal_adjustment(
     zeros = torch.zeros_like(success, dtype=torch.float32)
     return torch.where(
         success,
-        torch.full_like(zeros, 20.0),
+        torch.full_like(zeros, 40.0),
         torch.where(
             failure,
             torch.full_like(zeros, -10.0),
@@ -54,6 +54,18 @@ def _supported_grasp_progress(
     )
     support = torch.exp(-40.0 * (-lift_height).clamp_min(0.0))
     return torch.maximum(quality, 0.25 * multi_finger_reach * support)
+
+
+def _approach_progress(
+    fingertip_distances: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Shape all selected fingertips while preserving the legacy contact gate."""
+
+    nearest = fingertip_distances.amin(dim=-1)
+    multi_finger = torch.exp(
+        -15.0 * fingertip_distances.mean(dim=-1).clamp_min(0.0)
+    )
+    return multi_finger, nearest
 
 
 class GpuGoalGraphReward:
@@ -356,6 +368,7 @@ class GpuGoalGraphReward:
         left_grasp, left_quality = self._hand_grasp(state, 0)
         right_grasp, right_quality = self._hand_grasp(state, 1)
         progress = torch.zeros(self.num_envs, device=self.device)
+        reward_progress = torch.zeros_like(progress)
         predicate = torch.zeros_like(progress, dtype=torch.bool)
         for index, stage in enumerate(self.spec.stages):
             stage_progress, stage_predicate = self._stage(
@@ -366,8 +379,20 @@ class GpuGoalGraphReward:
                 right_grasp,
                 right_quality,
             )
+            stage_reward_progress = stage_progress
+            if stage.primitive == "approach":
+                if stage.hand == "left":
+                    selected = state.fingertip_distances[:, 0]
+                elif stage.hand == "both":
+                    selected = state.fingertip_distances.flatten(1)
+                else:
+                    selected = state.fingertip_distances[:, 1]
+                stage_reward_progress, _ = _approach_progress(selected)
             active = self.stage_index == index
             progress = torch.where(active, stage_progress, progress)
+            reward_progress = torch.where(
+                active, stage_reward_progress, reward_progress
+            )
             predicate = torch.where(active, stage_predicate, predicate)
 
         self.stage_hold.copy_(torch.where(predicate, self.stage_hold + 1, 0))
@@ -383,7 +408,10 @@ class GpuGoalGraphReward:
         self.stage_index.add_(advance.to(torch.long))
         self.stage_hold[advance] = 0
         progress = torch.where(advance, torch.zeros_like(progress), progress)
-        potential = self.stage_index.float() + progress.clamp(0.0, 1.0)
+        reward_progress = torch.where(
+            advance, torch.zeros_like(reward_progress), reward_progress
+        )
+        potential = self.stage_index.float() + reward_progress.clamp(0.0, 1.0)
         # PPO discounts returns already.  Discounting the shaping potential a
         # second time charges a negative reward for every unchanged valid hold,
         # which is especially harmful for long transport/place trajectories.

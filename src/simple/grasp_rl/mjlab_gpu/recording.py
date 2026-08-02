@@ -126,24 +126,20 @@ def _write_video(
     model.vis.global_.offheight = max(model.vis.global_.offheight, height)
     data = mujoco.MjData(model)
     renderer = mujoco.Renderer(model, height=height, width=width)
-    camera_names = tuple(model.camera(index).name for index in range(model.ncam))
-    if "front_stereo_left" in camera_names:
-        camera: str | mujoco.MjvCamera = "front_stereo_left"
-        model.cam_fovy[model.camera(camera).id] = 40.0
-        camera_label = camera
-    else:
-        camera = mujoco.MjvCamera()
-        mujoco.mjv_defaultFreeCamera(model, camera)
-        camera.azimuth = 135.0 if task == "tabletop_grasp" else 165.0
-        camera.elevation = -18.0
-        camera.distance = 1.8 if task == "tabletop_grasp" else 2.0
-        target_id = model.body(target_body).id
-        pelvis_id = model.body("pelvis").id
-        data.qpos[:] = qpos[0]
-        mujoco.mj_forward(model, data)
-        camera.lookat[:] = 0.5 * data.xpos[target_id] + 0.5 * data.xpos[pelvis_id]
-        camera.lookat[2] += 0.15
-        camera_label = "free_full_robot"
+    # Robot-mounted stereo cameras cannot show whether the full-body motion is
+    # physically valid.  Release videos always use an external MuJoCo camera.
+    camera = mujoco.MjvCamera()
+    mujoco.mjv_defaultFreeCamera(model, camera)
+    camera.azimuth = 135.0
+    camera.elevation = -14.0
+    camera.distance = 1.8 if task == "tabletop_grasp" else 2.5
+    target_id = model.body(target_body).id
+    pelvis_id = model.body("pelvis").id
+    data.qpos[:] = qpos[0]
+    mujoco.mj_forward(model, data)
+    camera.lookat[:] = 0.5 * data.xpos[target_id] + 0.5 * data.xpos[pelvis_id]
+    camera.lookat[2] += 0.05
+    camera_label = "free_full_robot"
     writer = imageio.get_writer(
         output, fps=fps, codec="libx264", quality=8, macro_block_size=1
     )

@@ -168,6 +168,8 @@ def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
     )
     pose = full.pose_only()
     target_x = full.target_x_only()
+    target_y = full.target_y_only()
+    target_yaw = full.target_yaw_only()
 
     assert pose.target_position_jitter_xy == full.target_position_jitter_xy
     assert pose.target_yaw_jitter == full.target_yaw_jitter
@@ -192,6 +194,15 @@ def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
     )
     assert target_x.target_yaw_jitter == 0.0
     assert not target_x.reference_noise.enabled
+    assert target_y.target_position_jitter_xy == (
+        0.0,
+        full.target_position_jitter_xy[1],
+    )
+    assert target_y.target_yaw_jitter == 0.0
+    assert not target_y.reference_noise.enabled
+    assert target_yaw.target_position_jitter_xy == (0.0, 0.0)
+    assert target_yaw.target_yaw_jitter == full.target_yaw_jitter
+    assert not target_yaw.reference_noise.enabled
 
 
 def test_evaluation_dr_strength_is_explicit_and_backward_compatible() -> None:

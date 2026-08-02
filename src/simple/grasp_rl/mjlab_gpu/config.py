@@ -163,6 +163,22 @@ class DomainRandomizationConfig:
             target_yaw_jitter=0.0,
         )
 
+    def target_y_only(self) -> "DomainRandomizationConfig":
+        """Isolate the target Y offset for a diagnosed staged curriculum."""
+
+        pose = self.pose_only()
+        return replace(
+            pose,
+            target_position_jitter_xy=(0.0, pose.target_position_jitter_xy[1]),
+            target_yaw_jitter=0.0,
+        )
+
+    def target_yaw_only(self) -> "DomainRandomizationConfig":
+        """Isolate target yaw for a diagnosed staged curriculum."""
+
+        pose = self.pose_only()
+        return replace(pose, target_position_jitter_xy=(0.0, 0.0))
+
 
 @dataclass(frozen=True)
 class MjlabPpoConfig:

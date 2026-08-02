@@ -45,7 +45,13 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
     parser.add_argument("--dr-ramp-steps", type=int)
     parser.add_argument(
         "--dr-profile",
-        choices=("full", "pose_only", "target_x_only"),
+        choices=(
+            "full",
+            "pose_only",
+            "target_x_only",
+            "target_y_only",
+            "target_yaw_only",
+        ),
         default="full",
         help="Stage diagnosed target-pose adaptation before the full-DR profile",
     )
@@ -207,6 +213,16 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         config = replace(
             config,
             domain_randomization=config.domain_randomization.target_x_only(),
+        )
+    elif args.dr_profile == "target_y_only":
+        config = replace(
+            config,
+            domain_randomization=config.domain_randomization.target_y_only(),
+        )
+    elif args.dr_profile == "target_yaw_only":
+        config = replace(
+            config,
+            domain_randomization=config.domain_randomization.target_yaw_only(),
         )
     return config
 
@@ -400,8 +416,12 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         env.num_envs, dtype=torch.bool, device=env.device
     )
     episode_had_grasp = torch.zeros_like(episode_native_success)
+    episode_max_stage = torch.zeros(
+        env.num_envs, dtype=torch.long, device=env.device
+    )
     completed_max_lift: list[float] = []
     completed_max_grasp_quality: list[float] = []
+    completed_max_stage: list[int] = []
     completed_world = torch.zeros(
         env.num_envs, dtype=torch.bool, device=env.device
     )
@@ -410,6 +430,9 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         (env.num_envs,), -1, dtype=torch.int8, device=env.device
     )
     while episodes < args.episodes:
+        stage_index = getattr(env.reward, "stage_index", None)
+        if stage_index is not None:
+            episode_max_stage.copy_(torch.maximum(episode_max_stage, stage_index))
         actions = (
             env.reference.current_action().clone()
             if actor is None
@@ -440,6 +463,9 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
             completed_max_grasp_quality.extend(
                 episode_max_grasp_quality[selected].detach().cpu().tolist()
             )
+            completed_max_stage.extend(
+                episode_max_stage[selected].detach().cpu().tolist()
+            )
             episodes += len(selected)
             completed_world[selected] = True
             outcomes[selected] = torch.where(
@@ -451,6 +477,16 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
             episode_max_grasp_quality[finished] = 0.0
             episode_native_success[finished] = False
             episode_had_grasp[finished] = False
+            episode_max_stage[finished] = 0
+    stage_names = getattr(getattr(env.state_reader, "spec", None), "stages", ())
+    max_stage_counts = {
+        (
+            stage_names[index].name
+            if index < len(stage_names)
+            else str(index)
+        ): completed_max_stage.count(index)
+        for index in sorted(set(completed_max_stage))
+    }
     return {
         "mode": "reference_only" if args.reference_only else "ppo",
         "checkpoint": (
@@ -468,6 +504,7 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         "mean_max_lift": sum(completed_max_lift) / episodes,
         "max_lift": max(completed_max_lift),
         "mean_max_grasp_quality": sum(completed_max_grasp_quality) / episodes,
+        "max_stage_counts": max_stage_counts,
         "domain_randomization": dr_strength > 0.0,
         "evaluation_dr_strength": dr_strength,
         "reference_noise": bool(

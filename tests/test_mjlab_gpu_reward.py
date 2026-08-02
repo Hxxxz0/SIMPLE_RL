@@ -4,6 +4,7 @@ import numpy as np
 import torch
 
 from simple.grasp_rl.mjlab_gpu.goal_reward import (
+    _approach_progress,
     _supported_grasp_progress,
     _terminal_adjustment,
 )
@@ -116,7 +117,7 @@ def test_goal_graph_timeout_penalty_applies_to_grasp_tasks() -> None:
         torch.tensor([False, True, False, False]),
         torch.tensor([False, False, True, False]),
     )
-    torch.testing.assert_close(terminal, torch.tensor([20.0, -10.0, -5.0, 0.0]))
+    torch.testing.assert_close(terminal, torch.tensor([40.0, -10.0, -5.0, 0.0]))
 
 
 def test_grasp_progress_rewards_supported_multi_finger_reach() -> None:
@@ -127,3 +128,12 @@ def test_grasp_progress_rewards_supported_multi_finger_reach() -> None:
 
     assert progress[0] > progress[1]
     torch.testing.assert_close(progress[2], torch.tensor(0.8))
+
+
+def test_approach_progress_requires_multi_finger_alignment() -> None:
+    progress, nearest = _approach_progress(
+        torch.tensor([[0.01, 0.01, 0.01], [0.01, 0.10, 0.10]])
+    )
+
+    torch.testing.assert_close(nearest, torch.tensor([0.01, 0.01]))
+    assert progress[0] > progress[1]
