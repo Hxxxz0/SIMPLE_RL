@@ -6,6 +6,7 @@ import torch
 from simple.grasp_rl.mjlab_gpu.goal_reward import (
     _approach_progress,
     _lift_grasp_progress,
+    _place_progress,
     _supported_grasp_progress,
     _terminal_adjustment,
 )
@@ -147,3 +148,15 @@ def test_lift_progress_requires_retained_force_grasp() -> None:
     )
 
     torch.testing.assert_close(progress, torch.tensor([0.8, 0.0, 0.1]))
+
+
+def test_place_progress_requires_xy_alignment_and_lowering() -> None:
+    progress = _place_progress(
+        torch.tensor([0.10, 0.10, 0.30]),
+        torch.tensor([0.25, 0.45, 0.25]),
+        0.12,
+    )
+
+    torch.testing.assert_close(progress[0], torch.tensor(1.0))
+    assert progress[0] > progress[1]
+    assert progress[0] > progress[2]

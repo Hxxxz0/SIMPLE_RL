@@ -15,7 +15,7 @@ from simple.grasp_rl.mjlab_gpu.state_v2 import (
 from simple.grasp_rl.schema import JOINT_NAMES
 from simple.grasp_rl.task_spec import GoalStageSpec, TaskSpecV2
 
-GPU_GOAL_REWARD_SCHEMA_VERSION = 7
+GPU_GOAL_REWARD_SCHEMA_VERSION = 8
 
 
 def _json_hash(payload: object) -> str:
@@ -75,6 +75,23 @@ def _lift_grasp_progress(
     """Give dense lift credit only while force-verified grasp is retained."""
 
     return lift_progress.clamp(0.0, 1.0) * grasp_quality.clamp(0.0, 1.0)
+
+
+def _place_progress(
+    xy_distance: torch.Tensor,
+    vertical_gap: torch.Tensor,
+    threshold: float,
+) -> torch.Tensor:
+    """Shape lowering into a destination without weakening contact success."""
+
+    xy_progress = torch.exp(
+        -8.0 * (xy_distance - threshold).clamp_min(0.0)
+    )
+    vertical_tolerance = max(2.5 * threshold, 0.10)
+    vertical_progress = torch.exp(
+        -8.0 * (vertical_gap.abs() - vertical_tolerance).clamp_min(0.0)
+    )
+    return torch.minimum(xy_progress, vertical_progress)
 
 
 class GpuGoalGraphReward:
@@ -296,7 +313,8 @@ class GpuGoalGraphReward:
             grasp = left_grasp | right_grasp
             return progress * grasp.float(), (xy <= stage.threshold) & grasp
         if stage.primitive == "place":
-            progress = torch.exp(-8.0 * (xy - stage.threshold).clamp_min(0.0))
+            vertical_gap = state.primary.pos_w[:, 2] - state.destination.pos_w[:, 2]
+            progress = _place_progress(xy, vertical_gap, stage.threshold)
             return progress, (xy <= stage.threshold) & state.predicates[:, 4].bool()
         if stage.primitive == "release_settle":
             no_hand = ~state.predicates[:, 0].bool() & ~state.predicates[:, 1].bool()

@@ -82,13 +82,15 @@ critic 使用 clean reference；reward、success、failure 和 termination 不�
 
 ## 5. Reward 与完整任务成功
 
-当前 GPU goal-graph reward schema 为 v7：
+当前 GPU goal-graph reward schema 为 v8：
 
 - ordered stages：`approach -> grasp -> lift`，place 类任务继续执行 transport/place/settle；
 - approach 和 grasp 使用 multi-finger shaping；
 - grasp stage 使用真实 contact force 验证；
 - lift 的 dense potential 必须同时保有对应手的真实 force-grasp quality，避免 PPO
   通过碰撞或松手后的物体位移获取虚假抬升奖励；
+- place 的 dense potential 同时要求 XY 对齐和向 destination 下放，避免只靠近容器上方后
+  reward 饱和；该 shaping 不改变容器接触、连续 hold、settle 或最终 success 条件；
 - stage shaping 使用 potential delta，不重复乘 discount；
 - success `+40`、failure `-10`、timeout `-5`；
 - reference contact 只表达 clean reference 的接触意图，不控制 success；
@@ -158,22 +160,24 @@ MuJoCo-Warp 接触波动，且没有形成稳定超过现有候选的证据。�
 
 GPU 工程路径已经覆盖，但当前 checkpoint 尚未通过“完整成功大幅高于 reference-only”：
 
-- `bend_pick_and_place`：reference-only clean `0/128`；最新 reward-v7 的真实
-  8192-env、240-step PPO 分支在 full-DR 下分别为 `2/128`（exploration std 0.01）
-  和 `1/128`（std 0.001），旧 checkpoint 为 `1/128`。PPO update 真实有效，但结果
-  没有形成明显提升。
+- `bend_pick_and_place`：reward-v8 在 place shaping 中加入垂直下放进度，但不放宽
+  success。三条真实 8192-env、240-step PPO checkpoint 在同一未见 seed90 full-DR
+  worlds 上均为 `2/128 (1.56%)`，paired reference-only 为 `0/128`。每条分支都形成
+  非零 actor/critic 更新，但 `2/128` 的幅度不足以认定为明显提升，因此不发布。
 - `xmove_bend_pick`：reward-v7 的真实 8192-env、240-step PPO update 后 clean 仍为
   `0/128`。静态 residual 诊断仅在上限 `0.35` 附近找到 `7/1024` 抓取，而增大 iid
   exploration std 后仍为零，说明下一步应学习持续姿态修正，而不是继续放大随机噪声。
 - `bend_pick_teleop`：默认 residual 上限 `0.35` 的扫描没有形成抓取；临时诊断上限
   `0.7` 得到 `2/1024` 抓取，证明资产和接触链有效，也说明该任务需要单独 warm-start
   训练，不能直接复用旧配置 exact-resume。
-- `locomotion_pick_between_tables`：full-DR 为 `0/128`，其中 `115/128` 形成抓取、
-  `98/128` 到 transport、`10/128` 到 place；瓶颈是 place/settle，而不是抓取。
+- `locomotion_pick_between_tables`：reward-v8 checkpoint 在未见 seed90 full-DR 仍为
+  `0/128`，其中 `119/128` 形成抓取、`93/128` 到 transport、`22/128` 到 place；
+  place 可达率高于 reward-v7 诊断，但完整成功没有提升，故仍不发布。
 
-三个 reward-v7 update 均收集 `1,966,080` 条 fresh transition、执行 4 次 CUDA
-Adam step，actor/critic 参数变化均非零；它们是有效 PPO 训练，但没有达到完整任务验收，
-因此不发布这些 checkpoint。
+reward-v7/v8 的上述正式 update 均收集 `1,966,080` 条 fresh transition、执行 4 次
+CUDA Adam step，actor/critic 参数变化均非零；它们是有效 PPO 训练，但没有达到完整
+任务验收，因此不发布这些 checkpoint。reward-v8 locomotion 分支的 actor/critic delta
+分别为 `3.815e-4` 和 `7.325e-4`，且 optimizer state 位于 CUDA。
 
 因此本轮可以发布的是 `xmove_pick`，不能宣称所有 task 的策略效果都已通过。
 
