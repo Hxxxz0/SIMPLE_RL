@@ -109,6 +109,8 @@ critic 使用 clean reference；reward、success、failure 和 termination 不�
 
 旧 CPU/BC actor 只能通过显式 warm start 加载。task、observation dimension、asset manifest
 或 action-transform 不匹配时拒绝加载；已有 CPU 训练入口和旧 checkpoint 格式不改。
+CLI 的 `--max-reference-action-deviation` 可按任务放宽 residual action 上限；默认仍为
+`0.35`，因此旧命令和旧行为不变。改变该值后必须 fresh warm start，不能伪装成 exact resume。
 
 ## 7. 2026-08-02 实测结果
 
@@ -157,15 +159,17 @@ MuJoCo-Warp 接触波动，且没有形成稳定超过现有候选的证据。�
 GPU 工程路径已经覆盖，但当前 checkpoint 尚未通过“完整成功大幅高于 reference-only”：
 
 - `bend_pick_and_place`：reference-only clean `0/128`；最新 reward-v7 的真实
-  8192-env、240-step PPO update 后仍为 `0/128`。虽 `128/128` 曾形成抓取、
-  `117/128` 进入 lift stage，但最大抬升仅约 `1.46 mm`；抓取不能代替
-  place/settle 成功。
-- `xmove_bend_pick`：reward-v7 的真实 8192-env、240-step PPO update 后 clean
-  仍为 `0/128`，grasp episode 为 `0/128`。
-- `bend_pick_teleop`：reward-v7 的真实 8192-env、240-step PPO update 后 clean
-  仍为 `0/128`，grasp episode 为 `0/128`。
-- `locomotion_pick_between_tables`：当前 clean `0/128`；能抓取和抬升，但未完成
-  transport/place/settle。
+  8192-env、240-step PPO 分支在 full-DR 下分别为 `2/128`（exploration std 0.01）
+  和 `1/128`（std 0.001），旧 checkpoint 为 `1/128`。PPO update 真实有效，但结果
+  没有形成明显提升。
+- `xmove_bend_pick`：reward-v7 的真实 8192-env、240-step PPO update 后 clean 仍为
+  `0/128`。静态 residual 诊断仅在上限 `0.35` 附近找到 `7/1024` 抓取，而增大 iid
+  exploration std 后仍为零，说明下一步应学习持续姿态修正，而不是继续放大随机噪声。
+- `bend_pick_teleop`：默认 residual 上限 `0.35` 的扫描没有形成抓取；临时诊断上限
+  `0.7` 得到 `2/1024` 抓取，证明资产和接触链有效，也说明该任务需要单独 warm-start
+  训练，不能直接复用旧配置 exact-resume。
+- `locomotion_pick_between_tables`：full-DR 为 `0/128`，其中 `115/128` 形成抓取、
+  `98/128` 到 transport、`10/128` 到 place；瓶颈是 place/settle，而不是抓取。
 
 三个 reward-v7 update 均收集 `1,966,080` 条 fresh transition、执行 4 次 CUDA
 Adam step，actor/critic 参数变化均非零；它们是有效 PPO 训练，但没有达到完整任务验收，

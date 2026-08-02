@@ -30,6 +30,15 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument(
+        "--max-reference-action-deviation",
+        type=float,
+        default=0.35,
+        help=(
+            "Maximum normalized residual action around the replay reference; "
+            "the legacy default is 0.35"
+        ),
+    )
+    parser.add_argument(
         "--reference-target-x-arm-gains",
         type=float,
         nargs=2,
@@ -198,6 +207,7 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         smoke_mode=args.smoke,
         reference_processed=str(args.reference_processed.resolve()),
         reference_source=args.reference_source,
+        max_reference_action_deviation=args.max_reference_action_deviation,
         reference_target_x_arm_gains=tuple(args.reference_target_x_arm_gains),
         reference_target_y_arm_gains=tuple(args.reference_target_y_arm_gains),
     )

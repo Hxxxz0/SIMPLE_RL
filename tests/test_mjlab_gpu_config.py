@@ -6,7 +6,12 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from simple.grasp_rl.mjlab_gpu.cli import _evaluation_dr_strength, _parser, _seed_torch
+from simple.grasp_rl.mjlab_gpu.cli import (
+    _config,
+    _evaluation_dr_strength,
+    _parser,
+    _seed_torch,
+)
 from simple.grasp_rl.mjlab_gpu.config import (
     DomainRandomizationConfig,
     MjlabPpoConfig,
@@ -67,6 +72,28 @@ def test_train_cli_accepts_reference_target_pose_retarget_gains() -> None:
     )
     assert args.reference_target_x_arm_gains == [-10.0, 2.0]
     assert args.reference_target_y_arm_gains == [5.0, -3.5]
+
+
+def test_cli_exposes_backward_compatible_reference_residual_limit(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    args = _parser().parse_args(
+        [
+            "train",
+            "--asset-bundle",
+            str(tmp_path / "assets"),
+            "--reference-processed",
+            str(tmp_path / "reference"),
+            "--output",
+            str(tmp_path / "output"),
+        ]
+    )
+    assert args.max_reference_action_deviation == 0.35
+    assert _config(args).max_reference_action_deviation == 0.35
+
+    args.max_reference_action_deviation = 0.7
+    assert _config(args).max_reference_action_deviation == 0.7
 
 
 def test_gpu_entrypoints_seed_torch_and_cuda(monkeypatch) -> None:
