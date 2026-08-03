@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "selection_rule": [
+    "aggregate PPO success must not be below proposal-only",
+    "highest aggregate PPO success count",
+    "highest mean PPO task return",
+    "earlier checkpoint"
+  ],
+  "episodes_per_candidate": 256,
+  "seeds": [42, 43],
+  "domain_randomization": "full",
+  "candidates": [
+    {
+      "checkpoint": "initial_model_100.pt",
+      "proposal_successes": 172,
+      "ppo_successes": 172,
+      "mean_proposal_task_return": 23.929794624447823,
+      "mean_ppo_task_return": 23.929962884634733,
+      "selected": false
+    },
+    {
+      "checkpoint": "model_200.pt",
+      "proposal_successes": 172,
+      "ppo_successes": 173,
+      "mean_proposal_task_return": 23.928238227963448,
+      "mean_ppo_task_return": 24.125465895980597,
+      "selected": false
+    },
+    {
+      "checkpoint": "policy_model_299.pt",
+      "proposal_successes": 173,
+      "ppo_successes": 173,
+      "mean_proposal_task_return": 24.124118331819773,
+      "mean_ppo_task_return": 24.263966402038932,
+      "selected": true
+    }
+  ],
+  "claim": "No full-DR success regression; small mean task-return gain",
+  "not_claimed": "A statistically established PPO success-rate improvement"
+}

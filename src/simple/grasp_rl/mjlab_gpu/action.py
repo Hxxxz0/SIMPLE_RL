@@ -9,10 +9,37 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from simple.grasp_rl.schema import ACTION_DIM
+from simple.grasp_rl.schema import ACTION_DIM, JOINT_NAMES
 
 if TYPE_CHECKING:
     from simple.grasp_rl.mjlab_gpu.simulation import GpuSimulation
+
+
+def sonic_upper_mappings(upper_names: list[str]) -> tuple[list[int], list[int]]:
+    """Resolve Sonic tracker inputs and simulator outputs by joint name."""
+
+    if len(upper_names) != 31 or len(set(upper_names)) != len(upper_names):
+        raise ValueError("Sonic upper joint names must contain 31 unique entries")
+    required = {
+        *JOINT_NAMES[15:],
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "waist_pitch_joint",
+    }
+    if set(upper_names) != required:
+        raise ValueError("Sonic upper joint names do not match the control schema")
+    action_index_by_name = {
+        **dict(zip(JOINT_NAMES[15:22], range(14, 21), strict=True)),
+        **dict(zip(JOINT_NAMES[22:29], range(21, 28), strict=True)),
+        **dict(zip(JOINT_NAMES[29:36], (0, 1, 2, 5, 6, 3, 4), strict=True)),
+        **dict(zip(JOINT_NAMES[36:43], range(7, 14), strict=True)),
+        "waist_yaw_joint": 30,
+        "waist_roll_joint": 28,
+        "waist_pitch_joint": 29,
+    }
+    action_indices = [action_index_by_name[name] for name in upper_names]
+    output_mapping = [upper_names.index(name) for name in JOINT_NAMES[15:]]
+    return action_indices, output_mapping
 
 
 def _sha256(path: Path) -> str:

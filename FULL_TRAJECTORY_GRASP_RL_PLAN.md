@@ -1,6 +1,6 @@
 # SIMPLE 全轨迹抓取：mjlab GPU PPO 方案与实测
 
-更新日期：2026-08-02
+更新日期：2026-08-03
 
 ## 1. 目标与验收口径
 
@@ -10,25 +10,70 @@
 当前发布验收口径为：
 
 1. 在相同 seed、相同初始 worlds、相同 full-DR 下比较 `reference-only` 和 PPO；
-2. PPO 必须对完整任务成功率产生明显的大幅提升；
+2. 优先要求 PPO 提升完整成功率；若长训仍无法提升，发布下限是相对 noise-matched
+   `proposal-only` 成功率不下降，同时 task return 上升，并如实标为“无回退”而非“有效提升”；
 3. 抓住或抬起但未完成最后 goal stage 仍算失败；
 4. 70% 是后续优化目标，90% 是理想目标，不再作为本轮发布的硬阻塞条件；
 5. 只发布通过 CUDA/PPO 完整性审计且可复现的 checkpoint。
 
 `68.75% DR` 表示 domain-randomization 强度为 `0.6875`，不表示成功率。
 
-## 2. GPU 训练配置
+### 当前自包含 release
 
-正式训练使用 8192 个并行 environment。物理 GPU 由
-`CUDA_VISIBLE_DEVICES=4|5|6` 选择，进程内部固定使用逻辑 `cuda:0`；GPU 7 不使用。
-4096 或更少 environment 只用于 smoke、诊断和短评测。
-
-每个 8192-env、240-step update 收集：
+最终选择的是：
 
 ```text
-8192 * 240 = 1,966,080 fresh on-policy transitions
-1 PPO epoch * 4 minibatches = 4 CUDA Adam optimizer steps
+releases/grasp_rl/mjlab_gpu/xmove_pick/v1/checkpoints/policy_model_299.pt
 ```
+
+它在 seed42/43、每个 seed 128 个 full-DR world 上的汇总结果为：
+
+| 模式 | 完整成功 | mean task return |
+|---|---:|---:|
+| clean `reference-only` | 172/256 (67.19%) | 23.927 |
+| noise-matched `proposal-only` | 173/256 (67.58%) | 24.124 |
+| selected PPO | 173/256 (67.58%) | **24.264** |
+
+因此该 checkpoint 满足用户允许的“不下降”发布下限，但没有证明 PPO 对成功率有显著增益，
+且仍低于 70% 目标。对比的硬门槛是 initial physical-world hash 与 proposal-context hash
+完全相同；MuJoCo-Warp 独立构造 simulator 时 contact/sensor reduction 可能不 bitwise stable，
+所以 policy-state bitwise equality只作为诊断字段保留，不能替代物理 world/proposal 配对。
+
+release 同时包含 58,982,400 条 fresh transition 的 PPO 完整性记录、3 条 success-only NPZ、
+两段 960x540/50 FPS full-DR 成功视频，以及 clean clone 下的训练、warm-start、resume、评测和
+数据生成命令。权重、mesh、视频和发布 NPZ 通过 Git LFS 下载；Python/Torch/mjlab/MuJoCo/
+RSL-RL 版本由 `mjlab_gpu/uv.lock` 固定。
+
+## 2. GRAIL 对齐后的 GPU 训练配置
+
+直接参考仓库内 GRAIL/SONIC 的正式 pick 配置：
+
+- `GRAIL/imports/SONIC/gear_sonic/config/algo/ppo_im_phc.yaml`
+- `GRAIL/imports/SONIC/gear_sonic/config/exp/manager/universal_token/hoi/pnp_table.yaml`
+- `GRAIL/imports/SONIC/gear_sonic/config/exp/manager/universal_token/hoi/pnp_ground.yaml`
+
+GRAIL 的 HOI pick 配置使用 4096 env、24 steps/env、5 PPO epochs、4 minibatches、
+actor LR `2e-5`、critic LR `1e-3`、clip `0.2`、std `0.05`、max grad norm `0.1`，
+正式训练为 20,000 iterations；其通用默认上限是 100,000 iterations。文档中的
+8-GPU 示例为每卡 2048 env，即全局 16,384 env。
+
+SIMPLE 单任务正式训练采用：
+
+```text
+num_envs:                  8192
+num_steps_per_env:         24
+num_learning_epochs:       5
+num_mini_batches:          4
+actor learning rate:       2e-5
+critic learning rate:      1e-3
+clip / std / grad norm:    0.2 / 0.05 / 0.1
+formal iterations:         20,000
+checkpoint interval:       100
+```
+
+因此每个 update 收集 `8192 * 24 = 196,608` 条 fresh on-policy transitions，并执行
+`5 * 4 = 20` 次 CUDA Adam steps；20,000 updates 共计约 39.3 亿条 transition。
+30/100 updates 只能用于 smoke 和超参数筛选，不能称为充分训练或最终结果。
 
 训练、controller、MuJoCo-Warp physics、actor、critic、rollout、loss 和 Adam state
 全部留在 CUDA。不存在 CPU physics fallback。
@@ -53,17 +98,10 @@ clipped surrogate。环境只在任务允许的右手和右臂维度执行相对
 residual；reward 和终止始终来自新的 simulation state。`reference-only` 直接执行 reference，
 不会创建 PPO actor。
 
-当前发布候选 `v192/model_0.pt` 的审计记录为：
-
-```text
-algorithm: rsl_rl.algorithms.ppo.PPO
-transitions: 1,966,080
-rollout_reused: false
-optimizer_steps: 4
-actor_parameter_delta_l2: 6.3792746e-4
-critic_parameter_delta_l2: 1.3579301e-3
-stochastic_action_noise_rms: 0.0199977
-```
+Sonic controller 额外要求 `mapping_schema_version == 2`。WBC 输入顺序和 MuJoCo
+关节顺序不能按位置互相假定，必须用关节名分别生成 input/output mapping。缺少该 metadata
+的旧 Sonic checkpoint 可以作为 actor warm start，但禁止 exact PPO resume；AMO checkpoint
+继续保持原有兼容行为。
 
 ## 4. Domain randomization
 
@@ -85,13 +123,19 @@ retarget。yaw 输入是 randomizer 施加到物体的相对旋转，不是绝�
 为了诊断单轴瓶颈，CLI 还支持 `pose_only`、`target_x_only`、`target_y_only` 和
 `target_yaw_only`。这些 profile 只能用于 curriculum，最终评测必须使用 `full`。
 
+GRAIL 的 `pnp_table`/`pnp_ground` release 配置在学习阶段使用 `tracking/no_dr`。SIMPLE
+不完全关闭 DR，而采用兼顾学习与最终鲁棒性的 curriculum：前 10,000 updates 从强度
+`0.1` 线性增加到 `1.0`，后 10,000 updates 保持 full DR。reference scene transform
+始终与随机化同步；最终 paired evaluation 始终固定为 full DR。
+
 ## 5. Reward 与完整任务成功
 
-当前 GPU goal-graph reward schema 为 v8：
+当前 GPU goal-graph reward schema 为 v9：
 
 - ordered stages：`approach -> grasp -> lift`，place 类任务继续执行 transport/place/settle；
 - approach 和 grasp 使用 multi-finger shaping；
-- grasp stage 使用真实 contact force 验证；
+- grasp stage 同时要求真实 distal 手指闭合、7 关节平均闭合以及拇指和对向手指的真实
+  contact force；
 - lift 的 dense potential 必须同时保有对应手的真实 force-grasp quality，避免 PPO
   通过碰撞或松手后的物体位移获取虚假抬升奖励；
 - place 的 dense potential 同时要求 XY 对齐和向 destination 下放，避免只靠近容器上方后
@@ -100,6 +144,10 @@ retarget。yaw 输入是 randomizer 施加到物体的相对旋转，不是绝�
 - success `+40`、failure `-10`、timeout `-5`；
 - reference contact 只表达 clean reference 的接触意图，不控制 success；
 - 物体跌落、落到 support 以下、机器人跌倒、危险接触或数值异常按失败处理。
+
+发布视频另有更严格的时序门槛：上述真实闭合与多指接触必须连续保持至少 5 个 control
+step；sidecar 必须记录每个手关节的闭合量、每个 contact link 的 peak force，并证明目标
+物体是没有 weld/connect equality 的 free body。
 
 评测额外输出 `max_stage_counts`、grasp episode rate、最大 lift 和最大 grasp quality，
 用于区分“未形成抓取”和“抓取后未完成 lift”，但不改变 success 语义。
@@ -124,9 +172,55 @@ CLI 的 `--max-reference-action-deviation` 可按任务放宽 residual action �
 CLI 还允许用 `--target-position-jitter-xy` 和 `--target-yaw-jitter` 显式复现各任务原生
 CPU 评测范围；省略时仍使用旧 GPU 默认值 `(0.025, 0.03)` 和 `0.15`。
 
-## 7. 2026-08-02--03 实测结果
+## 7. 2026-08-03 reward-v9 当前实测与长训状态
 
-### legacy V1 任务的 GPU 兼容验收
+Sonic 手关节名称映射修复后，所有早于 mapping schema v2 的 Sonic 视频和成功率结论失效，
+不能再用于新 PPO 验收。固定 seed42、128 个 full-DR worlds 的最新 reference-only 基线为：
+
+| task | reference-only 完整成功 |
+|---|---:|
+| `tabletop_grasp` | 82/128 |
+| `bend_pick` | 92/128 |
+| `xmove_pick` | 83--85/128（GPU 接触边界有约 2-world 波动） |
+| `bend_pick_and_place` | 60/128 |
+| `xmove_bend_pick` | 128/128 |
+| `bend_pick_teleop` | 64/128 |
+| `locomotion_pick_between_tables` | 0/128；96.1% episode 有真实抓取 |
+
+reward 排序已验证有效：以 xmove reference-only 为例，成功 episode 的 mean task return
+为 `40.42`，失败为 `-9.86`，相差约 50。正式验收不只看 success，还要求独立评测的
+mean task return 相比 reference-only 上升；训练内瞬时 success 不作为发布证据。
+
+GRAIL 对齐的 8192-env、24-step 短筛选结果：
+
+| task / checkpoint | full-DR PPO | mean task return | 结论 |
+|---|---:|---:|---|
+| `bend_pick_teleop/model_15` | 73/128 (57.0%) | 18.93 | 中间点 |
+| `bend_pick_teleop/model_20` | 79/128 (61.7%) | 21.36 | 持续上升 |
+| `bend_pick_teleop/model_25` | 99/128 (77.3%) | 29.09 | 超过 reference |
+| `bend_pick_teleop/model_29` | **101/128 (78.9%)** | **29.99** | PPO 明显有效 |
+| `bend_pick_and_place/model_20` | 57/128 (44.5%) | 12.47 | 尚未超过 reference |
+| `xmove_pick/v330/model_50` | 84/128 (65.6%) | 23.14 | 与 reference 接近 |
+| `xmove_pick/v331/model_50` | 85/128 (66.4%) | 23.53 | 与 reference 接近，选作长训种子 |
+| `xmove_pick/v332/model_50` | 85/128 (66.4%) | 23.53 | 与 reference 接近 |
+
+`bend_pick_teleop` 的 success 与 return 同步上升，且 policy 相对 reference 的 action delta
+非零；这是目前 reward-v9 路径上 PPO 有效的直接证据。`bend_pick_and_place` 仍须长训，
+不能用训练内短暂峰值代替固定评测。
+
+已启动并保留短筛选 checkpoint 的新长跑：
+
+```text
+bend_pick_teleop/v400_grail20k_*       8192 env, 20,000 updates, DR 0.1 -> full
+bend_pick_and_place/v400_grail20k_*    8192 env, 20,000 updates, DR 0.1 -> full
+xmove_pick/v330--v332                  8192 env, 100-update LR 筛选，保留作消融
+xmove_pick/v400_grail20k_*             8192 env, 20,000 updates, DR 0.1 -> full
+```
+
+以下旧章节仅保留兼容性和实验 provenance。旧 Sonic mapping、reward-v6/v7/v8 或 240-step
+一次性 update 的数值不得覆盖上述 reward-v9 基线，也不得作为当前发布结果。
+
+### 历史记录：legacy V1 任务的 GPU 兼容验收
 
 `tabletop_grasp` 和 `bend_pick` 使用已有的 192D legacy state、401D reference context、
 AMO CUDA controller 和 `GpuGraspReward`，没有转成 V2 schema，也没有改变旧 CPU 入口。
@@ -147,7 +241,7 @@ AMO CUDA controller 和 `GpuGraspReward`，没有转成 V2 schema，也没有改
 对应 checkpoint 为：
 
 ```text
-outputs/grasp_rl/mjlab_gpu_experiments/
+outputs/grasp_rl/other/raw_runs/mjlab_gpu_experiments/
 tabletop_dr_ramp_fixed1e5_4096_seed146/model_149.pt
 bend_pick_stable299_gpu_ppo_clean_4096_seed144/model_0.pt
 ```
@@ -164,7 +258,7 @@ step，actor/critic delta 分别为 `1.449e-1` 和 `1.910e-1`。bend 达到了�
 Checkpoint：
 
 ```text
-outputs/grasp_rl/mjlab_gpu/xmove_pick/
+outputs/grasp_rl/other/raw_runs/mjlab_gpu/xmove_pick/
 v192_reward6_full_stage06875_from_v184m0_seed44_env8192_roll240_lr5e7_std02_freezenorm/model_0.pt
 ```
 
@@ -205,7 +299,7 @@ target yaw shoulder-yaw/wrist: (0.0, 0.5)
 保留最低学习率的 checkpoint：
 
 ```text
-outputs/grasp_rl/mjlab_gpu/xmove_pick/
+outputs/grasp_rl/other/raw_runs/mjlab_gpu/xmove_pick/
 v242_reward8_pose_x125_yaw05_from_v223m0_seed103_env8192_roll240_lr25e9_std02_freezenorm/model_0.pt
 ```
 
@@ -283,7 +377,7 @@ bundle 状态布局一致的 full-visual sidecar，并强制使用外部 MuJoCo 
 不使用机器人头部 stereo camera。
 
 ```text
-outputs/grasp_rl/mjlab_gpu/xmove_pick/release_v192_videos_full_visual/
+outputs/grasp_rl/other/raw_runs/mjlab_gpu/xmove_pick/release_v192_videos_full_visual/
   xmove_pick_full_dr_seed42_01.mp4
   xmove_pick_full_dr_seed42_02.mp4
   xmove_pick_full_dr_seed42_03.mp4
@@ -292,25 +386,40 @@ outputs/grasp_rl/mjlab_gpu/xmove_pick/release_v192_videos_full_visual/
 每个同名 JSON 包含 checkpoint SHA256、PPO integrity、随机化参数、最大 lift、分辨率和
 `render_source=full_visual_sidecar`。
 
+为便于检查全部七个任务，统一 GPU 入口为：
+
+```text
+outputs/grasp_rl/gpu_success/<task>/
+  checkpoint.pt
+  selected_run
+  videos/
+```
+
+`tabletop_grasp`、`bend_pick`、`xmove_pick` 共包含 11 个 simulator-truth 成功视频。尚未通过
+发布验收的 `xmove_bend_pick`、`bend_pick_teleop`、`bend_pick_and_place` 和
+`locomotion_pick_between_tables` 各包含 2 个 best-available 诊断视频。这 8 个视频从每个任务
+256 个确定性 GPU PPO episode 中按最高任务阶段、抓取质量和 lift 排序选取，使用补齐并通过
+拓扑/hash 校验的 full-visual sidecar 以及 `free_full_robot` camera。诊断视频文件名包含
+`diagnostic`，JSON 强制记录 `success=false`、`diagnostic=true`、`max_stage_name` 和精确
+checkpoint provenance，不能作为成功率证据。
+
 ## 9. 可复现实验命令
 
-正式训练示例：
+GRAIL 对齐后的正式训练示例：
 
 ```bash
 PYTHONPATH=src CUDA_VISIBLE_DEVICES=4 mjlab_gpu/.venv/bin/python \
   -m simple.grasp_rl.mjlab_gpu.cli train \
   --task xmove_pick \
-  --asset-bundle outputs/grasp_rl/mjlab_assets/xmove_pick/episode82 \
+  --asset-bundle outputs/grasp_rl/other/assets/mjlab_assets/xmove_pick/episode82 \
   --reference-processed data/grasp_rl/G1WholebodyXMovePickTeleop-v0/v2 \
-  --reference-target-x-arm-gains -12.5 4 \
-  --reference-target-y-arm-gains 5 -3.5 \
-  --reference-target-yaw-arm-gains 0 0.5 \
-  --num-envs 8192 --device cuda:0 --iterations 1 \
+  --num-envs 8192 --device cuda:0 --iterations 20000 \
   --warm-start <audited-checkpoint.pt> --warm-start-critic \
-  --learning-rate 2.5e-8 --schedule fixed --exploration-std 0.02 \
-  --ppo-clip-param 0.025 --ppo-learning-epochs 1 \
-  --ppo-steps-per-env 240 --freeze-actor-normalizer \
-  --dr-initial-strength 1 --dr-ramp-steps 240000 --dr-profile pose_only \
+  --learning-rate 1e-3 --actor-learning-rate-scale 0.02 \
+  --schedule fixed --exploration-std 0.05 \
+  --ppo-clip-param 0.2 --ppo-learning-epochs 5 --ppo-max-grad-norm 0.1 \
+  --ppo-steps-per-env 24 --freeze-actor-normalizer \
+  --dr-initial-strength 0.1 --dr-ramp-steps 240000 --dr-profile full \
   --output <output-dir>
 ```
 
@@ -319,6 +428,16 @@ full-DR paired evaluation 必须分别运行 `--reference-only` 和 `--checkpoin
 
 ## 10. 后续提升方向
 
-若继续追求 70%--90%，优先解决进入 lift stage 后掉落或超时的问题，不再扩大无依据的
-reward 改动。每次只做一个小改动，并在 seed42/43 paired worlds 上同时无回退后才保留；
-训练仍使用 GPU 4--6 的 8192-env 独立分支，GPU 7 保持不使用。
+训练不是以固定的 30/100 updates 结束，而以曲线和 paired evaluation 门控：
+
+1. 每 100 updates 保存 checkpoint，并跟踪 mean task return、完整 success、value loss、
+   surrogate loss、KL、actor/critic delta；
+2. 每个验收点在相同 seed/world/full-DR 下同时评测 reference-only 与 PPO；
+3. reward/return 未形成上升趋势时先检查 reward 分解和 critic，不靠增加训练次数掩盖问题；
+4. return 上升但 success 不升时，按 `max_stage_counts` 定位 grasp/lift/place/settle 瓶颈；
+5. 只有 success 和 mean task return 都明显超过 reference-only，且手指/接触审计通过，
+   才复制到 `gpu_success` 并生成正式视频。
+
+70% 是目标，90% 是理想目标；`xmove_bend_pick` 的 reference 已为 100%，该任务只能验收
+PPO 在更强 stress DR 下不退化，不能虚称“超过 100%”。每次 reward 改动只允许一个小的、
+可消融变化；已有成功 checkpoint 永不覆盖。

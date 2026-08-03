@@ -26,6 +26,20 @@ Contributors: [Songlin Wei](https://songlin.github.io/)\*, [Zhenhao Ni](https://
 + [2026-07-14] We released support for World Action Models: [Cosmos3](https://github.com/songlin/cosmos-framework/blob/main/docs/action_policy_simple_posttrain.md) and [DreamZero](https://github.com/physical-superintelligence-lab/Psi0/blob/main/baselines/dreamzero/README.md). 
 + [ ] Integrate SONIC whole-body controller.
 
+## mjlab CUDA PPO 可复现发布（2026-08-03）
+
+`xmove_pick` 的首个自包含 GPU release 位于
+[`releases/grasp_rl/mjlab_gpu/xmove_pick/v1`](releases/grasp_rl/mjlab_gpu/xmove_pick/v1)。
+它包含选中的 RSL-RL PPO 权重、训练初始权重、冻结的 mjlab/控制器资产、processed
+reference、双 seed 同世界 benchmark、3 条成功 NPZ 轨迹，以及全身和抓取近景成功视频。
+依赖锁定在 `mjlab_gpu/uv.lock`，并通过 Git LFS 发布大文件。
+
+选中的 `model_299` 累计使用 58,982,400 条 fresh on-policy transition。两个 128-world
+full-DR seed 上，PPO 和 noise-matched proposal-only 都是 173/256（67.58%）；PPO mean task
+return 为 24.264，proposal 为 24.124。因此当前结论是成功率不下降且 return 小幅提升，
+不是“PPO 成功率显著提升”，也没有把 67.58% 写成达到 70%。完整安装、verify、benchmark、
+collect、record、warm-start、exact resume 和 fine-tune 命令见 release README。
+
 ## SIMPLE_RL：完整轨迹抓取新方案
 
 本分支在 SIMPLE 上实现了一个面向 G1 的完整轨迹抓取系统。当前主方案不是 diffusion

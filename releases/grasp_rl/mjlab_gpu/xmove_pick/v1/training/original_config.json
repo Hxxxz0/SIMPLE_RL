@@ -1,0 +1,133 @@
+{
+  "environment": {
+    "task": "xmove_pick",
+    "asset_bundle": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/assets/mjlab_assets/xmove_pick/episode82",
+    "num_envs": 8192,
+    "device": "cuda:0",
+    "seed": 344,
+    "smoke_mode": false,
+    "reference_processed": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/data/grasp_rl/G1WholebodyXMovePickTeleop-v0/v2",
+    "reference_source": "bc",
+    "reference_reward_weight": 0.05,
+    "reference_target_x_arm_gains": [
+      0.0,
+      0.0
+    ],
+    "reference_target_y_arm_gains": [
+      0.0,
+      0.0
+    ],
+    "reference_target_yaw_arm_gains": [
+      0.0,
+      0.0
+    ],
+    "max_reference_action_deviation": 0.35,
+    "full_dr_reference_reward_scale": 0.2,
+    "sensor_schema_version": 1,
+    "domain_randomization": {
+      "enabled": true,
+      "target_position_jitter_xy": [
+        0.025,
+        0.03
+      ],
+      "target_yaw_jitter": 0.15,
+      "target_mass_scale": [
+        0.8,
+        1.2
+      ],
+      "friction_scale": [
+        0.7,
+        1.3
+      ],
+      "joint_damping_scale": [
+        0.9,
+        1.1
+      ],
+      "actuator_strength_scale": [
+        0.9,
+        1.1
+      ],
+      "action_delay_max_steps": 1,
+      "curriculum_initial_strength": 1.0,
+      "curriculum_warmup_steps": 0,
+      "curriculum_ramp_steps": 240000,
+      "sync_reference_scene_transform": true,
+      "reference_noise": {
+        "schema_version": 1,
+        "action_std": 0.002,
+        "position_std": 0.0025,
+        "phase_std": 0.01,
+        "future_dropout_probability": 0.02
+      }
+    },
+    "schema_version": 1
+  },
+  "ppo": {
+    "seed": 344,
+    "num_steps_per_env": 24,
+    "save_interval": 100,
+    "logger": "tensorboard",
+    "experiment_name": "tabletop_grasp_mjlab_gpu",
+    "run_name": "",
+    "upload_model": false,
+    "obs_groups": {
+      "actor": [
+        "policy"
+      ],
+      "critic": [
+        "critic"
+      ]
+    },
+    "actor": {
+      "class_name": "simple.grasp_rl.models.PlanConditionedMLPModel",
+      "hidden_dims": [
+        512,
+        256,
+        128
+      ],
+      "activation": "elu",
+      "obs_normalization": true,
+      "distribution_cfg": {
+        "class_name": "GaussianDistribution",
+        "init_std": 0.05,
+        "std_type": "scalar",
+        "learn_std": false
+      }
+    },
+    "critic": {
+      "class_name": "MLPModel",
+      "hidden_dims": [
+        512,
+        256,
+        128
+      ],
+      "activation": "elu",
+      "obs_normalization": true
+    },
+    "algorithm": {
+      "class_name": "PPO",
+      "num_learning_epochs": 5,
+      "num_mini_batches": 4,
+      "clip_param": 0.2,
+      "gamma": 0.99,
+      "lam": 0.95,
+      "value_loss_coef": 1.0,
+      "entropy_coef": 0.0,
+      "learning_rate": 0.001,
+      "max_grad_norm": 0.1,
+      "use_clipped_value_loss": true,
+      "schedule": "fixed",
+      "desired_kl": 0.01,
+      "rnd_cfg": null,
+      "symmetry_cfg": null
+    },
+    "multi_gpu": null,
+    "check_for_nan": true
+  },
+  "initial_vector_step": 240000,
+  "resume_vector_step": null,
+  "reset_resume_optimizer": false,
+  "warm_start_critic": true,
+  "freeze_actor_normalizer": true,
+  "actor_learning_rate_scale": 0.02
+}

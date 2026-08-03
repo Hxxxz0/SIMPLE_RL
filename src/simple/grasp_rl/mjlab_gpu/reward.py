@@ -16,6 +16,23 @@ if TYPE_CHECKING:
     from simple.grasp_rl.mjlab_gpu.state import GpuLegacyState, GpuTargetState
 
 GPU_REWARD_SCHEMA_VERSION = 1
+FINGER_DISTAL_CLOSURE_RAD = 0.20
+FINGER_MEAN_CLOSURE_RAD = 0.25
+
+
+def finger_closure_score(
+    hand_qpos: torch.Tensor, initial_hand_qpos: torch.Tensor
+) -> torch.Tensor:
+    """Score visible thumb/opposing-finger closure from physical joint state."""
+
+    if hand_qpos.shape != initial_hand_qpos.shape or hand_qpos.shape[-1] != 7:
+        raise ValueError("hand qpos must have a final dimension of seven")
+    delta = (hand_qpos - initial_hand_qpos).abs()
+    distal = torch.stack((delta[..., 2], delta[..., 4], delta[..., 6]), dim=-1)
+    thumb = distal[..., 0] / FINGER_DISTAL_CLOSURE_RAD
+    opposition = distal[..., 1:].amax(dim=-1) / FINGER_DISTAL_CLOSURE_RAD
+    mean = delta.mean(dim=-1) / FINGER_MEAN_CLOSURE_RAD
+    return torch.minimum(torch.minimum(thumb, opposition), mean).clamp(0.0, 1.0)
 
 
 def _json_hash(payload: object) -> str:

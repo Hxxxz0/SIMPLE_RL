@@ -20,12 +20,15 @@ def ppo_train_config(
     plan_conditioned_actor: bool = False,
     exploration_std: float | None = None,
 ) -> dict:
-    """Return the reviewed PPO hyperparameters for the 593-D reference actor."""
+    """Return the reviewed PPO hyperparameters for the reference actor."""
 
     return {
         "seed": 42,
         "num_steps_per_env": 4 if smoke else 24,
-        "save_interval": 1 if smoke else 5,
+        # At 8192 envs, 100 updates already represent 19.7M fresh transitions.
+        # Keep smoke runs dense while preventing GRAIL-scale runs from creating
+        # thousands of redundant checkpoints.
+        "save_interval": 1 if smoke else 100,
         "logger": "tensorboard",
         "experiment_name": "tabletop_grasp_mjlab_gpu",
         "run_name": "",
@@ -136,6 +139,14 @@ def _reference_metadata_matches(actual: object, expected: dict[str, object]) -> 
     return normalized == expected
 
 
+def _controller_metadata_matches(actual: object, expected: dict[str, object]) -> bool:
+    """Keep unchanged AMO resumes compatible, but reject pre-fix Sonic resumes."""
+
+    if actual == expected:
+        return True
+    return actual is None and expected.get("backend") == "amo"
+
+
 class GpuPpoRunner(OnPolicyRunner):
     """On-policy runner that refuses fake PPO and CPU optimizer state."""
 
@@ -148,14 +159,48 @@ class GpuPpoRunner(OnPolicyRunner):
         *,
         log_dir: str | None,
         integrity_path: str | Path | None = None,
+        actor_learning_rate_scale: float = 1.0,
     ):
         super().__init__(env, deepcopy(train_cfg), log_dir, env.device)
+        self.actor_learning_rate_scale = float(actor_learning_rate_scale)
+        if self.actor_learning_rate_scale <= 0.0:
+            raise ValueError("actor_learning_rate_scale must be positive")
+        if self.actor_learning_rate_scale != 1.0:
+            if self.alg.schedule != "fixed":
+                raise ValueError(
+                    "actor_learning_rate_scale requires a fixed PPO schedule"
+                )
+            base_lr = float(self.alg.learning_rate)
+            self.alg.optimizer = torch.optim.Adam(
+                [
+                    {
+                        "params": self.alg.get_policy().parameters(),
+                        "lr": base_lr * self.actor_learning_rate_scale,
+                    },
+                    {"params": self.alg._raw_critic.parameters(), "lr": base_lr},
+                ]
+            )
         _make_optimizer_capturable(self.alg.optimizer)
         self.integrity_auditor = (
             PpoIntegrityAuditor(self, integrity_path)
             if integrity_path is not None
             else None
         )
+
+    def set_learning_rate(self, learning_rate: float) -> None:
+        """Set the critic base rate while retaining the actor rate scale."""
+
+        self.alg.learning_rate = float(learning_rate)
+        if self.actor_learning_rate_scale == 1.0:
+            for group in self.alg.optimizer.param_groups:
+                group["lr"] = self.alg.learning_rate
+            return
+        if len(self.alg.optimizer.param_groups) != 2:
+            raise RuntimeError("decoupled PPO optimizer must have two groups")
+        self.alg.optimizer.param_groups[0]["lr"] = (
+            self.alg.learning_rate * self.actor_learning_rate_scale
+        )
+        self.alg.optimizer.param_groups[1]["lr"] = self.alg.learning_rate
 
     def load_actor_warm_start(self, checkpoint: str | Path) -> None:
         payload = torch.load(checkpoint, map_location=self.device, weights_only=False)
@@ -255,8 +300,12 @@ class GpuPpoRunner(OnPolicyRunner):
         return {
             "config": self.env.config.checkpoint_metadata(),
             "asset_manifest_hash": self.env.gpu.bundle.manifest["manifest_hash"],
+            "controller": self.env.controller.metadata(),
             "reward": self.env.reward.metadata(),
             "reference": self.env.reference.metadata(),
+            "optimizer": {
+                "actor_learning_rate_scale": self.actor_learning_rate_scale,
+            },
         }
 
     def save(self, path: str, infos: dict | None = None) -> None:
@@ -305,22 +354,31 @@ class GpuPpoRunner(OnPolicyRunner):
         else:
             self.env.config.assert_resume_compatible(metadata["config"])
             expected = self.checkpoint_metadata()
-            for key in ("asset_manifest_hash", "reward", "reference"):
+            for key in (
+                "asset_manifest_hash",
+                "controller",
+                "reward",
+                "reference",
+                "optimizer",
+            ):
+                actual = metadata.get(key)
+                if key == "optimizer" and actual is None:
+                    actual = {"actor_learning_rate_scale": 1.0}
                 matches = (
-                    _reference_metadata_matches(metadata.get(key), expected[key])
+                    _reference_metadata_matches(actual, expected[key])
                     if key == "reference"
-                    else metadata.get(key) == expected[key]
+                    else _controller_metadata_matches(actual, expected[key])
+                    if key == "controller"
+                    else actual == expected[key]
                 )
                 if not matches:
                     raise ValueError(f"Checkpoint {key} metadata mismatch")
         load_iteration = self.alg.load(payload, load_cfg, strict)
         _move_optimizer_state(self.alg.optimizer, self.device)
         _make_optimizer_capturable(self.alg.optimizer)
-        self.alg.learning_rate = float(
-            payload.get("adaptive_learning_rate", self.alg.learning_rate)
+        self.set_learning_rate(
+            float(payload.get("adaptive_learning_rate", self.alg.learning_rate))
         )
-        for group in self.alg.optimizer.param_groups:
-            group["lr"] = self.alg.learning_rate
         if load_iteration:
             self.current_learning_iteration = int(
                 payload.get("next_learning_iteration", payload.get("iter", 0) + 1)
@@ -344,6 +402,14 @@ class GpuPpoRunner(OnPolicyRunner):
                     env_state["reference_generator_state"].cpu()
                 )
             self.env._reset(torch.arange(self.env.num_envs, device=self.device))
+            completed = env_state.get("completed_episode_stats")
+            if isinstance(completed, dict):
+                self.env._completed_episode_count.copy_(
+                    torch.as_tensor(completed["episodes"], device=self.device)
+                )
+                self.env._completed_success_count.copy_(
+                    torch.as_tensor(completed["successes"], device=self.device)
+                )
         self.assert_cuda_integrity(
             require_optimizer_state=bool(self.alg.optimizer.state)
         )

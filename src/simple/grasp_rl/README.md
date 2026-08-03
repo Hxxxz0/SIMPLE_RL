@@ -1,5 +1,16 @@
 # Grasp RL pipeline
 
+## Reproducible mjlab GPU PPO release
+
+The self-contained `xmove_pick` CUDA release is
+[`releases/grasp_rl/mjlab_gpu/xmove_pick/v1`](../../../releases/grasp_rl/mjlab_gpu/xmove_pick/v1).
+It includes locked dependencies, frozen assets/reference data, audited PPO
+checkpoints, paired full-DR evaluation, successful NPZ trajectories and
+full-robot/close-up videos.  Across seeds 42 and 43, selected PPO and the
+noise-matched proposal-only baseline both complete 173/256 worlds; PPO raises
+mean task return from 24.124 to 24.264.  This is a no-regression release, not a
+claim of statistically significant success-rate improvement.
+
 ## Current GRAIL-v7 PPO release
 
 The current selected real-PPO checkpoints are:

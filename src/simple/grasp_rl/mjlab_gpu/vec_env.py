@@ -31,6 +31,7 @@ class GpuGraspVecEnv(VecEnv):
         training: bool = True,
         randomization_enabled: bool | None = None,
         capture_terminal_qpos: bool = False,
+        capture_step_data: bool = False,
     ):
         if config.reference_processed is None:
             raise ValueError("GPU PPO requires reference_processed")
@@ -38,6 +39,7 @@ class GpuGraspVecEnv(VecEnv):
         self.cfg = config.resolved()
         self.training = bool(training)
         self.capture_terminal_qpos = bool(capture_terminal_qpos)
+        self.capture_step_data = bool(capture_step_data)
         self.randomization_enabled = (
             self.training
             if randomization_enabled is None
@@ -87,6 +89,12 @@ class GpuGraspVecEnv(VecEnv):
         self.common_step_counter = 0
         self._episode_return = torch.zeros(self.num_envs, device=self.device)
         self._episode_success = torch.zeros(self.num_envs, device=self.device)
+        self._completed_episode_count = torch.zeros(
+            (), dtype=torch.long, device=self.device
+        )
+        self._completed_success_count = torch.zeros(
+            (), dtype=torch.long, device=self.device
+        )
         self._last_base_observation: torch.Tensor | None = None
         self._last_clean_context: torch.Tensor | None = None
         self.last_numerical_failure = torch.zeros(
@@ -273,19 +281,50 @@ class GpuGraspVecEnv(VecEnv):
                 ),
             },
         }
+        if self.capture_step_data:
+            stage_index = getattr(self.reward, "stage_index", None)
+            extras["step_data"] = {
+                "executed_action": executed_action.clone(),
+                "physical_action": physical_action.clone(),
+                "task_reward": terms.task_reward().clone(),
+                "reference_reward": (reference_weight * reference_reward).clone(),
+                "stage_index": (
+                    torch.zeros(
+                        self.num_envs, dtype=torch.long, device=self.device
+                    )
+                    if stage_index is None
+                    else stage_index.clone()
+                ),
+            }
         finished = dones.nonzero(as_tuple=False).flatten()
         if len(finished):
+            finished_successes = self._episode_success[finished].sum()
+            self._completed_episode_count.add_(len(finished))
+            self._completed_success_count.add_(finished_successes.to(torch.long))
             if self.capture_terminal_qpos:
                 extras["terminal_env_ids"] = finished.clone()
                 extras["terminal_qpos"] = self.gpu.sim.data.qpos[finished].clone()
+                extras["terminal_qvel"] = self.gpu.sim.data.qvel[finished].clone()
             log = extras["log"]
             assert isinstance(log, dict)
             log["/episode/return"] = self._episode_return[finished].mean()
             log["/episode/length"] = self.episode_length_buf[finished].float().mean()
-            log["/episode/success"] = self._episode_success[finished].mean()
+            # A short rollout can contain only an easy/synchronized completion
+            # cohort and falsely print 100%.  Keep that batch statistic explicit,
+            # while the primary metric is the exact rate over all completed
+            # episodes seen by this environment.
+            log["/episode/success_finished_batch"] = self._episode_success[
+                finished
+            ].mean()
+            log["/episode/success"] = (
+                self._completed_success_count.float()
+                / self._completed_episode_count.clamp_min(1).float()
+            )
+            log["/episode/successes_finished"] = finished_successes
             log["/episode/count"] = torch.tensor(
                 len(finished), device=self.device, dtype=torch.float32
             )
+            log["/episode/completed_cumulative"] = self._completed_episode_count.float()
             self._reset(finished)
         observations = self.get_observations()
         return observations, rewards, dones, extras
@@ -293,6 +332,10 @@ class GpuGraspVecEnv(VecEnv):
     def checkpoint_state(self) -> dict[str, object]:
         return {
             "common_step_counter": self.common_step_counter,
+            "completed_episode_stats": {
+                "episodes": self._completed_episode_count.clone(),
+                "successes": self._completed_success_count.clone(),
+            },
             "episode_length_buf": self.episode_length_buf.clone(),
             "domain_randomization": self.randomizer.state_dict(),
             "reference_generator_state": self.reference_generator.get_state(),

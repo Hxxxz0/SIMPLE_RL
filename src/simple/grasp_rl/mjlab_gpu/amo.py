@@ -176,6 +176,10 @@ class BatchedAmoController:
             int(model.sensor_adr[angular_velocity_id]) + 3,
         )
 
+    @staticmethod
+    def metadata() -> dict[str, object]:
+        return {"backend": "amo", "mapping_schema_version": 1}
+
     def _load_initial_state(self) -> None:
         state_path = self.gpu.bundle.root / self.bundle_config["state_file"]
         with np.load(state_path, allow_pickle=False) as saved:

@@ -458,14 +458,13 @@ def _export_sonic_controller(env: GraspRlEnv, output: Path) -> dict:
     actual_left_names = [robot.mjModel.joint(int(i)).name for i in robot.left_hand_index]
     actual_right_names = [robot.mjModel.joint(int(i)).name for i in robot.right_hand_index]
 
-    output_slot_by_name = {
-        name: upper_names.index(name) for name in JOINT_NAMES[15:29]
-    }
-    for actual, wbc in zip(actual_left_names, wbc_left_names, strict=True):
-        output_slot_by_name[actual] = upper_names.index(wbc)
-    for actual, wbc in zip(actual_right_names, wbc_right_names, strict=True):
-        output_slot_by_name[actual] = upper_names.index(wbc)
-    upper_output_mapping = [output_slot_by_name[name] for name in JOINT_NAMES[15:]]
+    # WBC and MuJoCo enumerate hand joints in different orders.  Joint names,
+    # rather than a positional zip between those orders, are authoritative.
+    if set(wbc_left_names + wbc_right_names) != set(
+        actual_left_names + actual_right_names
+    ):
+        raise ValueError("Sonic WBC and MuJoCo hand joint names disagree")
+    upper_output_mapping = [upper_names.index(name) for name in JOINT_NAMES[15:]]
 
     action_index_by_name = {
         **dict(zip(JOINT_NAMES[15:22], range(14, 21), strict=True)),
@@ -566,6 +565,7 @@ def _export_sonic_controller(env: GraspRlEnv, output: Path) -> dict:
     config = lower_policy.config
     return {
         "format_version": SONIC_CONTROLLER_STATE_VERSION,
+        "mapping_schema_version": 2,
         "state_file": str(state_path.relative_to(output)),
         "state_sha256": _sha256(state_path),
         "artifacts": artifacts,

@@ -2,17 +2,25 @@
 name = "simple-mjlab-gpu"
 version = "0.1.0"
 description = "Pinned GPU runtime for SIMPLE MuJoCo-Warp PPO"
-requires-python = ">=3.10,<3.14"
+requires-python = "==3.10.*"
 dependencies = [
-  "mjlab",
-  "torch>=2.10,<2.11",
+  "mjlab @ git+https://github.com/mujocolab/mjlab.git@731fa27b8c023d3d5258501c694979425d2a37fd",
+  "torch==2.7.0",
   "rsl-rl-lib==5.2.0",
-  "tensordict>=0.11,<0.12",
-  "numpy>=1.26",
+  "tensordict==0.11.0",
+  "numpy==1.26.4",
+  "mujoco==3.11.0",
+  "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp@88b55fc2696960b927bc12584994bb8412b36558",
+  "warp-lang==1.15.0",
+  "tensorboard==2.21.0",
+  "imageio==2.37.3",
+  "imageio-ffmpeg==0.6.0",
 ]
 
-[tool.uv.sources]
-mjlab = { git = "https://github.com/mujocolab/mjlab.git", rev = "731fa27" }
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
 
 [tool.uv]
 package = false

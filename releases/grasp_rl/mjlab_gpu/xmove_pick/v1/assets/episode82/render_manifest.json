@@ -1,0 +1,680 @@
+{
+  "assets": [
+    {
+      "bundle_path": "assets/005fb67fbd3eff94_head_link.STL",
+      "bytes": 932784,
+      "sha256": "005fb67fbd3eff94aa8bf4a6e83238174e9f91b6721f7111594322f223724411",
+      "source": "data/robots/g1_sonic/meshes/head_link.STL"
+    },
+    {
+      "bundle_path": "assets/0255eed0f932f676_convex_piece_5.obj",
+      "bytes": 25153,
+      "sha256": "0255eed0f932f6768efa5250232eacefb01f2d2edc9c3a436e3e063ba4ce2863",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_5.obj"
+    },
+    {
+      "bundle_path": "assets/0300cb37ef2ffff1_convex_piece_47.obj",
+      "bytes": 11189,
+      "sha256": "0300cb37ef2ffff1522be9a520ebbdd447c8361ca8f46c5403e24fdd50ffe4b4",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_47.obj"
+    },
+    {
+      "bundle_path": "assets/0318d91201b08bb7_convex_piece_1.obj",
+      "bytes": 48263,
+      "sha256": "0318d91201b08bb72dd9167bda23b6891d6a7796f655430977c36cb7624b9ec0",
+      "source": "data/assets/graspnet/models/005/coacd_0.05/convex_piece_1.obj"
+    },
+    {
+      "bundle_path": "assets/034b19d0f62a9ece_convex_piece_37.obj",
+      "bytes": 10149,
+      "sha256": "034b19d0f62a9ecea746cbdcde337bc93615926888c6a0f3cdb81d5e85e23dee",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_37.obj"
+    },
+    {
+      "bundle_path": "assets/0553645b5c5d5366_convex_piece_14.obj",
+      "bytes": 21041,
+      "sha256": "0553645b5c5d5366e16f36cc76e0936a01e9a1964b31310b6beb6fd145abb2db",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_14.obj"
+    },
+    {
+      "bundle_path": "assets/0660fbee489e2115_convex_piece_42.obj",
+      "bytes": 4746,
+      "sha256": "0660fbee489e21157c117898e31e891dff21fae5ad560edd8164515f2ad5cbbc",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_42.obj"
+    },
+    {
+      "bundle_path": "assets/075000962e6a422e_convex_piece_23.obj",
+      "bytes": 12810,
+      "sha256": "075000962e6a422e3ca3c0097b2b32754c9e1a319cdcd84e90309c759e7ba999",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_23.obj"
+    },
+    {
+      "bundle_path": "assets/0a9a820da8dd10f2_right_hand_thumb_1_link.STL",
+      "bytes": 475984,
+      "sha256": "0a9a820da8dd10f298778b714f1364216e8a5976f4fd3a05689ea26327d44bf6",
+      "source": "data/robots/g1_sonic/meshes/right_hand_thumb_1_link.STL"
+    },
+    {
+      "bundle_path": "assets/0f25dc6df831e47b_convex_piece_0.obj",
+      "bytes": 9388,
+      "sha256": "0f25dc6df831e47b0ba1179091a3c5e4b4a79dfb0beb0fb6c12712717ff83e35",
+      "source": "data/assets/graspnet/models/005/coacd_0.05/convex_piece_0.obj"
+    },
+    {
+      "bundle_path": "assets/12ab4300c95e437e_right_hand_index_0_link.STL",
+      "bytes": 475984,
+      "sha256": "12ab4300c95e437e834f9aef772b3b431c671bf34338930b52ad11aef73bbd0d",
+      "source": "data/robots/g1_sonic/meshes/right_hand_index_0_link.STL"
+    },
+    {
+      "bundle_path": "assets/12ab4300c95e437e_right_hand_middle_0_link.STL",
+      "bytes": 475984,
+      "sha256": "12ab4300c95e437e834f9aef772b3b431c671bf34338930b52ad11aef73bbd0d",
+      "source": "data/robots/g1_sonic/meshes/right_hand_middle_0_link.STL"
+    },
+    {
+      "bundle_path": "assets/15be426539ec1be7_right_ankle_pitch_link.STL",
+      "bytes": 71184,
+      "sha256": "15be426539ec1be70246d4d82a168806db64a41301af8b35c197a33348c787a9",
+      "source": "data/robots/g1_sonic/meshes/right_ankle_pitch_link.STL"
+    },
+    {
+      "bundle_path": "assets/1aa97e9748e92433_left_shoulder_yaw_link.STL",
+      "bytes": 249184,
+      "sha256": "1aa97e9748e924336567992181f78c7cd0652fd52a4afcca3df6b2ef6f9e712e",
+      "source": "data/robots/g1_sonic/meshes/left_shoulder_yaw_link.STL"
+    },
+    {
+      "bundle_path": "assets/1be925d7aa268bb8_right_elbow_link.STL",
+      "bytes": 88784,
+      "sha256": "1be925d7aa268bb8fddf5362b9173066890c7d32092c05638608126e59d1e2ab",
+      "source": "data/robots/g1_sonic/meshes/right_elbow_link.STL"
+    },
+    {
+      "bundle_path": "assets/1fae9e1bb609848a_waist_support_link.STL",
+      "bytes": 150484,
+      "sha256": "1fae9e1bb609848a1667d32eed8d6083ae443538a306843056a2a660f1b2926a",
+      "source": "data/robots/g1_sonic/meshes/waist_support_link.STL"
+    },
+    {
+      "bundle_path": "assets/23a486b75bd78a9b_left_hand_palm_link.STL",
+      "bytes": 2140184,
+      "sha256": "23a486b75bd78a9bf03cec25d84d87f97f3dae038cf21a743b6d469b337e4004",
+      "source": "data/robots/g1_sonic/meshes/left_hand_palm_link.STL"
+    },
+    {
+      "bundle_path": "assets/24751e1c95e91b2c_convex_piece_13.obj",
+      "bytes": 19162,
+      "sha256": "24751e1c95e91b2ca194b4f7567044de9cb87a8ade724d294eeb2a4287808ffb",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_13.obj"
+    },
+    {
+      "bundle_path": "assets/24cdb387e0128dfe_right_shoulder_pitch_link.STL",
+      "bytes": 176784,
+      "sha256": "24cdb387e0128dfe602770a81c56cdce3a0181d34d039a11d1aaf8819b7b8c02",
+      "source": "data/robots/g1_sonic/meshes/right_shoulder_pitch_link.STL"
+    },
+    {
+      "bundle_path": "assets/2883f20e03f09b66_waist_yaw_link.STL",
+      "bytes": 336284,
+      "sha256": "2883f20e03f09b669b5b4ce10677ee6b5191c0934b584d7cbaef2d0662856ffb",
+      "source": "data/robots/g1_sonic/meshes/waist_yaw_link.STL"
+    },
+    {
+      "bundle_path": "assets/3083c8e04561c22e_convex_piece_3.obj",
+      "bytes": 22047,
+      "sha256": "3083c8e04561c22ed4d1ce8489deed5e79bfa6704bd8bdde6d011ec99b41dc08",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_3.obj"
+    },
+    {
+      "bundle_path": "assets/308e91e32ca49620_convex_piece_2.obj",
+      "bytes": 103895,
+      "sha256": "308e91e32ca49620743d1470a8cbc9f9ca732393a8d62ee3761b9b58faf4e23d",
+      "source": "data/assets/graspnet/models/034/coacd_0.05/convex_piece_2.obj"
+    },
+    {
+      "bundle_path": "assets/3477a9114a134c58_convex_piece_46.obj",
+      "bytes": 7777,
+      "sha256": "3477a9114a134c58d6a20b9881c346ff91ac3290cf196a92ae0a7a2c05bca4dd",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_46.obj"
+    },
+    {
+      "bundle_path": "assets/34f0aa73f4113123_waist_roll_link.STL",
+      "bytes": 24184,
+      "sha256": "34f0aa73f41131230be4d25876c944fdf6c24d62553f199ff8b980c15e8913df",
+      "source": "data/robots/g1_sonic/meshes/waist_roll_link.STL"
+    },
+    {
+      "bundle_path": "assets/37a009c1930de09b_convex_piece_28.obj",
+      "bytes": 19477,
+      "sha256": "37a009c1930de09b9654a1dd27989d5ef73c495065e27f775eb1b720a2bc2613",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_28.obj"
+    },
+    {
+      "bundle_path": "assets/3c7c2c59c8794927_convex_piece_0.obj",
+      "bytes": 39645,
+      "sha256": "3c7c2c59c8794927e55a8c809d96d9be9dfc5a69e107b229ba69f819c1eae068",
+      "source": "data/assets/graspnet/models/000/coacd_0.05/convex_piece_0.obj"
+    },
+    {
+      "bundle_path": "assets/3d8dbe5085acfc21_left_hand_thumb_2_link.STL",
+      "bytes": 1521784,
+      "sha256": "3d8dbe5085acfc213d21aa8b0782e89cd79084e9678f3a85fc7b04a86b029db5",
+      "source": "data/robots/g1_sonic/meshes/left_hand_thumb_2_link.STL"
+    },
+    {
+      "bundle_path": "assets/3f1bfb37668e8f61_right_hand_thumb_2_link.STL",
+      "bytes": 1521784,
+      "sha256": "3f1bfb37668e8f61801c8d25f171fa1949e08666be86c67acad7e0079937cc45",
+      "source": "data/robots/g1_sonic/meshes/right_hand_thumb_2_link.STL"
+    },
+    {
+      "bundle_path": "assets/4282ef4557e7c804_convex_piece_38.obj",
+      "bytes": 10181,
+      "sha256": "4282ef4557e7c8046ac921bf2a7771597415ab35e016bc76c68e489214fafcb4",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_38.obj"
+    },
+    {
+      "bundle_path": "assets/445c54a45bc13ce3_left_hand_thumb_1_link.STL",
+      "bytes": 475984,
+      "sha256": "445c54a45bc13ce36001556f66bc0f49c83cb40321205ae4d676bb2874325684",
+      "source": "data/robots/g1_sonic/meshes/left_hand_thumb_1_link.STL"
+    },
+    {
+      "bundle_path": "assets/44e4c715e3bba6d1_convex_piece_8.obj",
+      "bytes": 17278,
+      "sha256": "44e4c715e3bba6d15eb08461f321b7bac443cf25aa85351427c07d7c10939c7d",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_8.obj"
+    },
+    {
+      "bundle_path": "assets/4725168105ee768e_left_hip_pitch_link.STL",
+      "bytes": 181684,
+      "sha256": "4725168105ee768ee31638ef22b53f6be2d7641bfd7cfefe803488d884776fa4",
+      "source": "data/robots/g1_sonic/meshes/left_hip_pitch_link.STL"
+    },
+    {
+      "bundle_path": "assets/4b66222ea56653e6_right_ankle_roll_link.STL",
+      "bytes": 653784,
+      "sha256": "4b66222ea56653e627711b56d0a8949b4920da5df091da0ceb343f54e884e3a5",
+      "source": "data/robots/g1_sonic/meshes/right_ankle_roll_link.STL"
+    },
+    {
+      "bundle_path": "assets/4bbb27d9e562a975_convex_piece_0.obj",
+      "bytes": 14973,
+      "sha256": "4bbb27d9e562a97592136ce8216ddb4bd2c761ac7385e33c6299cc019dfa698d",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_0.obj"
+    },
+    {
+      "bundle_path": "assets/4c254ef66a356f49_right_hip_roll_link.STL",
+      "bytes": 192684,
+      "sha256": "4c254ef66a356f492947f360dd931965477b631e3fcc841f91ccc46d945d54f6",
+      "source": "data/robots/g1_sonic/meshes/right_hip_roll_link.STL"
+    },
+    {
+      "bundle_path": "assets/4cb6aba45fed5615_convex_piece_2.obj",
+      "bytes": 100099,
+      "sha256": "4cb6aba45fed5615465e14dfa52a482cff6cfbfa8a877fdf5088394b563784ab",
+      "source": "data/assets/graspnet/models/005/coacd_0.05/convex_piece_2.obj"
+    },
+    {
+      "bundle_path": "assets/4f7528b284d0ada3_convex_piece_1.obj",
+      "bytes": 11232,
+      "sha256": "4f7528b284d0ada3f89e1f791b69519c7da33e83e896c4f3d49a756c2d6b371f",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_1.obj"
+    },
+    {
+      "bundle_path": "assets/544298d0ea1088f5_right_hand_thumb_0_link.STL",
+      "bytes": 8884,
+      "sha256": "544298d0ea1088f5b276a10cc6a6a9e533efdd91594955fdc956c46211d07f83",
+      "source": "data/robots/g1_sonic/meshes/right_hand_thumb_0_link.STL"
+    },
+    {
+      "bundle_path": "assets/5ba6bbc888e63055_pelvis.STL",
+      "bytes": 1060884,
+      "sha256": "5ba6bbc888e630550140d3c26763f10206da8c8bd30ed886b8ede41c61f57a31",
+      "source": "data/robots/g1_sonic/meshes/pelvis.STL"
+    },
+    {
+      "bundle_path": "assets/5c8fba1d70c1e510_convex_piece_11.obj",
+      "bytes": 12004,
+      "sha256": "5c8fba1d70c1e510ac140168facf2464d422a629331d3f2047ffcbfa93018386",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_11.obj"
+    },
+    {
+      "bundle_path": "assets/5cc5c2c7a312329e_pelvis_contour_link.STL",
+      "bytes": 1805184,
+      "sha256": "5cc5c2c7a312329e3feeb2b03d3fc09fc29705bd01864f6767e51be959662420",
+      "source": "data/robots/g1_sonic/meshes/pelvis_contour_link.STL"
+    },
+    {
+      "bundle_path": "assets/62f09a7e1bbcdbb6_convex_piece_36.obj",
+      "bytes": 2709,
+      "sha256": "62f09a7e1bbcdbb64bc3569d199c780e579e0728f869378cdce17bbd66011f85",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_36.obj"
+    },
+    {
+      "bundle_path": "assets/63c4008449c9bbe7_right_knee_link.STL",
+      "bytes": 852284,
+      "sha256": "63c4008449c9bbe701a6e2b557b7a252e90cf3a5abcf54cee46862b9a69f8ec8",
+      "source": "data/robots/g1_sonic/meshes/right_knee_link.STL"
+    },
+    {
+      "bundle_path": "assets/662dd625ae87155a_convex_piece_41.obj",
+      "bytes": 30488,
+      "sha256": "662dd625ae87155ab26bcfccea6b7150a6f290a191c5fa76eac02b3b179e0bbd",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_41.obj"
+    },
+    {
+      "bundle_path": "assets/6a5cae7e56899815_convex_piece_26.obj",
+      "bytes": 16531,
+      "sha256": "6a5cae7e56899815322527a155adf5ae574b54c50c254fc9bd4ac1424b399664",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_26.obj"
+    },
+    {
+      "bundle_path": "assets/6a6ae0540bf6f8da_convex_piece_34.obj",
+      "bytes": 10798,
+      "sha256": "6a6ae0540bf6f8da83b13503a33fa6c6b63d0c8f8f3da58fca03874226b506d7",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_34.obj"
+    },
+    {
+      "bundle_path": "assets/6b35f2f77211d5a3_left_hand_index_0_link.STL",
+      "bytes": 475984,
+      "sha256": "6b35f2f77211d5a366f0b9a4e47c4ee35e536731266f1a34e9efa12db579b892",
+      "source": "data/robots/g1_sonic/meshes/left_hand_index_0_link.STL"
+    },
+    {
+      "bundle_path": "assets/6b35f2f77211d5a3_left_hand_middle_0_link.STL",
+      "bytes": 475984,
+      "sha256": "6b35f2f77211d5a366f0b9a4e47c4ee35e536731266f1a34e9efa12db579b892",
+      "source": "data/robots/g1_sonic/meshes/left_hand_middle_0_link.STL"
+    },
+    {
+      "bundle_path": "assets/6e558af32f51dfc8_convex_piece_39.obj",
+      "bytes": 20179,
+      "sha256": "6e558af32f51dfc8546e222b1cb780c954617e9de3a8f418cebbd759e84ac620",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_39.obj"
+    },
+    {
+      "bundle_path": "assets/6ea8c1ea7f2f8578_convex_piece_43.obj",
+      "bytes": 3416,
+      "sha256": "6ea8c1ea7f2f8578cdc00d461c5d23ae4149fdc9be4d62a3705d514756b3e0ae",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_43.obj"
+    },
+    {
+      "bundle_path": "assets/70f6afea58eb48e9_convex_piece_15.obj",
+      "bytes": 8689,
+      "sha256": "70f6afea58eb48e99bfc6027fa3cfd56503f43b0a65fadb423eb6b8e590d664f",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_15.obj"
+    },
+    {
+      "bundle_path": "assets/78a608720345fec0_convex_piece_21.obj",
+      "bytes": 8744,
+      "sha256": "78a608720345fec0c0b335d77e07399fe1b8efe343c4c086df2d3733d4d8744b",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_21.obj"
+    },
+    {
+      "bundle_path": "assets/7f4f20f593c0ed96_convex_piece_30.obj",
+      "bytes": 17049,
+      "sha256": "7f4f20f593c0ed969c2262af0df79f40e711d01f871dec057489c0dcb06e9104",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_30.obj"
+    },
+    {
+      "bundle_path": "assets/83f8fb3a726bf961_left_wrist_yaw_link.STL",
+      "bytes": 318684,
+      "sha256": "83f8fb3a726bf9613d65dd14f0f447cb918c3c95b3938042a0c9c09749267d3b",
+      "source": "data/robots/g1_sonic/meshes/left_wrist_yaw_link.STL"
+    },
+    {
+      "bundle_path": "assets/8571a0a19bc4916f_logo_link.STL",
+      "bytes": 243384,
+      "sha256": "8571a0a19bc4916fa55f91449f51d5fdefd751000054865a842449429d5f155b",
+      "source": "data/robots/g1_sonic/meshes/logo_link.STL"
+    },
+    {
+      "bundle_path": "assets/86c0b231cc44477d_right_hand_palm_link.STL",
+      "bytes": 2140184,
+      "sha256": "86c0b231cc44477d64a6493e5a427ba16617a00738112dd187c652675b086fb9",
+      "source": "data/robots/g1_sonic/meshes/right_hand_palm_link.STL"
+    },
+    {
+      "bundle_path": "assets/876cdffaebd081a1_convex_piece_10.obj",
+      "bytes": 10485,
+      "sha256": "876cdffaebd081a1d0240021de16500abf998529e84f43bb9488c9141fec5226",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_10.obj"
+    },
+    {
+      "bundle_path": "assets/87ceb251d7b241a6_convex_piece_2.obj",
+      "bytes": 20697,
+      "sha256": "87ceb251d7b241a6acc90c73738e1cfc58b984e6839bf9de7499a8ac71134f07",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_2.obj"
+    },
+    {
+      "bundle_path": "assets/8c993da28f2a4e74_convex_piece_25.obj",
+      "bytes": 13603,
+      "sha256": "8c993da28f2a4e7426132d1dc61f1cbf365cae685fdd9a123a6d1dd06578cf8a",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_25.obj"
+    },
+    {
+      "bundle_path": "assets/8d30476850621efc_convex_piece_19.obj",
+      "bytes": 7558,
+      "sha256": "8d30476850621efc87417c196ed8734956a46726794d2fffe17a23f605c759ed",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_19.obj"
+    },
+    {
+      "bundle_path": "assets/8d92b9e3d3a63676_left_knee_link.STL",
+      "bytes": 854884,
+      "sha256": "8d92b9e3d3a636761150bb8025e32514c4602b91c7028d523ee42b3e632de477",
+      "source": "data/robots/g1_sonic/meshes/left_knee_link.STL"
+    },
+    {
+      "bundle_path": "assets/91f25922ee8a7c31_left_hip_roll_link.STL",
+      "bytes": 192184,
+      "sha256": "91f25922ee8a7c3152790051bebad17b4d9cd243569c38fe340285ff93a97acf",
+      "source": "data/robots/g1_sonic/meshes/left_hip_roll_link.STL"
+    },
+    {
+      "bundle_path": "assets/962b97c48f9ce9e8_right_shoulder_roll_link.STL",
+      "bytes": 401884,
+      "sha256": "962b97c48f9ce9e8399f45dd9522e0865d19aa9fd299406b2d475a8fc4a53e81",
+      "source": "data/robots/g1_sonic/meshes/right_shoulder_roll_link.STL"
+    },
+    {
+      "bundle_path": "assets/985ef5d98d95c89e_convex_piece_3.obj",
+      "bytes": 37891,
+      "sha256": "985ef5d98d95c89eae2addabb1c96876da558c43d961141fb1420a7079d28548",
+      "source": "data/assets/graspnet/models/034/coacd_0.05/convex_piece_3.obj"
+    },
+    {
+      "bundle_path": "assets/9e315ebc8a7a0cb9_left_hand_index_1_link.STL",
+      "bytes": 1521784,
+      "sha256": "9e315ebc8a7a0cb98e033985b586b20d81cf8aa761181ae61ce56fcb14077a06",
+      "source": "data/robots/g1_sonic/meshes/left_hand_index_1_link.STL"
+    },
+    {
+      "bundle_path": "assets/9e315ebc8a7a0cb9_left_hand_middle_1_link.STL",
+      "bytes": 1521784,
+      "sha256": "9e315ebc8a7a0cb98e033985b586b20d81cf8aa761181ae61ce56fcb14077a06",
+      "source": "data/robots/g1_sonic/meshes/left_hand_middle_1_link.STL"
+    },
+    {
+      "bundle_path": "assets/a0b76489271da0c7_right_shoulder_yaw_link.STL",
+      "bytes": 249984,
+      "sha256": "a0b76489271da0c72461a344c9ffb0f0c6e64f019ea5014c1624886c442a2fe5",
+      "source": "data/robots/g1_sonic/meshes/right_shoulder_yaw_link.STL"
+    },
+    {
+      "bundle_path": "assets/a16d88aa6ddac808_left_hip_yaw_link.STL",
+      "bytes": 296284,
+      "sha256": "a16d88aa6ddac8083aa7ad55ed317bea44b1fa003d314fba88965b7ed0f3b55b",
+      "source": "data/robots/g1_sonic/meshes/left_hip_yaw_link.STL"
+    },
+    {
+      "bundle_path": "assets/a3ef1271d1c27487_convex_piece_22.obj",
+      "bytes": 27279,
+      "sha256": "a3ef1271d1c27487d536e647fb312132502f9edbdc5de9dabd2c21bba6fa5f6d",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_22.obj"
+    },
+    {
+      "bundle_path": "assets/a6105b270c6a64bf_convex_piece_24.obj",
+      "bytes": 31008,
+      "sha256": "a6105b270c6a64bfb68007aecbda3be8cc7efb7a80e0e3834d89a545bd57bb81",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_24.obj"
+    },
+    {
+      "bundle_path": "assets/a7ee9212ff5b94d6_right_wrist_roll_link.STL",
+      "bytes": 356084,
+      "sha256": "a7ee9212ff5b94d6cb7f52bb1bbf3f352194d5b598acff74f4c77d340c5b344f",
+      "source": "data/robots/g1_sonic/meshes/right_wrist_roll_link.STL"
+    },
+    {
+      "bundle_path": "assets/a90c721661c06226_left_hand_thumb_0_link.STL",
+      "bytes": 8884,
+      "sha256": "a90c721661c0622685488a3c74d1e122c7da89242d3a1daef75edb83422d05e0",
+      "source": "data/robots/g1_sonic/meshes/left_hand_thumb_0_link.STL"
+    },
+    {
+      "bundle_path": "assets/b251d8e05047f695_left_wrist_pitch_link.STL",
+      "bytes": 85984,
+      "sha256": "b251d8e05047f695d0f536cd78c11973cfa4e78d08cfe82759336cc3471de3a9",
+      "source": "data/robots/g1_sonic/meshes/left_wrist_pitch_link.STL"
+    },
+    {
+      "bundle_path": "assets/b300efb7a1402e76_convex_piece_4.obj",
+      "bytes": 42862,
+      "sha256": "b300efb7a1402e76d5c8de8c727fd93ae3a5803824ca88f92846d60c06cd62d6",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_4.obj"
+    },
+    {
+      "bundle_path": "assets/b3d76426916a90ca_convex_piece_0.obj",
+      "bytes": 41027,
+      "sha256": "b3d76426916a90ca73fa638e9fd74dbdd66e90c50437537644367fc905fadd21",
+      "source": "data/assets/graspnet/models/034/coacd_0.05/convex_piece_0.obj"
+    },
+    {
+      "bundle_path": "assets/b6c67fdaa51426ea_convex_piece_1.obj",
+      "bytes": 68723,
+      "sha256": "b6c67fdaa51426ea6d02a34780c9214f7519694a470d79d39cd2e46be0dd111f",
+      "source": "data/assets/graspnet/models/000/coacd_0.05/convex_piece_1.obj"
+    },
+    {
+      "bundle_path": "assets/b9deeab8a433bbeb_convex_piece_27.obj",
+      "bytes": 2579,
+      "sha256": "b9deeab8a433bbeb320fa04b0d65cf939bbe1a1d3624a40d344f077586c37b22",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_27.obj"
+    },
+    {
+      "bundle_path": "assets/bc9dece2d1250970_right_wrist_yaw_link.STL",
+      "bytes": 341484,
+      "sha256": "bc9dece2d12509707e0057ba2e48df8f3d56db0c79410212963a25e8a50f61a6",
+      "source": "data/robots/g1_sonic/meshes/right_wrist_yaw_link.STL"
+    },
+    {
+      "bundle_path": "assets/be5175548752ad2e_convex_piece_7.obj",
+      "bytes": 3929,
+      "sha256": "be5175548752ad2ea74c17db36d3407f6627720fb2d8dec44505b6f94e874972",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_7.obj"
+    },
+    {
+      "bundle_path": "assets/c0c93a133b0813d3_convex_piece_3.obj",
+      "bytes": 104507,
+      "sha256": "c0c93a133b0813d3c70d802de2906fbb2b3c1355c3b820c7e3dc81f65161425b",
+      "source": "data/assets/graspnet/models/005/coacd_0.05/convex_piece_3.obj"
+    },
+    {
+      "bundle_path": "assets/c10df0cebfb1c8c1_convex_piece_35.obj",
+      "bytes": 4848,
+      "sha256": "c10df0cebfb1c8c1aa60a106acfc28c1e20d505d6e1269bf7e013701581e66a2",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_35.obj"
+    },
+    {
+      "bundle_path": "assets/c17a63cc3a3e13ee_convex_piece_20.obj",
+      "bytes": 11663,
+      "sha256": "c17a63cc3a3e13eee241f1750203b7c57806f749e7ea61bc7ef58d2cd14932bb",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_20.obj"
+    },
+    {
+      "bundle_path": "assets/c22d4a74fb8c6073_convex_piece_9.obj",
+      "bytes": 7711,
+      "sha256": "c22d4a74fb8c6073a391ce99b0bcb9eea73309c894da52bf22a96fb84b226c49",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_9.obj"
+    },
+    {
+      "bundle_path": "assets/c4092af943141d4d_left_ankle_roll_link.STL",
+      "bytes": 653384,
+      "sha256": "c4092af943141d4d9f74232f3cfa345afc6565f46a077793b8ae0e68b39dc33f",
+      "source": "data/robots/g1_sonic/meshes/left_ankle_roll_link.STL"
+    },
+    {
+      "bundle_path": "assets/c4850560f0fb8b85_convex_piece_32.obj",
+      "bytes": 24454,
+      "sha256": "c4850560f0fb8b855f5ccb40dc502a489f8fb72057ebfc3dc250332599196d4b",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_32.obj"
+    },
+    {
+      "bundle_path": "assets/c4a0066fb0f1be72_convex_piece_1.obj",
+      "bytes": 20227,
+      "sha256": "c4a0066fb0f1be72f34a4abb0036048daaa3cd03e29eb6ec1ed0ea399edc787e",
+      "source": "data/assets/graspnet/models/034/coacd_0.05/convex_piece_1.obj"
+    },
+    {
+      "bundle_path": "assets/c526367478bf297b_convex_piece_33.obj",
+      "bytes": 7131,
+      "sha256": "c526367478bf297bb6983a1a3724691e0861f3dfec3f18693009d268d0d79c91",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_33.obj"
+    },
+    {
+      "bundle_path": "assets/c9c34efce4563cac_right_hand_index_1_link.STL",
+      "bytes": 1521784,
+      "sha256": "c9c34efce4563cacdcfd29fc838a982976d40f5442c71219811dcbbf3923a33d",
+      "source": "data/robots/g1_sonic/meshes/right_hand_index_1_link.STL"
+    },
+    {
+      "bundle_path": "assets/c9c34efce4563cac_right_hand_middle_1_link.STL",
+      "bytes": 1521784,
+      "sha256": "c9c34efce4563cacdcfd29fc838a982976d40f5442c71219811dcbbf3923a33d",
+      "source": "data/robots/g1_sonic/meshes/right_hand_middle_1_link.STL"
+    },
+    {
+      "bundle_path": "assets/d15ac4ba96fbc4c9_convex_piece_31.obj",
+      "bytes": 12962,
+      "sha256": "d15ac4ba96fbc4c97b437d158014b5bd157bfb6d962526423f0f6eb3ba506868",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_31.obj"
+    },
+    {
+      "bundle_path": "assets/d22f8f3b3127f15a_right_wrist_pitch_link.STL",
+      "bytes": 79584,
+      "sha256": "d22f8f3b3127f15a63e5be1ee273cd5075786c3142f1c3d9f76cbf43d2a26477",
+      "source": "data/robots/g1_sonic/meshes/right_wrist_pitch_link.STL"
+    },
+    {
+      "bundle_path": "assets/d49e3abc6f5b12e5_left_ankle_pitch_link.STL",
+      "bytes": 71184,
+      "sha256": "d49e3abc6f5b12e532062cd575b87b5ef40cd2a3fc18f54a1ca5bba4f773d51d",
+      "source": "data/robots/g1_sonic/meshes/left_ankle_pitch_link.STL"
+    },
+    {
+      "bundle_path": "assets/d73f5610437843fa_convex_piece_40.obj",
+      "bytes": 19149,
+      "sha256": "d73f5610437843fa85ae5c16782511d3fa34f48907377c816a51f43b2dc8446c",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_40.obj"
+    },
+    {
+      "bundle_path": "assets/dffc1f8c0c3664a1_convex_piece_4.obj",
+      "bytes": 55386,
+      "sha256": "dffc1f8c0c3664a16ba0c9a42b8ed2982d6fbeaf5782bf3925b063d7f59aca2f",
+      "source": "data/assets/graspnet/models/034/coacd_0.05/convex_piece_4.obj"
+    },
+    {
+      "bundle_path": "assets/e2a407c781806fee_convex_piece_16.obj",
+      "bytes": 6218,
+      "sha256": "e2a407c781806fee20ec8ebbbf476bac3059b9f04fcaba8a9b12c473ca13b355",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_16.obj"
+    },
+    {
+      "bundle_path": "assets/e479c2936ca2057e_right_hip_yaw_link.STL",
+      "bytes": 296284,
+      "sha256": "e479c2936ca2057e9eb2f7dff6c189b7419d7b8484dea0b298cbb36a2a6aa668",
+      "source": "data/robots/g1_sonic/meshes/right_hip_yaw_link.STL"
+    },
+    {
+      "bundle_path": "assets/e4f3c99d7f4a7d34_right_hip_pitch_link.STL",
+      "bytes": 181284,
+      "sha256": "e4f3c99d7f4a7d34eadbef9461fc66e3486cb5442db1ec50c86317d459f1a9c6",
+      "source": "data/robots/g1_sonic/meshes/right_hip_pitch_link.STL"
+    },
+    {
+      "bundle_path": "assets/e96d023f0368a4e3_torso_link.STL",
+      "bytes": 2232984,
+      "sha256": "e96d023f0368a4e3450b86ca5d4f10227d8141156a373e7da8cb3c93266523e0",
+      "source": "data/robots/g1_sonic/meshes/torso_link.STL"
+    },
+    {
+      "bundle_path": "assets/ebd96c6914d664e2_convex_piece_44.obj",
+      "bytes": 2925,
+      "sha256": "ebd96c6914d664e22ada965a6cf593d6bac22e08b9a20d38b1e072943a54e844",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_44.obj"
+    },
+    {
+      "bundle_path": "assets/ec08b6fee02441c1_convex_piece_18.obj",
+      "bytes": 5564,
+      "sha256": "ec08b6fee02441c19d610fb5f18e75af2d53818c8413487ff2be801e95d82702",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_18.obj"
+    },
+    {
+      "bundle_path": "assets/edc387c9a0ba8c22_left_wrist_roll_link.STL",
+      "bytes": 356184,
+      "sha256": "edc387c9a0ba8c2237e9b296d32531426fabeb6f53e58df45c76106bca74148c",
+      "source": "data/robots/g1_sonic/meshes/left_wrist_roll_link.STL"
+    },
+    {
+      "bundle_path": "assets/ee0e9bdd050aade1_convex_piece_17.obj",
+      "bytes": 8974,
+      "sha256": "ee0e9bdd050aade13a12588bdc4b09440f609c015d1a61db37e0adb1fe2a71df",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_17.obj"
+    },
+    {
+      "bundle_path": "assets/f0d1cfd02fcf0d42_left_shoulder_pitch_link.STL",
+      "bytes": 176784,
+      "sha256": "f0d1cfd02fcf0d42f95e678eeca33da3afbcc366ffba5c052847773ec4f31d52",
+      "source": "data/robots/g1_sonic/meshes/left_shoulder_pitch_link.STL"
+    },
+    {
+      "bundle_path": "assets/fa752198accd104d_left_elbow_link.STL",
+      "bytes": 88784,
+      "sha256": "fa752198accd104d5c4c3a01382e45165b944fbbc5acce085059223324e5bed3",
+      "source": "data/robots/g1_sonic/meshes/left_elbow_link.STL"
+    },
+    {
+      "bundle_path": "assets/fb714085b616832a_convex_piece_6.obj",
+      "bytes": 24943,
+      "sha256": "fb714085b616832acbda11e8f207f12b155e6c122ffa662cc273f069844fcdfe",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_6.obj"
+    },
+    {
+      "bundle_path": "assets/fb9df21687773522_left_shoulder_roll_link.STL",
+      "bytes": 400284,
+      "sha256": "fb9df21687773522598dc384f1a2945c7519f11cbc8bd372a49170316d6eee88",
+      "source": "data/robots/g1_sonic/meshes/left_shoulder_roll_link.STL"
+    },
+    {
+      "bundle_path": "assets/fcbb31d433d0fdbe_convex_piece_12.obj",
+      "bytes": 13729,
+      "sha256": "fcbb31d433d0fdbe62128542c531ceea152ca89c220b517836190f7624ce5782",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_12.obj"
+    },
+    {
+      "bundle_path": "assets/fe5e72c3f71376c6_convex_piece_45.obj",
+      "bytes": 961,
+      "sha256": "fe5e72c3f71376c65298807ec02729633b61b705d87db9553f2d11cd4f08bce2",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_45.obj"
+    },
+    {
+      "bundle_path": "assets/ff9980f670d94ce6_convex_piece_48.obj",
+      "bytes": 4090,
+      "sha256": "ff9980f670d94ce60f3f857c157f17c3a36d004a677cf85dfafe8d699e9a10c4",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_48.obj"
+    },
+    {
+      "bundle_path": "assets/ffd3873a79e8bd34_convex_piece_29.obj",
+      "bytes": 6012,
+      "sha256": "ffd3873a79e8bd34eb537888b9072434abbf1e2be9fe7b465e26598151431da6",
+      "source": "data/assets/graspnet/models/056/coacd_0.05/convex_piece_29.obj"
+    }
+  ],
+  "base_manifest_hash": "24d13bf72f97378f0eaa0e1780afe050aeb72dffd2fd57b03f7cc1c67736dc9f",
+  "format_version": 1,
+  "manifest_hash": "09a6a7ff0891160e371bbb1c41a6b7753f1ae3841b184538314fe15814a0afc5",
+  "model": {
+    "nbody": 50,
+    "ngeom": 165,
+    "njnt": 48,
+    "nq": 78,
+    "nsensor": 134,
+    "nu": 43,
+    "nv": 73
+  },
+  "ncam": 2,
+  "nlight": 2,
+  "scene_file": "render_scene.xml",
+  "scene_sha256": "c0539d6cfa6103f99a8859323f70b2d27df8a6b80fb879843488c549a6ce9147"
+}

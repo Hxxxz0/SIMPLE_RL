@@ -1,7 +1,12 @@
 import numpy as np
 import torch
 
-from simple.grasp_rl.mjlab_gpu.action import GpuActionTransform, tracker_hand_targets
+from simple.grasp_rl.mjlab_gpu.action import (
+    GpuActionTransform,
+    sonic_upper_mappings,
+    tracker_hand_targets,
+)
+from simple.grasp_rl.schema import JOINT_NAMES
 from simple.grasp_rl.tracker import ActionTransform
 
 
@@ -64,3 +69,21 @@ def test_tracker_hand_targets_reorders_only_left_index_and_middle() -> None:
         dtype=torch.float32,
     )
     torch.testing.assert_close(tracker_hand_targets(marker), expected)
+
+
+def test_sonic_upper_mapping_routes_every_named_finger_to_itself() -> None:
+    upper_names = [
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "waist_pitch_joint",
+        *JOINT_NAMES[15:29],
+        *JOINT_NAMES[39:43],
+        *JOINT_NAMES[36:39],
+        *JOINT_NAMES[32:36],
+        *JOINT_NAMES[29:32],
+    ]
+    action_indices, output_mapping = sonic_upper_mappings(upper_names)
+
+    assert [upper_names[index] for index in output_mapping] == list(JOINT_NAMES[15:])
+    by_name = dict(zip(upper_names, action_indices, strict=True))
+    assert [by_name[name] for name in JOINT_NAMES[36:43]] == list(range(7, 14))

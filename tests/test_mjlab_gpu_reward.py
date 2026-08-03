@@ -10,7 +10,7 @@ from simple.grasp_rl.mjlab_gpu.goal_reward import (
     _supported_grasp_progress,
     _terminal_adjustment,
 )
-from simple.grasp_rl.mjlab_gpu.reward import GpuGraspReward
+from simple.grasp_rl.mjlab_gpu.reward import GpuGraspReward, finger_closure_score
 from simple.grasp_rl.schema import JOINT_NAMES
 from simple.grasp_rl.task_spec import GraspLiftRewardSpec
 
@@ -160,3 +160,18 @@ def test_place_progress_requires_xy_alignment_and_lowering() -> None:
     torch.testing.assert_close(progress[0], torch.tensor(1.0))
     assert progress[0] > progress[1]
     assert progress[0] > progress[2]
+
+
+def test_finger_closure_score_requires_thumb_and_opposing_distal_motion() -> None:
+    initial = torch.zeros(3, 7)
+    qpos = torch.tensor(
+        [
+            [0.5, 0.7, 0.7, 1.0, 1.0, 0.6, 1.0],
+            [0.5, 0.7, 0.0, 1.0, 1.0, 0.6, 1.0],
+            [0.5, 0.7, 0.7, 1.0, 0.0, 0.6, 0.0],
+        ]
+    )
+
+    torch.testing.assert_close(
+        finger_closure_score(qpos, initial), torch.tensor([1.0, 0.0, 0.0])
+    )

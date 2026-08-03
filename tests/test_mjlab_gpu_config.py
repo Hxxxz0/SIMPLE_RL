@@ -7,7 +7,9 @@ import pytest
 import torch
 
 from simple.grasp_rl.mjlab_gpu.cli import (
+    _checkpoint_training_dr_strength,
     _config,
+    _evaluate,
     _evaluation_dr_strength,
     _parser,
     _seed_torch,
@@ -50,6 +52,107 @@ def test_train_cli_accepts_full_trajectory_rollout_override() -> None:
         ]
     )
     assert args.ppo_steps_per_env == 240
+
+
+def test_reproduction_cli_exposes_paired_benchmark_and_collection() -> None:
+    common = [
+        "--task",
+        "xmove_pick",
+        "--asset-bundle",
+        "assets",
+        "--reference-processed",
+        "reference",
+        "--checkpoint",
+        "model.pt",
+    ]
+    benchmark = _parser().parse_args(
+        ["benchmark", *common, "--output", "paired.json"]
+    )
+    assert benchmark.episodes == 128
+    assert benchmark.output.name == "paired.json"
+
+    collect = _parser().parse_args(
+        [
+            "collect",
+            *common,
+            "--output-dir",
+            "dataset",
+            "--successes",
+            "3",
+        ]
+    )
+    assert collect.smoke
+    assert collect.num_envs == 64
+    assert collect.successes == 3
+
+
+def test_record_cli_diagnostic_fallback_is_explicit() -> None:
+    common = [
+        "record",
+        "--asset-bundle",
+        "assets",
+        "--reference-processed",
+        "reference",
+        "--checkpoint",
+        "model.pt",
+        "--output-dir",
+        "videos",
+    ]
+    assert not _parser().parse_args(common).allow_diagnostic_fallback
+    assert not _parser().parse_args(common).stochastic_policy
+    assert (
+        _parser()
+        .parse_args([*common, "--allow-diagnostic-fallback"])
+        .allow_diagnostic_fallback
+    )
+    assert _parser().parse_args(common).camera_view == "full_robot"
+    assert (
+        _parser().parse_args([*common, "--camera-view", "grasp_closeup"]).camera_view
+        == "grasp_closeup"
+    )
+    assert _parser().parse_args([*common, "--stochastic-policy"]).stochastic_policy
+
+    evaluate = [
+        "evaluate",
+        "--asset-bundle",
+        "assets",
+        "--reference-processed",
+        "reference",
+        "--checkpoint",
+        "model.pt",
+    ]
+    assert not _parser().parse_args(evaluate).stochastic_policy
+    assert not _parser().parse_args(evaluate).proposal_only
+    assert _parser().parse_args([*evaluate, "--stochastic-policy"]).stochastic_policy
+    assert _parser().parse_args([*evaluate, "--proposal-only"]).proposal_only
+
+    reference_only = _parser().parse_args(
+        [
+            "evaluate",
+            "--asset-bundle",
+            "assets",
+            "--reference-processed",
+            "reference",
+            "--reference-only",
+            "--stochastic-policy",
+        ]
+    )
+    with pytest.raises(ValueError, match="PPO checkpoint"):
+        _evaluate(reference_only)
+
+    incompatible_baselines = _parser().parse_args(
+        [
+            "evaluate",
+            "--asset-bundle",
+            "assets",
+            "--reference-processed",
+            "reference",
+            "--reference-only",
+            "--proposal-only",
+        ]
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _evaluate(incompatible_baselines)
 
 
 def test_train_cli_accepts_reference_target_pose_retarget_gains() -> None:
@@ -188,6 +291,25 @@ def test_zero_retarget_accepts_legacy_checkpoint_metadata(tmp_path) -> None:
         ).assert_resume_compatible(metadata)
 
 
+def test_exact_resume_allows_verified_release_relocation(tmp_path) -> None:
+    original = MjlabPpoConfig(
+        "tabletop_grasp",
+        str(tmp_path / "old_assets"),
+        reference_processed=str(tmp_path / "old_reference"),
+    )
+    relocated = replace(
+        original,
+        asset_bundle=str(tmp_path / "other" / "assets"),
+        reference_processed=str(tmp_path / "other" / "reference"),
+    )
+
+    relocated.assert_resume_compatible(original.checkpoint_metadata())
+    with pytest.raises(ValueError, match="hash mismatch"):
+        replace(relocated, seed=original.seed + 1).assert_resume_compatible(
+            original.checkpoint_metadata()
+        )
+
+
 def test_reference_noise_only_changes_intended_policy_inputs() -> None:
     context = torch.zeros(2, REFERENCE_CONTEXT_DIM, device="cpu")
     frames = context[:, :-1].reshape(2, -1, REFERENCE_FRAME_DIM)
@@ -307,3 +429,27 @@ def test_evaluation_dr_strength_is_explicit_and_backward_compatible() -> None:
     staged.evaluation_dr_strength = 1.01
     with pytest.raises(ValueError, match=r"\[0, 1\]"):
         _evaluation_dr_strength(staged)
+
+
+def test_checkpoint_reports_training_dr_strength(tmp_path) -> None:
+    checkpoint = tmp_path / "model.pt"
+    torch.save(
+        {
+            "env_state": {"common_step_counter": 2_400},
+            "mjlab_gpu_metadata": {
+                "config": {
+                    "resolved": {
+                        "domain_randomization": {
+                            "enabled": True,
+                            "curriculum_initial_strength": 0.3,
+                            "curriculum_warmup_steps": 0,
+                            "curriculum_ramp_steps": 240_000,
+                        }
+                    }
+                }
+            },
+        },
+        checkpoint,
+    )
+
+    assert _checkpoint_training_dr_strength(checkpoint) == pytest.approx(0.3)

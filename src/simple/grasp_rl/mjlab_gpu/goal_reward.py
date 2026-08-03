@@ -7,7 +7,7 @@ import json
 
 import torch
 
-from simple.grasp_rl.mjlab_gpu.reward import GpuRewardTerms
+from simple.grasp_rl.mjlab_gpu.reward import GpuRewardTerms, finger_closure_score
 from simple.grasp_rl.mjlab_gpu.state_v2 import (
     GpuTaskStateExtractorV2,
     GpuTaskStateV2,
@@ -15,7 +15,7 @@ from simple.grasp_rl.mjlab_gpu.state_v2 import (
 from simple.grasp_rl.schema import JOINT_NAMES
 from simple.grasp_rl.task_spec import GoalStageSpec, TaskSpecV2
 
-GPU_GOAL_REWARD_SCHEMA_VERSION = 8
+GPU_GOAL_REWARD_SCHEMA_VERSION = 9
 
 
 def _json_hash(payload: object) -> str:
@@ -130,6 +130,10 @@ class GpuGoalGraphReward:
         self.joint_high = ranges[:, 1]
         self.joint_span = self.joint_high - self.joint_low
         self.joint_range_valid = self.joint_span > 1e-5
+        self.hand_qpos_indices = state_reader.qpos_indices[29:43].reshape(2, 7)
+        self.initial_hand_qpos = self.sim.data.qpos[
+            :, self.hand_qpos_indices
+        ].clone()
 
         self.step_count = torch.zeros(
             self.num_envs, dtype=torch.long, device=self.device
@@ -188,6 +192,9 @@ class GpuGoalGraphReward:
         ):
             value[indices] = 0
         self.initial_transport_distance[indices] = float("nan")
+        self.initial_hand_qpos[indices] = self.sim.data.qpos[indices][
+            :, self.hand_qpos_indices
+        ]
         self.state_reader.set_stage(self.stage_index, self.stage_progress)
 
     def set_reference_contact(
@@ -210,16 +217,21 @@ class GpuGoalGraphReward:
         self.reference_contact[indices] = values.clamp(0.0, 1.0)
         self.reference_contact_valid[indices] = True
 
-    @staticmethod
     def _hand_grasp(
-        state: GpuTaskStateV2, hand_index: int
+        self, state: GpuTaskStateV2, hand_index: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
         magnitudes = state.contact_forces_pelvis[:, hand_index].norm(dim=-1)
         thumb = magnitudes[:, 1:4].amax(dim=-1)
         support = magnitudes[:, 4:8].amax(dim=-1)
-        quality = (torch.minimum(thumb, support) / 8.0).clamp(0.0, 1.0)
+        closure = finger_closure_score(
+            self.sim.data.qpos[:, self.hand_qpos_indices[hand_index]],
+            self.initial_hand_qpos[:, hand_index],
+        )
+        quality = (
+            (torch.minimum(thumb, support) / 8.0).clamp(0.0, 1.0) * closure
+        )
         contact = state.predicates[:, hand_index].bool()
-        return contact & (thumb > 2.0) & (support > 2.0), quality
+        return contact & (thumb > 2.0) & (support > 2.0) & (closure >= 1.0), quality
 
     def _articulation_progress(
         self, state: GpuTaskStateV2
@@ -300,7 +312,14 @@ class GpuGoalGraphReward:
             active = left_grasp & ~state.predicates[:, 1].bool()
             return active.float(), active
         if stage.primitive == "lift":
-            return (lift / max(stage.threshold, 1e-3)).clamp(0.0, 1.0), lift >= stage.threshold
+            if stage.hand == "left":
+                grasp = left_grasp
+            elif stage.hand == "both":
+                grasp = left_grasp & right_grasp
+            else:
+                grasp = right_grasp
+            progress = (lift / max(stage.threshold, 1e-3)).clamp(0.0, 1.0)
+            return progress * grasp.float(), (lift >= stage.threshold) & grasp
         if stage.primitive == "transport":
             active = self.stage_index == self.spec.stages.index(stage)
             initialize = active & torch.isnan(self.initial_transport_distance)

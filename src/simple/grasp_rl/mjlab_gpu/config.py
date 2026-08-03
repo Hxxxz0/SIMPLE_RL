@@ -295,6 +295,13 @@ class MjlabPpoConfig:
             ):
                 if name not in normalized and gains == (0.0, 0.0):
                     normalized[name] = [0.0, 0.0]
+            # A portable release may relocate frozen assets and reference data.
+            # The runner separately verifies both content hashes, so filesystem
+            # paths are not part of behavioral compatibility.
+            normalized["asset_bundle"] = expected["resolved"]["asset_bundle"]
+            normalized["reference_processed"] = expected["resolved"][
+                "reference_processed"
+            ]
             if _canonical_hash(normalized) == expected["resolved_sha256"]:
                 return
         raise ValueError("checkpoint mjlab PPO configuration hash mismatch")

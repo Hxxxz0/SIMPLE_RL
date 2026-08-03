@@ -9,8 +9,12 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from simple.grasp_rl.mjlab_gpu.action import sonic_upper_mappings
 from simple.grasp_rl.mjlab_gpu.simulation import GpuSimulation
 from simple.grasp_rl.schema import JOINT_NAMES
+
+
+SONIC_MAPPING_SCHEMA_VERSION = 2
 
 
 class _SonicPolicyNetwork(nn.Module):
@@ -126,13 +130,19 @@ class BatchedSonicController:
         self.control_decimation = int(bundle["control_decimation"])
         if self.control_decimation != 4:
             raise ValueError("Sonic GPU control requires four 5 ms substeps")
+        upper_names = bundle["upper_names"]
+        action_indices, output_mapping = sonic_upper_mappings(upper_names)
+        self.legacy_mapping_repaired = (
+            bundle.get("mapping_schema_version") != SONIC_MAPPING_SCHEMA_VERSION
+            or bundle.get("upper_action_indices") != action_indices
+            or bundle.get("upper_output_mapping") != output_mapping
+        )
         self.upper_action_indices = torch.tensor(
-            bundle["upper_action_indices"], dtype=torch.long, device=self.device
+            action_indices, dtype=torch.long, device=self.device
         )
         self.upper_output_mapping = torch.tensor(
-            bundle["upper_output_mapping"], dtype=torch.long, device=self.device
+            output_mapping, dtype=torch.long, device=self.device
         )
-        upper_names = bundle["upper_names"]
         self.upper_waist_indices = torch.tensor(
             [upper_names.index(name) for name in
              ("waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint")],
@@ -142,6 +152,13 @@ class BatchedSonicController:
         self.actuator_strength_scale = torch.ones(
             self.sim.num_envs, len(JOINT_NAMES), device=self.device
         )
+
+    def metadata(self) -> dict[str, object]:
+        return {
+            "backend": "sonic_wbc",
+            "mapping_schema_version": SONIC_MAPPING_SCHEMA_VERSION,
+            "legacy_bundle_mapping_repaired": self.legacy_mapping_repaired,
+        }
 
     def _load_initial_state(self) -> None:
         path = self.gpu.bundle.root / self.bundle_config["state_file"]
