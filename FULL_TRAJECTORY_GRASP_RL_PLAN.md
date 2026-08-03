@@ -106,8 +106,11 @@ retarget。yaw 输入是 randomizer 施加到物体的相对旋转，不是绝�
 
 ## 6. 支持范围与兼容性
 
-同一套 GPU vec-env、goal graph、DR、PPO runner 和评测路径支持：
+同一套 GPU vec-env、DR、PPO runner 和评测路径支持；V2 任务使用 goal graph，legacy V1
+任务使用冻结的 `GpuGraspReward`：
 
+- `tabletop_grasp`
+- `bend_pick`
 - `xmove_pick`
 - `xmove_bend_pick`
 - `bend_pick_teleop`
@@ -118,8 +121,43 @@ retarget。yaw 输入是 randomizer 施加到物体的相对旋转，不是绝�
 或 action-transform 不匹配时拒绝加载；已有 CPU 训练入口和旧 checkpoint 格式不改。
 CLI 的 `--max-reference-action-deviation` 可按任务放宽 residual action 上限；默认仍为
 `0.35`，因此旧命令和旧行为不变。改变该值后必须 fresh warm start，不能伪装成 exact resume。
+CLI 还允许用 `--target-position-jitter-xy` 和 `--target-yaw-jitter` 显式复现各任务原生
+CPU 评测范围；省略时仍使用旧 GPU 默认值 `(0.025, 0.03)` 和 `0.15`。
 
-## 7. 2026-08-02 实测结果
+## 7. 2026-08-02--03 实测结果
+
+### legacy V1 任务的 GPU 兼容验收
+
+`tabletop_grasp` 和 `bend_pick` 使用已有的 192D legacy state、401D reference context、
+AMO CUDA controller 和 `GpuGraspReward`，没有转成 V2 schema，也没有改变旧 CPU 入口。
+两者的 actor/critic、MuJoCo-Warp physics、rollout、loss 和 Adam state 全部位于 CUDA。
+
+固定未见 seed99、同一批 128 worlds 的 CPU 等价 pose-DR 结果为：
+
+| task / checkpoint | CPU 历史结果 | GPU reference-only | GPU PPO |
+|---|---:|---:|---:|
+| `tabletop_grasp/tabletop_dr_ramp_fixed1e5/model_149` | 99/100 | 108/128 (84.4%) | **127/128 (99.2%)** |
+| `bend_pick/bend_pick_stable299/model_0` | 90/100 | 120/128 (93.8%) | **120/128 (93.8%)** |
+
+`tabletop_grasp` 使用 X/Y `0.025/0.03 m`、yaw `0.15 rad`；`bend_pick` 按原 CPU native
+范围使用 X/Y `0.015/0.02 m`、yaw `0.15 rad`。后者若错误沿用 tabletop 的更宽范围，
+同一 seed 的结果会降到 PPO `94/128 (73.4%)`、reference-only `92/128 (71.9%)`，因此
+不能与 CPU 90% 直接比较。
+
+对应 checkpoint 为：
+
+```text
+outputs/grasp_rl/mjlab_gpu_experiments/
+tabletop_dr_ramp_fixed1e5_4096_seed146/model_149.pt
+bend_pick_stable299_gpu_ppo_clean_4096_seed144/model_0.pt
+```
+
+两条均为真实 4096-env RSL-RL PPO。tabletop 累计采集 `14,745,600` 条 fresh on-policy
+transition；最终 update 执行 20 次 CUDA Adam step，actor/critic delta 分别为 `3.017e-2`
+和 `5.708e-2`。bend 候选采集 `98,304` 条 fresh transition、执行 20 次 CUDA Adam
+step，actor/critic delta 分别为 `1.449e-1` 和 `1.910e-1`。bend 达到了“GPU 与 CPU
+效果相近”的迁移要求，但没有证明 PPO 优于已很强的 reference-only；tabletop 则同时
+达到 CPU 成功率并比 paired reference-only 提升 `14.8 pp`。
 
 ### xmove_pick 发布候选
 

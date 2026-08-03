@@ -76,6 +76,24 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
     parser.add_argument("--dr-warmup-steps", type=int)
     parser.add_argument("--dr-ramp-steps", type=int)
     parser.add_argument(
+        "--target-position-jitter-xy",
+        type=float,
+        nargs=2,
+        metavar=("X", "Y"),
+        help=(
+            "Override the task's symmetric target-position DR envelope in "
+            "metres; omitted keeps the legacy 0.025,0.03 default"
+        ),
+    )
+    parser.add_argument(
+        "--target-yaw-jitter",
+        type=float,
+        help=(
+            "Override the symmetric target-yaw DR envelope in radians; "
+            "omitted keeps the legacy 0.15 default"
+        ),
+    )
+    parser.add_argument(
         "--dr-profile",
         choices=(
             "full",
@@ -229,6 +247,13 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
             ("curriculum_initial_strength", args.dr_initial_strength),
             ("curriculum_warmup_steps", args.dr_warmup_steps),
             ("curriculum_ramp_steps", args.dr_ramp_steps),
+            (
+                "target_position_jitter_xy",
+                None
+                if args.target_position_jitter_xy is None
+                else tuple(args.target_position_jitter_xy),
+            ),
+            ("target_yaw_jitter", args.target_yaw_jitter),
         )
         if value is not None
     }

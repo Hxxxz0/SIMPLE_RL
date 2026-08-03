@@ -78,6 +78,30 @@ def test_train_cli_accepts_reference_target_pose_retarget_gains() -> None:
     assert args.reference_target_yaw_arm_gains == [1.0, -2.0]
 
 
+def test_cli_accepts_task_specific_dr_envelope(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    args = _parser().parse_args(
+        [
+            "evaluate",
+            "--task",
+            "bend_pick",
+            "--asset-bundle",
+            str(tmp_path / "assets"),
+            "--reference-processed",
+            str(tmp_path / "reference"),
+            "--reference-only",
+            "--target-position-jitter-xy",
+            "0.015",
+            "0.02",
+            "--target-yaw-jitter",
+            "0.1",
+        ]
+    )
+    config = _config(args)
+    assert config.domain_randomization.target_position_jitter_xy == (0.015, 0.02)
+    assert config.domain_randomization.target_yaw_jitter == 0.1
+
+
 def test_cli_exposes_backward_compatible_reference_residual_limit(
     monkeypatch, tmp_path
 ) -> None:
@@ -94,7 +118,13 @@ def test_cli_exposes_backward_compatible_reference_residual_limit(
         ]
     )
     assert args.max_reference_action_deviation == 0.35
-    assert _config(args).max_reference_action_deviation == 0.35
+    default_config = _config(args)
+    assert default_config.max_reference_action_deviation == 0.35
+    assert default_config.domain_randomization.target_position_jitter_xy == (
+        0.025,
+        0.03,
+    )
+    assert default_config.domain_randomization.target_yaw_jitter == 0.15
 
     args.max_reference_action_deviation = 0.7
     assert _config(args).max_reference_action_deviation == 0.7
