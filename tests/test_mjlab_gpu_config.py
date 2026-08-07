@@ -65,9 +65,7 @@ def test_reproduction_cli_exposes_paired_benchmark_and_collection() -> None:
         "--checkpoint",
         "model.pt",
     ]
-    benchmark = _parser().parse_args(
-        ["benchmark", *common, "--output", "paired.json"]
-    )
+    benchmark = _parser().parse_args(["benchmark", *common, "--output", "paired.json"])
     assert benchmark.episodes == 128
     assert benchmark.output.name == "paired.json"
 
@@ -181,6 +179,25 @@ def test_train_cli_accepts_reference_target_pose_retarget_gains() -> None:
     assert args.reference_target_yaw_arm_gains == [1.0, -2.0]
 
 
+def test_train_cli_accepts_scratch_plan_conditioned_actor() -> None:
+    args = _parser().parse_args(
+        [
+            "train",
+            "--asset-bundle",
+            "assets",
+            "--reference-processed",
+            "reference",
+            "--output",
+            "output",
+            "--plan-conditioned-actor",
+            "--scratch-actor-output-scale",
+            "0.001",
+        ]
+    )
+    assert args.plan_conditioned_actor
+    assert args.scratch_actor_output_scale == 0.001
+
+
 def test_cli_accepts_task_specific_dr_envelope(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     args = _parser().parse_args(
@@ -198,11 +215,35 @@ def test_cli_accepts_task_specific_dr_envelope(monkeypatch, tmp_path) -> None:
             "0.02",
             "--target-yaw-jitter",
             "0.1",
+            "--destination-position-jitter-xy",
+            "0.02",
+            "0.025",
+            "--destination-yaw-jitter",
+            "0.12",
+            "--distractor-position-jitter-xy",
+            "0.03",
+            "0.04",
+            "--distractor-yaw-jitter",
+            "0.2",
+            "--robot-base-position-jitter-xy",
+            "0.01",
+            "0.015",
+            "--robot-base-yaw-jitter",
+            "0.03",
         ]
     )
     config = _config(args)
     assert config.domain_randomization.target_position_jitter_xy == (0.015, 0.02)
     assert config.domain_randomization.target_yaw_jitter == 0.1
+    assert config.domain_randomization.destination_position_jitter_xy == (
+        0.02,
+        0.025,
+    )
+    assert config.domain_randomization.destination_yaw_jitter == 0.12
+    assert config.domain_randomization.distractor_position_jitter_xy == (0.03, 0.04)
+    assert config.domain_randomization.distractor_yaw_jitter == 0.2
+    assert config.domain_randomization.robot_base_position_jitter_xy == (0.01, 0.015)
+    assert config.domain_randomization.robot_base_yaw_jitter == 0.03
 
 
 def test_cli_exposes_backward_compatible_reference_residual_limit(
@@ -221,8 +262,10 @@ def test_cli_exposes_backward_compatible_reference_residual_limit(
         ]
     )
     assert args.max_reference_action_deviation == 0.35
+    assert args.reference_reward_weight == 0.05
     default_config = _config(args)
     assert default_config.max_reference_action_deviation == 0.35
+    assert default_config.reference_reward_weight == 0.05
     assert default_config.domain_randomization.target_position_jitter_xy == (
         0.025,
         0.03,
@@ -231,6 +274,8 @@ def test_cli_exposes_backward_compatible_reference_residual_limit(
 
     args.max_reference_action_deviation = 0.7
     assert _config(args).max_reference_action_deviation == 0.7
+    args.reference_reward_weight = 0.5
+    assert _config(args).reference_reward_weight == 0.5
 
 
 def test_gpu_entrypoints_seed_torch_and_cuda(monkeypatch) -> None:
@@ -371,7 +416,14 @@ def test_domain_randomization_curriculum_reaches_full_strength() -> None:
 
 def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
     full = DomainRandomizationConfig(
-        curriculum_initial_strength=0.25, curriculum_ramp_steps=19_200
+        curriculum_initial_strength=0.25,
+        curriculum_ramp_steps=19_200,
+        destination_position_jitter_xy=(0.02, 0.025),
+        destination_yaw_jitter=0.1,
+        distractor_position_jitter_xy=(0.03, 0.03),
+        distractor_yaw_jitter=0.2,
+        robot_base_position_jitter_xy=(0.01, 0.01),
+        robot_base_yaw_jitter=0.03,
     )
     pose = full.pose_only()
     target_x = full.target_x_only()
@@ -400,15 +452,22 @@ def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
         0.0,
     )
     assert target_x.target_yaw_jitter == 0.0
+    assert target_x.destination_position_jitter_xy == (0.0, 0.0)
+    assert target_x.distractor_position_jitter_xy == (0.0, 0.0)
+    assert target_x.robot_base_position_jitter_xy == (0.0, 0.0)
     assert not target_x.reference_noise.enabled
     assert target_y.target_position_jitter_xy == (
         0.0,
         full.target_position_jitter_xy[1],
     )
     assert target_y.target_yaw_jitter == 0.0
+    assert target_y.destination_position_jitter_xy == (0.0, 0.0)
     assert not target_y.reference_noise.enabled
     assert target_yaw.target_position_jitter_xy == (0.0, 0.0)
     assert target_yaw.target_yaw_jitter == full.target_yaw_jitter
+    assert target_yaw.destination_yaw_jitter == 0.0
+    assert target_yaw.distractor_yaw_jitter == 0.0
+    assert target_yaw.robot_base_yaw_jitter == 0.0
     assert not target_yaw.reference_noise.enabled
 
 

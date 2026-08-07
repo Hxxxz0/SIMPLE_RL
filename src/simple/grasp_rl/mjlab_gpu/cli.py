@@ -6,6 +6,7 @@ import argparse
 import gc
 import hashlib
 import json
+import math
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -15,8 +16,13 @@ import torch
 from simple.grasp_rl.mjlab_gpu.benchmark import compare_paired_results
 from simple.grasp_rl.mjlab_gpu.collect import collect_successful_trajectories
 from simple.grasp_rl.mjlab_gpu.config import MjlabPpoConfig
+from simple.grasp_rl.mjlab_gpu.dataset_export import export_dual_dataset
 from simple.grasp_rl.mjlab_gpu.recording import record_success_videos
 from simple.grasp_rl.mjlab_gpu.release import sha256_file, verify_release
+from simple.grasp_rl.mjlab_gpu.robometer_reward import (
+    ROBOMETER_REPLACE_TASKS,
+    RobometerTaskRewardConfig,
+)
 from simple.grasp_rl.mjlab_gpu.runner import (
     GpuPpoRunner,
     checkpoint_uses_plan_conditioned_actor,
@@ -31,6 +37,15 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
     parser.add_argument("--asset-bundle", type=Path, required=True)
     parser.add_argument("--reference-processed", type=Path, required=True)
     parser.add_argument("--reference-source", default="bc")
+    parser.add_argument(
+        "--reference-reward-weight",
+        type=float,
+        default=0.05,
+        help=(
+            "Weight of the clean-reference action regularizer; the legacy "
+            "default is 0.05"
+        ),
+    )
     parser.add_argument("--num-envs", type=int, default=num_envs)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--seed", type=int, default=42)
@@ -100,6 +115,42 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
         ),
     )
     parser.add_argument(
+        "--destination-position-jitter-xy",
+        type=float,
+        nargs=2,
+        metavar=("X", "Y"),
+        help="Symmetric destination-object position jitter in metres",
+    )
+    parser.add_argument(
+        "--destination-yaw-jitter",
+        type=float,
+        help="Symmetric destination-object yaw jitter in radians",
+    )
+    parser.add_argument(
+        "--distractor-position-jitter-xy",
+        type=float,
+        nargs=2,
+        metavar=("X", "Y"),
+        help="Symmetric position jitter for non-role free scene objects",
+    )
+    parser.add_argument(
+        "--distractor-yaw-jitter",
+        type=float,
+        help="Symmetric yaw jitter for non-role free scene objects",
+    )
+    parser.add_argument(
+        "--robot-base-position-jitter-xy",
+        type=float,
+        nargs=2,
+        metavar=("X", "Y"),
+        help="Symmetric floating-base reset-position jitter in metres",
+    )
+    parser.add_argument(
+        "--robot-base-yaw-jitter",
+        type=float,
+        help="Symmetric floating-base reset-yaw jitter in radians",
+    )
+    parser.add_argument(
         "--dr-profile",
         choices=(
             "full",
@@ -113,6 +164,49 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
     )
 
 
+def _robometer_options(
+    parser: argparse.ArgumentParser, *, include_source: bool
+) -> None:
+    if include_source:
+        parser.add_argument(
+            "--task-reward-source",
+            choices=("physical", "robometer"),
+            default="physical",
+            help="Experimental task-reward source; physical preserves legacy behavior",
+        )
+    parser.add_argument("--robometer-server-url")
+    parser.add_argument(
+        "--robometer-instruction",
+        help=(
+            "Override the task instruction sent to Robometer; omitted uses the "
+            "asset-specific validated instruction"
+        ),
+    )
+    parser.add_argument("--robometer-inference-interval-steps", type=int, default=25)
+    parser.add_argument("--robometer-progress-scale", type=float, default=1.0)
+
+
+def _robometer_config(
+    args: argparse.Namespace, *, mode: str | None = None
+) -> RobometerTaskRewardConfig | None:
+    source = getattr(args, "task_reward_source", None)
+    enabled = mode is not None or source == "robometer"
+    if not enabled:
+        return None
+    if not args.robometer_server_url:
+        raise ValueError("Robometer reward requires --robometer-server-url")
+    values: dict[str, object] = {
+        "server_url": args.robometer_server_url,
+        "mode": mode or "replace",
+        "task": args.task,
+        "inference_interval_steps": args.robometer_inference_interval_steps,
+        "progress_scale": args.robometer_progress_scale,
+    }
+    if args.robometer_instruction is not None:
+        values["instruction"] = args.robometer_instruction
+    return RobometerTaskRewardConfig(**values)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="simple-mjlab-ppo")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -121,6 +215,22 @@ def _parser() -> argparse.ArgumentParser:
     train.add_argument("--output", type=Path, required=True)
     train.add_argument("--iterations", type=int, default=20_000)
     train.add_argument("--warm-start", type=Path)
+    train.add_argument(
+        "--plan-conditioned-actor",
+        action="store_true",
+        help=(
+            "Use the proposal-residual actor architecture for a scratch run; "
+            "checkpoint-based runs infer the architecture automatically"
+        ),
+    )
+    train.add_argument(
+        "--scratch-actor-output-scale",
+        type=float,
+        help=(
+            "For a scratch plan-conditioned actor, multiply the randomly "
+            "initialized correction head by this scale before training"
+        ),
+    )
     train.add_argument(
         "--warm-start-critic",
         action="store_true",
@@ -195,6 +305,21 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep warm-start actor observation statistics fixed during PPO",
     )
+    _robometer_options(train, include_source=True)
+
+    shadow = commands.add_parser("shadow-reward")
+    _common(shadow, num_envs=8)
+    shadow.set_defaults(smoke=True)
+    policy = shadow.add_mutually_exclusive_group(required=True)
+    policy.add_argument("--checkpoint", type=Path)
+    policy.add_argument(
+        "--proposal-only",
+        action="store_true",
+        help="Execute the noisy reference proposal instead of a PPO checkpoint",
+    )
+    shadow.add_argument("--episodes", type=int, default=8)
+    shadow.add_argument("--output", type=Path, required=True)
+    _robometer_options(shadow, include_source=False)
 
     evaluate = commands.add_parser("evaluate")
     _common(evaluate)
@@ -309,6 +434,35 @@ def _parser() -> argparse.ArgumentParser:
         help="Sample the checkpoint's learned PPO Gaussian policy",
     )
 
+    collect_dataset = commands.add_parser("collect-dataset")
+    _common(collect_dataset, num_envs=64)
+    collect_dataset.set_defaults(smoke=True)
+    collect_dataset.add_argument("--checkpoint", type=Path, required=True)
+    collect_dataset.add_argument("--output-root", type=Path, required=True)
+    collect_dataset.add_argument("--source-dataset", type=Path, required=True)
+    collect_dataset.add_argument("--psi0-template", type=Path, required=True)
+    collect_dataset.add_argument("--successes", type=int, required=True)
+    collect_dataset.add_argument("--max-attempts", type=int)
+    collect_dataset.add_argument("--camera", default="head_stereo_left")
+    collect_dataset.add_argument("--width", type=int, default=640)
+    collect_dataset.add_argument("--height", type=int, default=360)
+    collect_dataset.add_argument("--fps", type=int, default=50)
+    collect_dataset.add_argument(
+        "--stress-domain-randomization",
+        action="store_true",
+        help="Collect successful trajectories under full physics/reference DR",
+    )
+    collect_dataset.add_argument(
+        "--evaluation-dr-strength",
+        type=float,
+        help="Collect at an exact staged DR strength in [0, 1]",
+    )
+    collect_dataset.add_argument(
+        "--stochastic-policy",
+        action="store_true",
+        help="Sample the checkpoint policy instead of using its deterministic mean",
+    )
+
     verify = commands.add_parser("verify-release")
     verify.add_argument("--release-dir", type=Path, required=True)
     return parser
@@ -328,6 +482,7 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         smoke_mode=args.smoke,
         reference_processed=str(args.reference_processed.resolve()),
         reference_source=args.reference_source,
+        reference_reward_weight=args.reference_reward_weight,
         max_reference_action_deviation=args.max_reference_action_deviation,
         reference_target_x_arm_gains=tuple(args.reference_target_x_arm_gains),
         reference_target_y_arm_gains=tuple(args.reference_target_y_arm_gains),
@@ -346,6 +501,27 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
                 else tuple(args.target_position_jitter_xy),
             ),
             ("target_yaw_jitter", args.target_yaw_jitter),
+            (
+                "destination_position_jitter_xy",
+                None
+                if args.destination_position_jitter_xy is None
+                else tuple(args.destination_position_jitter_xy),
+            ),
+            ("destination_yaw_jitter", args.destination_yaw_jitter),
+            (
+                "distractor_position_jitter_xy",
+                None
+                if args.distractor_position_jitter_xy is None
+                else tuple(args.distractor_position_jitter_xy),
+            ),
+            ("distractor_yaw_jitter", args.distractor_yaw_jitter),
+            (
+                "robot_base_position_jitter_xy",
+                None
+                if args.robot_base_position_jitter_xy is None
+                else tuple(args.robot_base_position_jitter_xy),
+            ),
+            ("robot_base_yaw_jitter", args.robot_base_yaw_jitter),
         )
         if value is not None
     }
@@ -384,6 +560,28 @@ def _seed_torch(seed: int) -> None:
     torch.cuda.manual_seed(seed)
 
 
+def _validate_robometer_run(
+    config: MjlabPpoConfig,
+    reward_config: RobometerTaskRewardConfig | None,
+) -> None:
+    if reward_config is None:
+        return
+    if config.task != reward_config.task:
+        raise ValueError(f"Robometer reward is restricted to {reward_config.task}")
+    if (
+        reward_config.mode == "replace"
+        and reward_config.task not in ROBOMETER_REPLACE_TASKS
+    ):
+        validated = ", ".join(sorted(ROBOMETER_REPLACE_TASKS))
+        raise ValueError(
+            "Robometer reward replacement is validation-gated to: " + validated
+        )
+    if not config.smoke_mode:
+        raise ValueError("Robometer reward requires --smoke")
+    if config.num_envs > 8:
+        raise ValueError("Robometer reward supports at most eight environments")
+
+
 def _train(args: argparse.Namespace) -> dict[str, object]:
     if args.iterations < 1:
         raise ValueError("iterations must be positive")
@@ -405,6 +603,11 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("ppo-max-grad-norm must be positive")
     if args.ppo_steps_per_env is not None and args.ppo_steps_per_env < 1:
         raise ValueError("ppo-steps-per-env must be positive")
+    if (
+        args.scratch_actor_output_scale is not None
+        and args.scratch_actor_output_scale <= 0.0
+    ):
+        raise ValueError("scratch-actor-output-scale must be positive")
     if args.resume is not None and args.warm_start is not None:
         raise ValueError("resume and warm-start are mutually exclusive")
     if args.resume is not None and args.initial_vector_step:
@@ -416,18 +619,51 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
     if args.warm_start_critic and args.warm_start is None:
         raise ValueError("warm-start-critic requires --warm-start")
     config = _config(args)
+    reward_config = _robometer_config(args)
+    _validate_robometer_run(config, reward_config)
+    if reward_config is not None:
+        if args.resume is not None:
+            raise ValueError(
+                "Robometer reward does not support exact resume; use --warm-start"
+            )
+        if args.warm_start_critic:
+            raise ValueError(
+                "Robometer reward training starts a fresh critic and optimizer"
+            )
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     _seed_torch(config.seed)
-    env = GpuGraspVecEnv(config, training=True)
+    env = GpuGraspVecEnv(
+        config,
+        training=True,
+        robometer_reward_config=reward_config,
+    )
     if args.initial_vector_step:
         env.common_step_counter = args.initial_vector_step
         env._reset(torch.arange(env.num_envs, device=env.device))
     architecture_checkpoint = args.resume or args.warm_start
-    plan_conditioned_actor = bool(
+    checkpoint_plan_conditioned_actor = bool(
         architecture_checkpoint
         and checkpoint_uses_plan_conditioned_actor(architecture_checkpoint)
     )
+    if (
+        args.plan_conditioned_actor
+        and architecture_checkpoint is not None
+        and not checkpoint_plan_conditioned_actor
+    ):
+        raise ValueError(
+            "--plan-conditioned-actor conflicts with the checkpoint architecture"
+        )
+    plan_conditioned_actor = (
+        args.plan_conditioned_actor or checkpoint_plan_conditioned_actor
+    )
+    if args.scratch_actor_output_scale is not None and (
+        architecture_checkpoint is not None or not plan_conditioned_actor
+    ):
+        raise ValueError(
+            "--scratch-actor-output-scale requires a scratch "
+            "--plan-conditioned-actor run"
+        )
     train_config = ppo_train_config(
         smoke=config.smoke_mode,
         plan_conditioned_actor=plan_conditioned_actor,
@@ -446,22 +682,27 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         train_config["algorithm"]["max_grad_norm"] = args.ppo_max_grad_norm
     if args.ppo_steps_per_env is not None:
         train_config["num_steps_per_env"] = args.ppo_steps_per_env
+    run_metadata: dict[str, object] = {
+        "environment": config.resolved(),
+        "ppo": train_config,
+        "initial_vector_step": args.initial_vector_step,
+        "resume_vector_step": args.resume_vector_step,
+        "reset_resume_optimizer": args.reset_resume_optimizer,
+        "warm_start_critic": args.warm_start_critic,
+        "freeze_actor_normalizer": args.freeze_actor_normalizer,
+        "actor_learning_rate_scale": args.actor_learning_rate_scale,
+        "plan_conditioned_actor": plan_conditioned_actor,
+        "scratch_actor_output_scale": args.scratch_actor_output_scale,
+    }
+    if reward_config is not None:
+        run_metadata["task_reward_override"] = reward_config.metadata()
     (output / "config.json").write_text(
-        json.dumps(
-            {
-                "environment": config.resolved(),
-                "ppo": train_config,
-                "initial_vector_step": args.initial_vector_step,
-                "resume_vector_step": args.resume_vector_step,
-                "reset_resume_optimizer": args.reset_resume_optimizer,
-                "warm_start_critic": args.warm_start_critic,
-                "freeze_actor_normalizer": args.freeze_actor_normalizer,
-                "actor_learning_rate_scale": args.actor_learning_rate_scale,
-            },
-            indent=2,
-            default=list,
-        )
+        json.dumps(run_metadata, indent=2, default=list)
     )
+    # Environment construction may consume RNG differently when an external
+    # reward renderer is enabled.  Re-seed immediately before runner creation
+    # so scratch A/B runs receive identical actor and critic initialization.
+    _seed_torch(config.seed)
     runner = GpuPpoRunner(
         env,
         train_config,
@@ -469,6 +710,34 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         integrity_path=output / "ppo_integrity.jsonl",
         actor_learning_rate_scale=args.actor_learning_rate_scale,
     )
+    initial_checkpoint: Path | None = None
+    if args.resume is None and args.warm_start is None:
+        if args.scratch_actor_output_scale is not None:
+            linear_layers = [
+                module
+                for module in runner.alg.get_policy().mlp.modules()
+                if isinstance(module, torch.nn.Linear)
+            ]
+            if not linear_layers:
+                raise RuntimeError("scratch actor has no linear correction head")
+            with torch.no_grad():
+                linear_layers[-1].weight.mul_(args.scratch_actor_output_scale)
+                if linear_layers[-1].bias is not None:
+                    linear_layers[-1].bias.mul_(args.scratch_actor_output_scale)
+        run_metadata["random_initialization"] = {
+            "seed": config.seed,
+            "actor_sha256": _tensor_collection_sha256(
+                dict(runner.alg.get_policy().state_dict())
+            ),
+            "critic_sha256": _tensor_collection_sha256(
+                dict(runner.alg._raw_critic.state_dict())
+            ),
+        }
+        (output / "config.json").write_text(
+            json.dumps(run_metadata, indent=2, default=list)
+        )
+        initial_checkpoint = output / "model_initial.pt"
+        runner.save(str(initial_checkpoint), infos={"stage": "random_initialization"})
     if args.resume is not None:
         runner.load(str(args.resume.resolve()))
         if args.reset_resume_optimizer:
@@ -505,6 +774,9 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
     )
     return {
         "checkpoint": str(checkpoint),
+        "initial_checkpoint": (
+            None if initial_checkpoint is None else str(initial_checkpoint)
+        ),
         "next_learning_iteration": runner.current_learning_iteration + 1,
         "num_envs": config.num_envs,
         "ppo_integrity": record,
@@ -593,6 +865,18 @@ def _evaluation_world_sha256(
         "action_delay": env.randomizer.action_delay_steps[:episodes],
         "target_translation_xy": env.randomizer.target_translation_xy[:episodes],
         "target_yaw": env.randomizer.target_yaw[:episodes],
+        "destination_translation_xy": (
+            env.randomizer.destination_translation_xy[:episodes]
+        ),
+        "destination_yaw": env.randomizer.destination_yaw[:episodes],
+        "distractor_translation_xy": (
+            env.randomizer.distractor_translation_xy[:episodes]
+        ),
+        "distractor_yaw": env.randomizer.distractor_yaw[:episodes],
+        "robot_base_translation_xy": (
+            env.randomizer.robot_base_translation_xy[:episodes]
+        ),
+        "robot_base_yaw": env.randomizer.robot_base_yaw[:episodes],
         "reference_rows": env.reference.episode_rows[:episodes],
         "reference_indices": env.reference.indices[:episodes],
         "reference_object_offset": env.reference.reference_object_offset[:episodes],
@@ -808,9 +1092,7 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
             if args.proposal_only
             else "ppo"
         ),
-        "checkpoint": (
-            None if args.checkpoint is None else str(args.checkpoint)
-        ),
+        "checkpoint": (None if args.checkpoint is None else str(args.checkpoint)),
         "episodes": episodes,
         "successes": successes,
         "success_rate": successes / episodes,
@@ -871,6 +1153,245 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def _finite_mean(values: list[float]) -> float | None:
+    finite = [value for value in values if math.isfinite(value)]
+    return sum(finite) / len(finite) if finite else None
+
+
+@torch.inference_mode()
+def _shadow_reward(args: argparse.Namespace) -> dict[str, object]:
+    """Measure Robometer predictions without changing executed task rewards."""
+
+    if args.episodes < 1:
+        raise ValueError("episodes must be positive")
+    config = _config(args)
+    reward_config = _robometer_config(args, mode="shadow")
+    assert reward_config is not None
+    _validate_robometer_run(config, reward_config)
+    _seed_torch(config.seed)
+
+    env = GpuGraspVecEnv(
+        config,
+        training=False,
+        randomization_enabled=True,
+        capture_step_data=True,
+        robometer_reward_config=reward_config,
+    )
+    try:
+        _set_evaluation_dr_strength(env, 1.0)
+        actor = None
+        if args.checkpoint is not None:
+            train_config = ppo_train_config(
+                smoke=True,
+                plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(
+                    args.checkpoint
+                ),
+            )
+            runner = GpuPpoRunner(env, train_config, log_dir=None)
+            runner.load_actor_warm_start(args.checkpoint.resolve())
+            actor = runner.alg.get_policy().eval()
+
+        observations = env.get_observations()
+        episode_length = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+        episode_return = torch.zeros(env.num_envs, device=env.device)
+        physical_task_return = torch.zeros_like(episode_return)
+        max_stage = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+        max_progress = torch.full_like(episode_return, -torch.inf)
+        cumulative_progress_delta = torch.zeros_like(episode_return)
+        final_progress = torch.full_like(episode_return, float("nan"))
+        final_success_probability = torch.full_like(episode_return, float("nan"))
+        max_success_probability = torch.full_like(episode_return, -torch.inf)
+        inference_count = torch.zeros_like(episode_length)
+        latency_sum_ms = torch.zeros_like(episode_return)
+        records: list[dict[str, object]] = []
+
+        while len(records) < args.episodes:
+            if args.proposal_only:
+                base_dim = env.reference.observation_dim
+                actions = observations["policy"][:, base_dim : base_dim + ACTION_DIM]
+            else:
+                assert actor is not None
+                actions = actor(observations, stochastic_output=False)
+
+            observations, rewards, dones, extras = env.step(actions)
+            terms = env.last_terms
+            if terms is None:
+                raise RuntimeError("GPU environment did not expose reward terms")
+            step_data = extras.get("step_data")
+            robometer = extras.get("robometer")
+            if not isinstance(step_data, dict) or not isinstance(robometer, dict):
+                raise TypeError("Shadow run did not expose reward diagnostics")
+
+            stages = step_data["stage_index"]
+            physical_rewards = step_data["physical_task_reward"]
+            inferred = robometer["inferred"]
+            progress = robometer["progress"]
+            progress_delta = robometer["progress_delta"]
+            success_probability = robometer["success_probability"]
+            if not all(
+                isinstance(value, torch.Tensor)
+                for value in (
+                    stages,
+                    physical_rewards,
+                    inferred,
+                    progress,
+                    progress_delta,
+                    success_probability,
+                )
+            ):
+                raise RuntimeError("Shadow diagnostics contain non-tensor values")
+
+            episode_length.add_(1)
+            episode_return.add_(rewards)
+            physical_task_return.add_(physical_rewards)
+            max_stage.copy_(torch.maximum(max_stage, stages))
+            if inferred.any():
+                max_progress[inferred] = torch.maximum(
+                    max_progress[inferred], progress[inferred]
+                )
+                cumulative_progress_delta[inferred] += progress_delta[inferred]
+                final_progress[inferred] = progress[inferred]
+                final_success_probability[inferred] = success_probability[inferred]
+                max_success_probability[inferred] = torch.maximum(
+                    max_success_probability[inferred],
+                    success_probability[inferred],
+                )
+                inference_count[inferred] += 1
+                latency_sum_ms[inferred] += float(robometer["latency_ms"])
+
+            finished = dones.nonzero(as_tuple=False).flatten()
+            for env_id in finished.detach().cpu().tolist():
+                if len(records) >= args.episodes:
+                    break
+                env_id = int(env_id)
+                success = bool(terms.success[env_id].item())
+                failure = bool(terms.failure[env_id].item())
+                timeout = bool(terms.timeout[env_id].item())
+                outcome = (
+                    "success"
+                    if success
+                    else "failure"
+                    if failure
+                    else "timeout"
+                    if timeout
+                    else "unknown"
+                )
+                count = int(inference_count[env_id].item())
+                records.append(
+                    {
+                        "episode": len(records),
+                        "env_id": env_id,
+                        "physical_outcome": outcome,
+                        "physical_success": success,
+                        "physical_failure": failure,
+                        "physical_timeout": timeout,
+                        "length": int(episode_length[env_id].item()),
+                        "max_stage": int(max_stage[env_id].item()),
+                        "final_progress": float(final_progress[env_id].item()),
+                        "max_progress": float(max_progress[env_id].item()),
+                        "cumulative_progress_delta": float(
+                            cumulative_progress_delta[env_id].item()
+                        ),
+                        "final_success_probability": float(
+                            final_success_probability[env_id].item()
+                        ),
+                        "max_success_probability": float(
+                            max_success_probability[env_id].item()
+                        ),
+                        "robometer_inferences": count,
+                        "robometer_latency_ms_sum": float(
+                            latency_sum_ms[env_id].item()
+                        ),
+                        "robometer_latency_ms_mean": (
+                            float(latency_sum_ms[env_id].item()) / count
+                            if count
+                            else None
+                        ),
+                        "physical_task_return": float(
+                            physical_task_return[env_id].item()
+                        ),
+                        "episode_return": float(episode_return[env_id].item()),
+                    }
+                )
+
+            if len(finished):
+                episode_length[finished] = 0
+                episode_return[finished] = 0.0
+                physical_task_return[finished] = 0.0
+                max_stage[finished] = 0
+                max_progress[finished] = -torch.inf
+                cumulative_progress_delta[finished] = 0.0
+                final_progress[finished] = float("nan")
+                final_success_probability[finished] = float("nan")
+                max_success_probability[finished] = -torch.inf
+                inference_count[finished] = 0
+                latency_sum_ms[finished] = 0.0
+
+        stage_names = getattr(getattr(env.state_reader, "spec", None), "stages", ())
+        for record in records:
+            stage_index = int(record["max_stage"])
+            record["max_stage_name"] = (
+                stage_names[stage_index].name
+                if stage_index < len(stage_names)
+                else str(stage_index)
+            )
+
+        successes = [record for record in records if record["physical_success"]]
+        non_successes = [record for record in records if not record["physical_success"]]
+        result: dict[str, object] = {
+            "mode": "shadow",
+            "policy": "proposal_only" if args.proposal_only else "ppo",
+            "checkpoint": (
+                None if args.checkpoint is None else str(args.checkpoint.resolve())
+            ),
+            "checkpoint_sha256": (
+                None
+                if args.checkpoint is None
+                else sha256_file(args.checkpoint.resolve())
+            ),
+            "episodes": len(records),
+            "successes": len(successes),
+            "success_rate": len(successes) / len(records),
+            "full_domain_randomization": True,
+            "physical_task_reward_active": True,
+            "task_reward_override": reward_config.metadata(),
+            "summary": {
+                "mean_final_progress": _finite_mean(
+                    [float(record["final_progress"]) for record in records]
+                ),
+                "mean_success_final_progress": _finite_mean(
+                    [float(record["final_progress"]) for record in successes]
+                ),
+                "mean_non_success_final_progress": _finite_mean(
+                    [float(record["final_progress"]) for record in non_successes]
+                ),
+                "mean_max_progress": _finite_mean(
+                    [float(record["max_progress"]) for record in records]
+                ),
+                "mean_cumulative_progress_delta": _finite_mean(
+                    [float(record["cumulative_progress_delta"]) for record in records]
+                ),
+                "mean_final_success_probability": _finite_mean(
+                    [float(record["final_success_probability"]) for record in records]
+                ),
+                "mean_inference_latency_ms": _finite_mean(
+                    [
+                        float(record["robometer_latency_ms_mean"])
+                        for record in records
+                        if record["robometer_latency_ms_mean"] is not None
+                    ]
+                ),
+            },
+            "episode_results": records,
+        }
+        output = args.output.resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(result, indent=2, allow_nan=False))
+        return {**result, "output": str(output)}
+    finally:
+        env.close()
+
+
 def _paired_mode_args(args: argparse.Namespace, mode: str) -> argparse.Namespace:
     values = vars(args).copy()
     values.update(
@@ -920,24 +1441,54 @@ def _collect(args: argparse.Namespace) -> dict[str, object]:
         capture_terminal_qpos=True,
         capture_step_data=True,
     )
-    if dr_strength > 0.0:
-        _set_evaluation_dr_strength(env, dr_strength)
-    train_config = ppo_train_config(
-        smoke=True,
-        plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(args.checkpoint),
+    try:
+        if dr_strength > 0.0:
+            _set_evaluation_dr_strength(env, dr_strength)
+        train_config = ppo_train_config(
+            smoke=True,
+            plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(
+                args.checkpoint
+            ),
+        )
+        runner = GpuPpoRunner(env, train_config, log_dir=None)
+        runner.load_actor_warm_start(args.checkpoint.resolve())
+        return collect_successful_trajectories(
+            env,
+            runner.alg.get_policy().eval(),
+            args.checkpoint.resolve(),
+            args.output_dir.resolve(),
+            successes=args.successes,
+            max_attempts=max_attempts,
+            domain_randomization=dr_strength > 0.0,
+            stochastic_policy=args.stochastic_policy,
+        )
+    finally:
+        env.close()
+
+
+def _collect_dataset(args: argparse.Namespace) -> dict[str, object]:
+    for name in ("width", "height", "fps"):
+        if getattr(args, name) < 1:
+            raise ValueError(f"{name} must be positive")
+    output_root = args.output_root.resolve()
+    rollouts = output_root / "rollouts"
+    values = vars(args).copy()
+    values.update(command="collect", output_dir=rollouts)
+    rollout_result = _collect(argparse.Namespace(**values))
+    gc.collect()
+    torch.cuda.empty_cache()
+    dataset_result = export_dual_dataset(
+        rollouts,
+        output_root,
+        args.asset_bundle.resolve(),
+        args.source_dataset.resolve(),
+        args.psi0_template.resolve(),
+        camera=args.camera,
+        width=args.width,
+        height=args.height,
+        fps=args.fps,
     )
-    runner = GpuPpoRunner(env, train_config, log_dir=None)
-    runner.load_actor_warm_start(args.checkpoint.resolve())
-    return collect_successful_trajectories(
-        env,
-        runner.alg.get_policy().eval(),
-        args.checkpoint.resolve(),
-        args.output_dir.resolve(),
-        successes=args.successes,
-        max_attempts=max_attempts,
-        domain_randomization=dr_strength > 0.0,
-        stochastic_policy=args.stochastic_policy,
-    )
+    return {"rollout": rollout_result, "dataset": dataset_result}
 
 
 @torch.inference_mode()
@@ -983,9 +1534,11 @@ def main() -> None:
     args = _parser().parse_args()
     handlers = {
         "train": _train,
+        "shadow-reward": _shadow_reward,
         "evaluate": _evaluate,
         "benchmark": _benchmark,
         "collect": _collect,
+        "collect-dataset": _collect_dataset,
         "record": _record,
         "verify-release": lambda value: verify_release(value.release_dir),
     }

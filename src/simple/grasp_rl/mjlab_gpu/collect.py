@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ _STEP_KEYS = (
     "reference_action",
     "effective_action",
     "physical_action",
+    "joint_target",
     "reward",
     "task_reward",
     "reference_reward",
@@ -63,6 +65,8 @@ def validate_episode_arrays(arrays: dict[str, np.ndarray]) -> None:
         raise ValueError("qpos/qvel must include the terminal state")
     if arrays["raw_action"].shape[-1] != 36:
         raise ValueError("trajectory actions must use the 36-D public schema")
+    if arrays["joint_target"].shape[-1] != 43:
+        raise ValueError("trajectory joint targets must use the 43-D Sonic schema")
     if arrays["done"].shape != (steps,) or not bool(arrays["done"][-1]):
         raise ValueError("trajectory must terminate on its final step")
     if not bool(arrays["success"]):
@@ -94,6 +98,7 @@ def collect_successful_trajectories(
         raise ValueError("collection requires step and terminal state capture")
 
     provenance = _checkpoint_provenance(checkpoint)
+    dr_strength = env._domain_randomization_strength()
     output_dir.mkdir(parents=True, exist_ok=True)
     episodes_dir = output_dir / "episodes"
     episodes_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +122,7 @@ def collect_successful_trajectories(
         if not isinstance(step_data, dict):
             raise TypeError("environment did not return captured step data")
         physical_action = step_data["physical_action"].detach().cpu().numpy()
+        joint_target = step_data["joint_target"].detach().cpu().numpy()
         task_reward = step_data["task_reward"].detach().cpu().numpy()
         reference_reward = step_data["reference_reward"].detach().cpu().numpy()
         stage_index = step_data["stage_index"].detach().cpu().numpy()
@@ -134,6 +140,7 @@ def collect_successful_trajectories(
                 "reference_action": reference[env_id],
                 "effective_action": effective[env_id],
                 "physical_action": physical_action[env_id],
+                "joint_target": joint_target[env_id],
                 "reward": reward[env_id],
                 "task_reward": task_reward[env_id],
                 "reference_reward": reference_reward[env_id],
@@ -177,6 +184,8 @@ def collect_successful_trajectories(
                 saved += 1
             manifest.append(record)
             traces[env_id] = _new_trace()
+            if saved >= successes:
+                break
         reset_dr = _episode_randomization(env)
         for env_id in finished:
             episode_dr[env_id] = reset_dr[env_id]
@@ -195,6 +204,8 @@ def collect_successful_trajectories(
         "complete": saved == successes,
         "deterministic_actor": not stochastic_policy,
         "domain_randomization": domain_randomization,
+        "domain_randomization_strength": dr_strength,
+        "resolved_domain_randomization": asdict(env.config.domain_randomization),
         "seed": env.config.seed,
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))

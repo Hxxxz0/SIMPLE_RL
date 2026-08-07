@@ -1,21 +1,66 @@
+from types import SimpleNamespace
+
 import mujoco
+import pytest
 import torch
 
 from simple.grasp_rl.mjlab_gpu.recording import (
     _checkpoint_provenance,
     _diagnostic_rank,
+    _episode_randomization,
     _finger_grasp_truth,
     _target_physics_audit,
 )
+
+
+def test_episode_randomization_records_pose_and_dynamics() -> None:
+    class _Model:
+        @staticmethod
+        def body(body_id):
+            return SimpleNamespace(name=f"distractor_{body_id}")
+
+    randomizer = SimpleNamespace(
+        target_translation_xy=torch.tensor([[0.01, -0.02]]),
+        target_yaw=torch.tensor([0.1]),
+        destination_translation_xy=torch.tensor([[-0.01, 0.02]]),
+        destination_yaw=torch.tensor([-0.1]),
+        distractor_translation_xy=torch.tensor([[[0.02, 0.03]]]),
+        distractor_yaw=torch.tensor([[0.2]]),
+        distractor_body_ids=[7],
+        robot_base_translation_xy=torch.tensor([[0.005, -0.006]]),
+        robot_base_yaw=torch.tensor([0.02]),
+        target_mass_scale=torch.tensor([1.1]),
+        friction_scale=torch.tensor([0.8]),
+        joint_damping_scale=torch.tensor([[0.9, 1.05]]),
+        actuator_strength_scale=torch.tensor([[1.02, 0.97]]),
+        action_delay_steps=torch.tensor([1]),
+        sim=SimpleNamespace(mj_model=_Model()),
+    )
+    env = SimpleNamespace(
+        num_envs=1,
+        randomizer=randomizer,
+        reference=SimpleNamespace(episode_rows=torch.tensor([11])),
+    )
+
+    row = _episode_randomization(env)[0]
+
+    assert row["target_translation_xy"] == pytest.approx([0.01, -0.02])
+    assert row["destination_translation_xy"] == pytest.approx([-0.01, 0.02])
+    assert row["distractor_poses"]["distractor_7"]["yaw"] == pytest.approx(0.2)
+    assert row["robot_base_translation_xy"] == pytest.approx([0.005, -0.006])
+    assert row["target_mass_scale"] == pytest.approx(1.1)
+    assert row["friction_scale"] == pytest.approx(0.8)
+    assert row["joint_damping_scale"] == pytest.approx([0.9, 1.05])
+    assert row["actuator_strength_scale"] == pytest.approx([1.02, 0.97])
+    assert row["action_delay_steps"] == 1
+    assert row["reference_episode_row"] == 11
 
 
 def test_checkpoint_provenance_uses_portable_paths(tmp_path) -> None:
     checkpoint = tmp_path / "model.pt"
     torch.save(
         {
-            "mjlab_gpu_metadata": {
-                "config": {"backend": "mjlab_mujoco_warp"}
-            },
+            "mjlab_gpu_metadata": {"config": {"backend": "mjlab_mujoco_warp"}},
             "ppo_integrity": {
                 "audit_path": "/old/machine/ppo_integrity.jsonl",
                 "latest_record": {

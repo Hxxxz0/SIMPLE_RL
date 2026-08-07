@@ -66,7 +66,7 @@ class ReferenceNoiseConfig:
             or self.future_dropout_probability
         )
 
-    def scaled(self, strength: float) -> "ReferenceNoiseConfig":
+    def scaled(self, strength: float) -> ReferenceNoiseConfig:
         value = min(max(float(strength), 0.0), 1.0)
         return ReferenceNoiseConfig(
             schema_version=self.schema_version,
@@ -82,6 +82,12 @@ class DomainRandomizationConfig:
     enabled: bool = True
     target_position_jitter_xy: tuple[float, float] = (0.025, 0.03)
     target_yaw_jitter: float = 0.15
+    destination_position_jitter_xy: tuple[float, float] = (0.0, 0.0)
+    destination_yaw_jitter: float = 0.0
+    distractor_position_jitter_xy: tuple[float, float] = (0.0, 0.0)
+    distractor_yaw_jitter: float = 0.0
+    robot_base_position_jitter_xy: tuple[float, float] = (0.0, 0.0)
+    robot_base_yaw_jitter: float = 0.0
     target_mass_scale: tuple[float, float] = (0.8, 1.2)
     friction_scale: tuple[float, float] = (0.7, 1.3)
     joint_damping_scale: tuple[float, float] = (0.9, 1.1)
@@ -100,15 +106,26 @@ class DomainRandomizationConfig:
             "joint_damping_scale",
             "actuator_strength_scale",
         ):
-            low, high = _range_pair(getattr(self, name), name)
+            low, _high = _range_pair(getattr(self, name), name)
             if low <= 0.0:
                 raise ValueError(f"{name} values must be positive")
-        if len(self.target_position_jitter_xy) != 2 or any(
-            value < 0.0 for value in self.target_position_jitter_xy
+        for name in (
+            "target_position_jitter_xy",
+            "destination_position_jitter_xy",
+            "distractor_position_jitter_xy",
+            "robot_base_position_jitter_xy",
         ):
-            raise ValueError("target_position_jitter_xy values must be non-negative")
-        if self.target_yaw_jitter < 0.0:
-            raise ValueError("target_yaw_jitter must be non-negative")
+            value = getattr(self, name)
+            if len(value) != 2 or any(item < 0.0 for item in value):
+                raise ValueError(f"{name} values must be non-negative")
+        for name in (
+            "target_yaw_jitter",
+            "destination_yaw_jitter",
+            "distractor_yaw_jitter",
+            "robot_base_yaw_jitter",
+        ):
+            if getattr(self, name) < 0.0:
+                raise ValueError(f"{name} must be non-negative")
         if self.action_delay_max_steps not in (0, 1):
             raise ValueError("action_delay_max_steps must be 0 or 1")
         if not 0.0 <= self.curriculum_initial_strength <= 1.0:
@@ -135,7 +152,7 @@ class DomainRandomizationConfig:
             return 0.0
         return max(self.curriculum_initial_strength, self.strength(vector_step))
 
-    def pose_only(self) -> "DomainRandomizationConfig":
+    def pose_only(self) -> DomainRandomizationConfig:
         """Retain target-pose DR while staging harder dynamics and input noise."""
 
         return replace(
@@ -153,7 +170,7 @@ class DomainRandomizationConfig:
             ),
         )
 
-    def target_x_only(self) -> "DomainRandomizationConfig":
+    def target_x_only(self) -> DomainRandomizationConfig:
         """Isolate the target X offset for a diagnosed staged curriculum."""
 
         pose = self.pose_only()
@@ -161,9 +178,15 @@ class DomainRandomizationConfig:
             pose,
             target_position_jitter_xy=(pose.target_position_jitter_xy[0], 0.0),
             target_yaw_jitter=0.0,
+            destination_position_jitter_xy=(0.0, 0.0),
+            destination_yaw_jitter=0.0,
+            distractor_position_jitter_xy=(0.0, 0.0),
+            distractor_yaw_jitter=0.0,
+            robot_base_position_jitter_xy=(0.0, 0.0),
+            robot_base_yaw_jitter=0.0,
         )
 
-    def target_y_only(self) -> "DomainRandomizationConfig":
+    def target_y_only(self) -> DomainRandomizationConfig:
         """Isolate the target Y offset for a diagnosed staged curriculum."""
 
         pose = self.pose_only()
@@ -171,13 +194,28 @@ class DomainRandomizationConfig:
             pose,
             target_position_jitter_xy=(0.0, pose.target_position_jitter_xy[1]),
             target_yaw_jitter=0.0,
+            destination_position_jitter_xy=(0.0, 0.0),
+            destination_yaw_jitter=0.0,
+            distractor_position_jitter_xy=(0.0, 0.0),
+            distractor_yaw_jitter=0.0,
+            robot_base_position_jitter_xy=(0.0, 0.0),
+            robot_base_yaw_jitter=0.0,
         )
 
-    def target_yaw_only(self) -> "DomainRandomizationConfig":
+    def target_yaw_only(self) -> DomainRandomizationConfig:
         """Isolate target yaw for a diagnosed staged curriculum."""
 
         pose = self.pose_only()
-        return replace(pose, target_position_jitter_xy=(0.0, 0.0))
+        return replace(
+            pose,
+            target_position_jitter_xy=(0.0, 0.0),
+            destination_position_jitter_xy=(0.0, 0.0),
+            destination_yaw_jitter=0.0,
+            distractor_position_jitter_xy=(0.0, 0.0),
+            distractor_yaw_jitter=0.0,
+            robot_base_position_jitter_xy=(0.0, 0.0),
+            robot_base_yaw_jitter=0.0,
+        )
 
 
 @dataclass(frozen=True)
@@ -234,8 +272,7 @@ class MjlabPpoConfig:
                 "reference_target_y_arm_gains must contain two finite values"
             )
         if len(self.reference_target_yaw_arm_gains) != 2 or not all(
-            math.isfinite(float(value))
-            for value in self.reference_target_yaw_arm_gains
+            math.isfinite(float(value)) for value in self.reference_target_yaw_arm_gains
         ):
             raise ValueError(
                 "reference_target_yaw_arm_gains must contain two finite values"

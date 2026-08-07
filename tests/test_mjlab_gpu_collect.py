@@ -18,6 +18,7 @@ def _trace(steps=2):
             "physical_action",
         ):
             trace[name].append(np.zeros(36, dtype=np.float32))
+        trace["joint_target"].append(np.zeros(43, dtype=np.float32))
         trace["observation"].append(np.zeros(331, dtype=np.float32))
         trace["policy_input"].append(np.zeros(842, dtype=np.float32))
         trace["reward"].append(np.asarray(1.0, dtype=np.float32))
@@ -38,6 +39,7 @@ def test_successful_trajectory_schema_includes_terminal_state() -> None:
     assert arrays["qpos"].shape == (3, 50)
     assert arrays["qvel"].shape == (3, 49)
     assert arrays["raw_action"].shape == (2, 36)
+    assert arrays["joint_target"].shape == (2, 43)
     assert arrays["done"].tolist() == [False, True]
 
 

@@ -64,12 +64,45 @@ def _episode_randomization(env: GpuGraspVecEnv) -> list[dict[str, Any]]:
     randomizer = env.randomizer
     translations = randomizer.target_translation_xy.detach().cpu().tolist()
     yaws = randomizer.target_yaw.detach().cpu().tolist()
+    destination_translations = (
+        randomizer.destination_translation_xy.detach().cpu().tolist()
+    )
+    destination_yaws = randomizer.destination_yaw.detach().cpu().tolist()
+    distractor_translations = (
+        randomizer.distractor_translation_xy.detach().cpu().tolist()
+    )
+    distractor_yaws = randomizer.distractor_yaw.detach().cpu().tolist()
+    distractor_names = [
+        randomizer.sim.mj_model.body(body_id).name
+        for body_id in randomizer.distractor_body_ids
+    ]
+    base_translations = randomizer.robot_base_translation_xy.detach().cpu().tolist()
+    base_yaws = randomizer.robot_base_yaw.detach().cpu().tolist()
+    mass_scales = randomizer.target_mass_scale.detach().cpu().tolist()
+    friction_scales = randomizer.friction_scale.detach().cpu().tolist()
+    damping_scales = randomizer.joint_damping_scale.detach().cpu().tolist()
+    actuator_scales = randomizer.actuator_strength_scale.detach().cpu().tolist()
     delays = randomizer.action_delay_steps.detach().cpu().tolist()
     rows = env.reference.episode_rows.detach().cpu().tolist()
     return [
         {
             "target_translation_xy": translations[index],
             "target_yaw": yaws[index],
+            "destination_translation_xy": destination_translations[index],
+            "destination_yaw": destination_yaws[index],
+            "distractor_poses": {
+                name: {
+                    "translation_xy": distractor_translations[index][slot],
+                    "yaw": distractor_yaws[index][slot],
+                }
+                for slot, name in enumerate(distractor_names)
+            },
+            "robot_base_translation_xy": base_translations[index],
+            "robot_base_yaw": base_yaws[index],
+            "target_mass_scale": mass_scales[index],
+            "friction_scale": friction_scales[index],
+            "joint_damping_scale": damping_scales[index],
+            "actuator_strength_scale": actuator_scales[index],
             "action_delay_steps": delays[index],
             "reference_episode_row": rows[index],
         }
@@ -286,9 +319,7 @@ def _contact_forces(env: GpuGraspVecEnv) -> torch.Tensor:
     forces = getattr(state, "contact_forces_pelvis", None)
     if forces is not None:
         return forces
-    result = torch.zeros(
-        env.num_envs, 2, 8, 3, dtype=torch.float32, device=env.device
-    )
+    result = torch.zeros(env.num_envs, 2, 8, 3, dtype=torch.float32, device=env.device)
     result[:, 1] = state.contact.link_forces_pelvis
     return result
 
@@ -328,10 +359,7 @@ def record_success_videos(
     max_stage = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
     model = env.gpu.sim.mj_model
     hand_qpos_indices = torch.tensor(
-        [
-            int(model.jnt_qposadr[model.joint(name).id])
-            for name in JOINT_NAMES[29:43]
-        ],
+        [int(model.jnt_qposadr[model.joint(name).id]) for name in JOINT_NAMES[29:43]],
         dtype=torch.long,
         device=env.device,
     ).reshape(2, 7)
@@ -342,9 +370,7 @@ def record_success_videos(
     max_hand_contact = torch.zeros(
         env.num_envs, 2, 8, dtype=torch.float32, device=env.device
     )
-    grasp_hold = torch.zeros(
-        env.num_envs, 2, dtype=torch.long, device=env.device
-    )
+    grasp_hold = torch.zeros(env.num_envs, 2, dtype=torch.long, device=env.device)
     max_grasp_hold = torch.zeros_like(grasp_hold)
     required_hands = _required_grasp_hands(env)
     hand_names = ("left", "right")
@@ -364,15 +390,11 @@ def record_success_videos(
         audit = _finger_grasp_truth(
             current_hand_qpos, initial_hand_qpos, _contact_forces(env)
         )
-        max_hand_closure.copy_(
-            torch.maximum(max_hand_closure, audit["closure_delta"])
-        )
+        max_hand_closure.copy_(torch.maximum(max_hand_closure, audit["closure_delta"]))
         max_hand_contact.copy_(
             torch.maximum(max_hand_contact, audit["contact_magnitudes"])
         )
-        grasp_hold.copy_(
-            torch.where(audit["valid_grasp"], grasp_hold + 1, 0)
-        )
+        grasp_hold.copy_(torch.where(audit["valid_grasp"], grasp_hold + 1, 0))
         max_grasp_hold.copy_(torch.maximum(max_grasp_hold, grasp_hold))
         actions = actor(observations, stochastic_output=stochastic_policy)
         observations, _, dones, extras = env.step(actions)
@@ -395,9 +417,14 @@ def record_success_videos(
                 peak_closure = max_hand_closure[env_id, hand_id]
                 peak_contact = max_hand_contact[env_id, hand_id]
                 hand_audits[hand_name] = {
-                    "joint_names": list(JOINT_NAMES[29 + 7 * hand_id : 36 + 7 * hand_id]),
+                    "joint_names": list(
+                        JOINT_NAMES[29 + 7 * hand_id : 36 + 7 * hand_id]
+                    ),
                     "peak_closure_delta_rad": peak_closure.detach().cpu().tolist(),
-                    "distal_closure_delta_rad": peak_closure[[2, 4, 6]].detach().cpu().tolist(),
+                    "distal_closure_delta_rad": peak_closure[[2, 4, 6]]
+                    .detach()
+                    .cpu()
+                    .tolist(),
                     "contact_link_names": list(contact_names[hand_id]),
                     "peak_contact_force": peak_contact.detach().cpu().tolist(),
                     "max_consecutive_valid_grasp_steps": int(
@@ -407,8 +434,7 @@ def record_success_videos(
                     >= FINGER_CONTACT_HOLD_STEPS,
                 }
             finger_audit_passed = all(
-                hand_audits[hand_names[hand_id]]["passed"]
-                for hand_id in required_hands
+                hand_audits[hand_names[hand_id]]["passed"] for hand_id in required_hands
             )
             success = simulator_success and finger_audit_passed
             stage = int(max_stage[env_id])
@@ -464,9 +490,7 @@ def record_success_videos(
         reset_dr = _episode_randomization(env)
         for env_id in finished.detach().cpu().tolist():
             episode_dr[env_id] = reset_dr[env_id]
-            initial_hand_qpos[env_id] = env.gpu.sim.data.qpos[
-                env_id, hand_qpos_indices
-            ]
+            initial_hand_qpos[env_id] = env.gpu.sim.data.qpos[env_id, hand_qpos_indices]
     if len(records) < videos and not allow_diagnostic_fallback:
         raise RuntimeError(
             f"Only found {len(records)} successful episodes in {attempts} attempts"

@@ -117,7 +117,7 @@ def checkpoint_uses_plan_conditioned_actor(checkpoint: str | Path) -> bool:
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     state = payload.get("actor_state_dict")
     if not isinstance(state, dict):
-        raise ValueError("Checkpoint does not contain an actor_state_dict")
+        raise TypeError("Checkpoint does not contain an actor_state_dict")
     return "_plan_conditioned_actor" in state
 
 
@@ -253,7 +253,7 @@ class GpuPpoRunner(OnPolicyRunner):
             raise ValueError("GPU checkpoint asset bundle does not match")
         state = payload.get("critic_state_dict")
         if not isinstance(state, dict):
-            raise ValueError("Checkpoint does not contain a critic_state_dict")
+            raise TypeError("Checkpoint does not contain a critic_state_dict")
         expected_observation_dim = (
             self.env.reference.observation_dim + self.env.reference.context_dim
         )
@@ -297,7 +297,7 @@ class GpuPpoRunner(OnPolicyRunner):
             raise RuntimeError("PPO Adam optimizer is not CUDA-capturable")
 
     def checkpoint_metadata(self) -> dict[str, object]:
-        return {
+        metadata: dict[str, object] = {
             "config": self.env.config.checkpoint_metadata(),
             "asset_manifest_hash": self.env.gpu.bundle.manifest["manifest_hash"],
             "controller": self.env.controller.metadata(),
@@ -307,6 +307,10 @@ class GpuPpoRunner(OnPolicyRunner):
                 "actor_learning_rate_scale": self.actor_learning_rate_scale,
             },
         }
+        reward_override = self.env.robometer_reward_metadata()
+        if reward_override is not None:
+            metadata["task_reward_override"] = reward_override
+        return metadata
 
     def save(self, path: str, infos: dict | None = None) -> None:
         payload = self.alg.save()
@@ -373,6 +377,12 @@ class GpuPpoRunner(OnPolicyRunner):
                 )
                 if not matches:
                     raise ValueError(f"Checkpoint {key} metadata mismatch")
+            expected_override = expected.get("task_reward_override")
+            actual_override = metadata.get("task_reward_override")
+            if (
+                expected_override is not None or actual_override is not None
+            ) and actual_override != expected_override:
+                raise ValueError("Checkpoint task reward override metadata mismatch")
         load_iteration = self.alg.load(payload, load_cfg, strict)
         _move_optimizer_state(self.alg.optimizer, self.device)
         _make_optimizer_capturable(self.alg.optimizer)
@@ -410,6 +420,18 @@ class GpuPpoRunner(OnPolicyRunner):
                 self.env._completed_success_count.copy_(
                     torch.as_tensor(completed["successes"], device=self.device)
                 )
+            repairs = env_state.get("reset_forward_repairs")
+            if isinstance(repairs, dict):
+                for key, target in (
+                    ("events", self.env._reset_forward_repair_events),
+                    ("worlds", self.env._reset_forward_repair_worlds),
+                    ("values", self.env._reset_forward_repair_values),
+                    (
+                        "outside_requested",
+                        self.env._reset_forward_repair_outside_requested,
+                    ),
+                ):
+                    target.copy_(torch.as_tensor(repairs[key], device=self.device))
         self.assert_cuda_integrity(
             require_optimizer_state=bool(self.alg.optimizer.state)
         )

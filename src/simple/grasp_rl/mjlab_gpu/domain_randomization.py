@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+import mujoco
 import torch
 from mjlab.managers.event_manager import RecomputeLevel
 
@@ -40,6 +41,38 @@ def _uniform(
     )
 
 
+def _apply_free_joint_pose(
+    qpos: torch.Tensor,
+    env_ids: torch.Tensor,
+    address: int,
+    translation_xy: torch.Tensor,
+    yaw: torch.Tensor,
+) -> None:
+    qpos[env_ids, address : address + 2] += translation_xy
+    base_quaternion = qpos[env_ids, address + 3 : address + 7].clone()
+    half_yaw = 0.5 * yaw
+    yaw_quaternion = torch.stack(
+        (
+            half_yaw.cos(),
+            torch.zeros_like(yaw),
+            torch.zeros_like(yaw),
+            half_yaw.sin(),
+        ),
+        dim=-1,
+    )
+    bw, bx, by, bz = base_quaternion.unbind(-1)
+    yw, _, _, yz = yaw_quaternion.unbind(-1)
+    qpos[env_ids, address + 3 : address + 7] = torch.stack(
+        (
+            yw * bw - yz * bz,
+            yw * bx - yz * by,
+            yw * by + yz * bx,
+            yw * bz + yz * bw,
+        ),
+        dim=-1,
+    )
+
+
 class GpuDomainRandomizer:
     """Randomize reset state and expanded mjlab model fields without CPU fallback."""
 
@@ -67,9 +100,60 @@ class GpuDomainRandomizer:
         }
         self.target_body_id = model.body(target_name).id
         target_joint_id = int(model.body_jntadr[self.target_body_id])
-        if target_joint_id < 0:
+        if (
+            target_joint_id < 0
+            or model.jnt_type[target_joint_id] != mujoco.mjtJoint.mjJNT_FREE
+        ):
             raise ValueError("Randomized target must have a free joint")
         self.target_qpos_address = int(model.jnt_qposadr[target_joint_id])
+        destination_name = roles.get("destination")
+        self.destination_body_id = (
+            None if destination_name is None else model.body(destination_name).id
+        )
+        destination_joint_id = (
+            -1
+            if self.destination_body_id is None
+            else int(model.body_jntadr[self.destination_body_id])
+        )
+        self.destination_qpos_address = (
+            None
+            if destination_joint_id < 0
+            or model.jnt_type[destination_joint_id] != mujoco.mjtJoint.mjJNT_FREE
+            else int(model.jnt_qposadr[destination_joint_id])
+        )
+        base_joint_id = model.joint("floating_base_joint").id
+        if model.jnt_type[base_joint_id] != mujoco.mjtJoint.mjJNT_FREE:
+            raise ValueError("floating_base_joint must be a free joint")
+        self.robot_base_qpos_address = int(model.jnt_qposadr[base_joint_id])
+        excluded_body_ids = {
+            self.target_body_id,
+            self.destination_body_id,
+            int(model.jnt_bodyid[base_joint_id]),
+        }
+        self.distractor_body_ids = []
+        self.distractor_qpos_addresses = []
+        for body_id in range(1, model.nbody):
+            joint_id = int(model.body_jntadr[body_id])
+            if (
+                body_id in excluded_body_ids
+                or joint_id < 0
+                or model.jnt_type[joint_id] != mujoco.mjtJoint.mjJNT_FREE
+            ):
+                continue
+            self.distractor_body_ids.append(body_id)
+            self.distractor_qpos_addresses.append(int(model.jnt_qposadr[joint_id]))
+        destination_pose_enabled = bool(
+            any(config.destination_position_jitter_xy) or config.destination_yaw_jitter
+        )
+        if destination_pose_enabled and self.destination_qpos_address is None:
+            raise ValueError("Destination pose DR requires a free destination joint")
+        distractor_pose_enabled = bool(
+            any(config.distractor_position_jitter_xy) or config.distractor_yaw_jitter
+        )
+        if distractor_pose_enabled and not self.distractor_qpos_addresses:
+            raise ValueError(
+                "Distractor pose DR requires at least one free scene object"
+            )
         self.target_geom_ids = torch.tensor(
             [
                 index
@@ -112,27 +196,85 @@ class GpuDomainRandomizer:
         self.action_delay_steps = torch.zeros(
             self.sim.num_envs, dtype=torch.long, device=self.device
         )
+        self.target_mass_scale = torch.ones(self.sim.num_envs, device=self.device)
+        self.friction_scale = torch.ones(self.sim.num_envs, device=self.device)
+        self.joint_damping_scale = torch.ones(
+            self.sim.num_envs, len(self.dof_ids), device=self.device
+        )
+        self.actuator_strength_scale = torch.ones(
+            self.sim.num_envs, len(self.actuator_ids), device=self.device
+        )
         self.target_translation_xy = torch.zeros(
             self.sim.num_envs, 2, device=self.device
         )
         self.target_yaw = torch.zeros(self.sim.num_envs, device=self.device)
+        self.destination_translation_xy = torch.zeros(
+            self.sim.num_envs, 2, device=self.device
+        )
+        self.destination_yaw = torch.zeros(self.sim.num_envs, device=self.device)
+        self.distractor_translation_xy = torch.zeros(
+            self.sim.num_envs,
+            len(self.distractor_qpos_addresses),
+            2,
+            device=self.device,
+        )
+        self.distractor_yaw = torch.zeros(
+            self.sim.num_envs,
+            len(self.distractor_qpos_addresses),
+            device=self.device,
+        )
+        self.robot_base_translation_xy = torch.zeros(
+            self.sim.num_envs, 2, device=self.device
+        )
+        self.robot_base_yaw = torch.zeros(self.sim.num_envs, device=self.device)
 
     def state_dict(self) -> dict[str, torch.Tensor]:
         return {
             "generator_state": self.generator.get_state(),
             "action_delay_steps": self.action_delay_steps.clone(),
+            "target_mass_scale": self.target_mass_scale.clone(),
+            "friction_scale": self.friction_scale.clone(),
+            "joint_damping_scale": self.joint_damping_scale.clone(),
+            "actuator_strength_scale": self.actuator_strength_scale.clone(),
             "target_translation_xy": self.target_translation_xy.clone(),
             "target_yaw": self.target_yaw.clone(),
+            "destination_translation_xy": self.destination_translation_xy.clone(),
+            "destination_yaw": self.destination_yaw.clone(),
+            "distractor_translation_xy": self.distractor_translation_xy.clone(),
+            "distractor_yaw": self.distractor_yaw.clone(),
+            "robot_base_translation_xy": self.robot_base_translation_xy.clone(),
+            "robot_base_yaw": self.robot_base_yaw.clone(),
         }
 
     def load_state_dict(self, state: dict[str, torch.Tensor]) -> None:
         self.generator.set_state(state["generator_state"].cpu())
         for name in (
+            "target_mass_scale",
+            "friction_scale",
+            "joint_damping_scale",
+            "actuator_strength_scale",
+        ):
+            value = state.get(name)
+            if value is None:
+                getattr(self, name).fill_(1.0)
+            else:
+                getattr(self, name).copy_(value.to(self.device))
+        for name in (
             "action_delay_steps",
             "target_translation_xy",
             "target_yaw",
+            "destination_translation_xy",
+            "destination_yaw",
+            "distractor_translation_xy",
+            "distractor_yaw",
+            "robot_base_translation_xy",
+            "robot_base_yaw",
         ):
-            getattr(self, name).copy_(state[name].to(self.device))
+            value = state.get(name)
+            if value is None:
+                getattr(self, name).zero_()
+            else:
+                getattr(self, name).copy_(value.to(self.device))
 
     def reset(
         self, env_ids: torch.Tensor, *, training: bool, strength: float = 1.0
@@ -143,6 +285,50 @@ class GpuDomainRandomizer:
         cfg = self.config
         scale = min(max(float(strength), 0.0), 1.0)
         enabled = bool(training and cfg.enabled and scale > 0.0)
+
+        def sample_pose(
+            position_jitter_xy: tuple[float, float], yaw_jitter: float, slots: int = 1
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            translation_shape = (count, 2) if slots == 1 else (count, slots, 2)
+            yaw_shape = (count,) if slots == 1 else (count, slots)
+            if not enabled or not (any(position_jitter_xy) or yaw_jitter):
+                return (
+                    torch.zeros(translation_shape, device=self.device),
+                    torch.zeros(yaw_shape, device=self.device),
+                )
+            max_x, max_y = (
+                scale * position_jitter_xy[0],
+                scale * position_jitter_xy[1],
+            )
+            sample_shape = (count,) if slots == 1 else (count, slots)
+            translation = torch.stack(
+                (
+                    _uniform(
+                        -max_x,
+                        max_x,
+                        sample_shape,
+                        device=self.device,
+                        generator=self.generator,
+                    ),
+                    _uniform(
+                        -max_y,
+                        max_y,
+                        sample_shape,
+                        device=self.device,
+                        generator=self.generator,
+                    ),
+                ),
+                dim=-1,
+            )
+            yaw = _uniform(
+                -scale * yaw_jitter,
+                scale * yaw_jitter,
+                yaw_shape,
+                device=self.device,
+                generator=self.generator,
+            )
+            return translation, yaw
+
         if enabled:
 
             def scaled_range(bounds: tuple[float, float]) -> tuple[float, float]:
@@ -175,35 +361,8 @@ class GpuDomainRandomizer:
                 device=self.device,
                 generator=self.generator,
             )
-            max_x, max_y = (
-                scale * cfg.target_position_jitter_xy[0],
-                scale * cfg.target_position_jitter_xy[1],
-            )
-            translation = torch.stack(
-                (
-                    _uniform(
-                        -max_x,
-                        max_x,
-                        (count,),
-                        device=self.device,
-                        generator=self.generator,
-                    ),
-                    _uniform(
-                        -max_y,
-                        max_y,
-                        (count,),
-                        device=self.device,
-                        generator=self.generator,
-                    ),
-                ),
-                dim=-1,
-            )
-            yaw = _uniform(
-                -scale * cfg.target_yaw_jitter,
-                scale * cfg.target_yaw_jitter,
-                (count,),
-                device=self.device,
-                generator=self.generator,
+            translation, yaw = sample_pose(
+                cfg.target_position_jitter_xy, cfg.target_yaw_jitter
             )
             if cfg.action_delay_max_steps:
                 delay = (
@@ -222,6 +381,18 @@ class GpuDomainRandomizer:
             translation = torch.zeros(count, 2, device=self.device)
             yaw = torch.zeros(count, device=self.device)
             delay = torch.zeros(count, dtype=torch.long, device=self.device)
+
+        destination_translation, destination_yaw = sample_pose(
+            cfg.destination_position_jitter_xy, cfg.destination_yaw_jitter
+        )
+        distractor_translation, distractor_yaw = sample_pose(
+            cfg.distractor_position_jitter_xy,
+            cfg.distractor_yaw_jitter,
+            len(self.distractor_qpos_addresses),
+        )
+        base_translation, base_yaw = sample_pose(
+            cfg.robot_base_position_jitter_xy, cfg.robot_base_yaw_jitter
+        )
 
         model = self.sim.model
         model.body_mass[env_ids, self.target_body_id] = (
@@ -253,33 +424,45 @@ class GpuDomainRandomizer:
         )
         self.controller.actuator_strength_scale[env_ids] = strength_scale
         self.action_delay_steps[env_ids] = delay
+        self.target_mass_scale[env_ids] = mass_scale
+        self.friction_scale[env_ids] = friction_scale.flatten()
+        self.joint_damping_scale[env_ids] = damping_scale
+        self.actuator_strength_scale[env_ids] = strength_scale
         self.target_translation_xy[env_ids] = translation
         self.target_yaw[env_ids] = yaw
+        self.destination_translation_xy[env_ids] = destination_translation
+        self.destination_yaw[env_ids] = destination_yaw
+        self.distractor_translation_xy[env_ids] = distractor_translation
+        self.distractor_yaw[env_ids] = distractor_yaw
+        self.robot_base_translation_xy[env_ids] = base_translation
+        self.robot_base_yaw[env_ids] = base_yaw
 
         qpos = self.sim.data.qpos
-        address = self.target_qpos_address
-        qpos[env_ids, address : address + 2] += translation
-        base_quaternion = qpos[env_ids, address + 3 : address + 7].clone()
-        half_yaw = 0.5 * yaw
-        yaw_quaternion = torch.stack(
-            (
-                half_yaw.cos(),
-                torch.zeros_like(yaw),
-                torch.zeros_like(yaw),
-                half_yaw.sin(),
-            ),
-            dim=-1,
+        _apply_free_joint_pose(
+            qpos, env_ids, self.target_qpos_address, translation, yaw
         )
-        bw, bx, by, bz = base_quaternion.unbind(-1)
-        yw, _, _, yz = yaw_quaternion.unbind(-1)
-        qpos[env_ids, address + 3 : address + 7] = torch.stack(
-            (
-                yw * bw - yz * bz,
-                yw * bx - yz * by,
-                yw * by + yz * bx,
-                yw * bz + yz * bw,
-            ),
-            dim=-1,
+        if self.destination_qpos_address is not None:
+            _apply_free_joint_pose(
+                qpos,
+                env_ids,
+                self.destination_qpos_address,
+                destination_translation,
+                destination_yaw,
+            )
+        for slot, address in enumerate(self.distractor_qpos_addresses):
+            _apply_free_joint_pose(
+                qpos,
+                env_ids,
+                address,
+                distractor_translation[:, slot],
+                distractor_yaw[:, slot],
+            )
+        _apply_free_joint_pose(
+            qpos,
+            env_ids,
+            self.robot_base_qpos_address,
+            base_translation,
+            base_yaw,
         )
         self.sim.recompute_constants(RecomputeLevel.set_const)
         self.sim.forward()
