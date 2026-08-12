@@ -7,6 +7,10 @@ cd "${repo_root}"
 stage="${1:-verify}"
 physical_gpu="${SIMPLE_PPO_GPU:-0}"
 training_seed="${SIMPLE_PPO_SEED:-20260812}"
+# Keep the new interior curriculum reproducible by default without changing
+# the seed used by any of the pre-existing PPO stages.  An explicit global
+# seed still overrides this default for backwards-compatible automation.
+interior_training_seed="${SIMPLE_PPO_INTERIOR_SEED:-${SIMPLE_PPO_SEED:-20260824}}"
 evaluation_seed="${SIMPLE_PPO_EVAL_SEED:-20260813}"
 acceptance_envs="${SIMPLE_PPO_ACCEPTANCE_ENVS:-512}"
 acceptance_minimum="${SIMPLE_PPO_ACCEPTANCE_MINIMUM:-0.98}"
@@ -24,12 +28,36 @@ run_dr02="${run_root}/v_object_reward3_search_best_single_ep82_seed${training_se
 run_dr02_correlated="${run_root}/v_object_reward3_search_best_single_ep82_seed${training_seed}_env8192_roll24_dr02_corr8_std01_warm_model10_20"
 run_dr04_pose="${run_root}/v_object_reward3_search_best_single_ep82_seed${training_seed}_env8192_roll24_dr04_pose_lownoise_warm_model10_20"
 run_dr04_focused="${run_root}/v_object_reward3_search_best_single_ep82_seed${training_seed}_env8192_roll24_dr04_pose_center008_lr05_warm_model10_20"
+interior_stage_root="${run_root}/v_object_reward3_single_ep82_interior_x008_020_y010_seed${interior_training_seed}_env8192_roll24"
+run_interior_s010="${interior_stage_root}_fixed_s010_20"
+run_interior_s015="${interior_stage_root}_fixed_s015_20"
+run_interior_s020="${interior_stage_root}_fixed_s020_20"
+frontier_label="${SIMPLE_PPO_FRONTIER_LABEL:-s017x_g75_std02_lr05_focus50}"
+frontier_iterations="${SIMPLE_PPO_FRONTIER_ITERATIONS:-12}"
+run_interior_frontier="${SIMPLE_PPO_FRONTIER_OUTPUT:-${interior_stage_root}_frontier_${frontier_label}_${frontier_iterations}}"
+run_interior_s030="${interior_stage_root}_fixed_s030_20"
+run_interior_s040="${interior_stage_root}_fixed_s040_20"
+run_interior_s060="${interior_stage_root}_fixed_s060_20"
+run_interior_s080="${interior_stage_root}_fixed_s080_20"
+run_interior="${interior_stage_root}_fixed_s100_100"
 run_multi="${run_root}/v_object_reward2_multi_ref_balanced_wide_seed${training_seed}_env12288_roll24_5000"
 run_single="${run_bootstrap}"
 checkpoint_bootstrap="${SIMPLE_PPO_CHECKPOINT_BOOTSTRAP:-${run_bootstrap}/model_19.pt}"
 checkpoint_dr02="${SIMPLE_PPO_CHECKPOINT_DR02:-${run_dr02}/model_10.pt}"
 checkpoint_dr04_pose="${SIMPLE_PPO_CHECKPOINT_DR04_POSE:-${run_dr04_pose}/model_19.pt}"
 checkpoint_cup6_candidate="${SIMPLE_PPO_CHECKPOINT_CUP6_CANDIDATE:-${run_root}/v_object_reward3_anchor10_mix_global80_focus20_x000_010_y002_010_seed20260818_env8192_roll24_dr02_lr01_fixed_warm_model10_40/model_39.pt}"
+checkpoint_interior_s010="${SIMPLE_PPO_CHECKPOINT_INTERIOR_S010:-${run_interior_s010}/model_19.pt}"
+# Fixed 512-world evaluation selected model_10 (76.76%) over model_19
+# (76.37%) for curriculum promotion.  The environment seed is unchanged.
+checkpoint_interior_s015="${SIMPLE_PPO_CHECKPOINT_INTERIOR_S015:-${run_interior_s015}/model_10.pt}"
+checkpoint_interior_s020="${SIMPLE_PPO_CHECKPOINT_INTERIOR_S020:-${run_interior_s020}/model_19.pt}"
+checkpoint_interior_frontier="${SIMPLE_PPO_CHECKPOINT_INTERIOR_FRONTIER:-${run_interior_frontier}/model_$((frontier_iterations - 1)).pt}"
+checkpoint_interior_frontier_warm_start="${SIMPLE_PPO_CHECKPOINT_INTERIOR_FRONTIER_WARM_START:-${checkpoint_interior_s015}}"
+checkpoint_interior_s030="${SIMPLE_PPO_CHECKPOINT_INTERIOR_S030:-${run_interior_s030}/model_19.pt}"
+checkpoint_interior_s040="${SIMPLE_PPO_CHECKPOINT_INTERIOR_S040:-${run_interior_s040}/model_19.pt}"
+checkpoint_interior_s060="${SIMPLE_PPO_CHECKPOINT_INTERIOR_S060:-${run_interior_s060}/model_19.pt}"
+checkpoint_interior_s080="${SIMPLE_PPO_CHECKPOINT_INTERIOR_S080:-${run_interior_s080}/model_19.pt}"
+checkpoint_interior="${SIMPLE_PPO_CHECKPOINT_INTERIOR:-${run_interior}/model_99.pt}"
 checkpoint_multi="${SIMPLE_PPO_CHECKPOINT_MULTI:-${run_multi}/model_4999.pt}"
 checkpoint_single="${SIMPLE_PPO_CHECKPOINT_SINGLE:-${run_single}/model_4999.pt}"
 ppo_dataset="data/ppo/G1WholebodyGraspAnythingPhysicalPPO-v0/${object_id}"
@@ -214,6 +242,257 @@ cup6_candidate_common=(
 
 cup6_candidate_release="${run_root}/release_single_ref_ep82_dr02_xonly_s12p5_e4"
 
+# The source trajectory places the Cup_6 center at x=-0.313 m, only 12 mm
+# inside the table edge.  At full curriculum strength this profile moves the
+# cup into a safe, reachable interior rectangle: x offset +0.08..+0.20 m and
+# y offset -0.10..+0.10 m.  Scaling both the center and jitter makes the first
+# training worlds overlap the accepted policy before PPO expands the reach.
+interior_center_x=0.14
+interior_center_y=0.0
+interior_jitter_x=0.06
+interior_jitter_y=0.10
+interior_common=(
+  --task grasp_anything
+  --asset-bundle "${asset_single}"
+  --reference-processed "${processed_single}"
+  --strict-reference-episode 82
+  --device cuda:0
+  --seed "${interior_training_seed}"
+  --max-reference-initial-position-offset 0.08
+  --reference-reward-weight 0.005
+  --max-reference-action-deviation 0.7
+  --dr-initial-strength 1
+  --dr-warmup-steps 0
+  --dr-ramp-steps 1
+  --dr-profile pose_only
+  --target-position-jitter-xy "${interior_jitter_x}" "${interior_jitter_y}"
+  --target-position-offset-center-xy "${interior_center_x}" "${interior_center_y}"
+  --target-yaw-jitter 0.15
+  --destination-position-jitter-xy 0 0
+  --destination-yaw-jitter 0
+  --distractor-position-jitter-xy 0 0
+  --distractor-yaw-jitter 0
+  --robot-base-position-jitter-xy 0 0
+  --robot-base-yaw-jitter 0
+  # The accepted small-DR proposal (-12.5, 4.0) over-corrects in this
+  # one-sided interior workspace.  A fixed 512-world scan selected this milder
+  # proposal; PPO still owns the residual adaptation for each observed pose.
+  --reference-target-x-arm-gains -7.5 2.4
+  --reference-target-y-arm-gains 0 0
+)
+
+interior_s010_pose=(
+  --target-position-jitter-xy 0.006 0.010
+  --target-position-offset-center-xy 0.014 0
+  --target-yaw-jitter 0.015
+)
+interior_s015_pose=(
+  --target-position-jitter-xy 0.009 0.015
+  --target-position-offset-center-xy 0.021 0
+  --target-yaw-jitter 0.0225
+)
+interior_s020_pose=(
+  --target-position-jitter-xy 0.012 0.020
+  --target-position-offset-center-xy 0.028 0
+  --target-yaw-jitter 0.030
+)
+# Move the difficult X frontier by only 2 mm while preserving half of each
+# training batch in the accepted s015 distribution.  Evaluation remains
+# uniform over the new 0.014..0.032 m X interval, so the focus mixture cannot
+# inflate the acceptance result.
+interior_frontier_s017x_pose=(
+  --target-position-jitter-xy
+    "${SIMPLE_PPO_FRONTIER_X_JITTER:-0.009}"
+    "${SIMPLE_PPO_FRONTIER_Y_JITTER:-0.015}"
+  --target-position-offset-center-xy
+    "${SIMPLE_PPO_FRONTIER_X_CENTER:-0.023}" 0
+  --target-position-focus-probability "${SIMPLE_PPO_FRONTIER_FOCUS_PROBABILITY:-0.50}"
+  --target-position-focus-jitter-xy
+    "${SIMPLE_PPO_FRONTIER_FOCUS_X_JITTER:-0.009}"
+    "${SIMPLE_PPO_FRONTIER_FOCUS_Y_JITTER:-0.015}"
+  --target-position-focus-offset-center-xy
+    "${SIMPLE_PPO_FRONTIER_FOCUS_X_CENTER:-0.021}" 0
+  --target-yaw-jitter "${SIMPLE_PPO_FRONTIER_YAW_JITTER:-0.0225}"
+)
+interior_frontier_s017x_eval_pose=(
+  --target-position-jitter-xy
+    "${SIMPLE_PPO_FRONTIER_X_JITTER:-0.009}"
+    "${SIMPLE_PPO_FRONTIER_Y_JITTER:-0.015}"
+  --target-position-offset-center-xy
+    "${SIMPLE_PPO_FRONTIER_X_CENTER:-0.023}" 0
+  --target-position-focus-probability 0
+  --target-yaw-jitter "${SIMPLE_PPO_FRONTIER_YAW_JITTER:-0.0225}"
+)
+interior_s030_pose=(
+  --target-position-jitter-xy 0.018 0.030
+  --target-position-offset-center-xy 0.042 0
+  --target-yaw-jitter 0.045
+)
+interior_s040_pose=(
+  --target-position-jitter-xy 0.024 0.040
+  --target-position-offset-center-xy 0.056 0
+  --target-yaw-jitter 0.060
+)
+interior_s060_pose=(
+  --target-position-jitter-xy 0.036 0.060
+  --target-position-offset-center-xy 0.084 0
+  --target-yaw-jitter 0.090
+)
+interior_s080_pose=(
+  --target-position-jitter-xy 0.048 0.080
+  --target-position-offset-center-xy 0.112 0
+  --target-yaw-jitter 0.120
+)
+interior_s100_pose=(
+  --target-position-jitter-xy 0.060 0.100
+  --target-position-offset-center-xy 0.140 0
+  --target-yaw-jitter 0.150
+)
+
+train_interior=(
+  --learning-rate 0.0003
+  --actor-learning-rate-scale 0.02
+  --schedule fixed
+  --exploration-std 0.01
+  --exploration-hold-steps 8
+  --ppo-clip-param 0.05
+  --ppo-learning-epochs 2
+  --ppo-max-grad-norm 0.2
+  --ppo-steps-per-env 24
+  --save-interval 5
+)
+
+train_interior_frontier=(
+  --learning-rate 0.0003
+  --actor-learning-rate-scale "${SIMPLE_PPO_FRONTIER_ACTOR_LR_SCALE:-0.05}"
+  --schedule fixed
+  --exploration-std "${SIMPLE_PPO_FRONTIER_EXPLORATION_STD:-0.02}"
+  --exploration-hold-steps 8
+  --ppo-clip-param 0.05
+  --ppo-learning-epochs 2
+  --ppo-max-grad-norm 0.2
+  --ppo-steps-per-env 24
+  --save-interval 4
+)
+
+interior_frontier_x_gains=(
+  "${SIMPLE_PPO_FRONTIER_X_SHOULDER_GAIN:--7.5}"
+  "${SIMPLE_PPO_FRONTIER_X_ELBOW_GAIN:-2.4}"
+)
+
+train_fixed_interior_stage() {
+  local output="$1"
+  local warm_start="$2"
+  local iterations="$3"
+  local pose_name="$4"
+  local -n pose_args="${pose_name}"
+  verify_interior_workspace
+  require_fresh_training_output "${output}"
+  "${gpu_cli[@]}" train "${interior_common[@]}" "${pose_args[@]}" \
+    "${train_interior[@]}" \
+    --output "${output}" \
+    --warm-start "${warm_start}" \
+    --warm-start-critic \
+    --num-envs 8192 \
+    --iterations "${iterations}"
+}
+
+require_fresh_training_output() {
+  local output="$1"
+  if [[ -d "${output}" ]] && [[ -z "$(find "${output}" -mindepth 1 -print -quit)" ]]; then
+    return
+  fi
+  if [[ -e "${output}" ]]; then
+    echo "refusing to overwrite existing PPO output: ${output}" >&2
+    echo "choose a new stage/label or explicitly point at the existing checkpoint" >&2
+    exit 1
+  fi
+}
+
+evaluate_fixed_interior_stage() {
+  local checkpoint="$1"
+  local output="$2"
+  local pose_name="$3"
+  local minimum="$4"
+  local effective_output="${SIMPLE_PPO_ACCEPTANCE_OUTPUT:-${output}}"
+  local effective_minimum="${SIMPLE_PPO_MINIMUM_SUCCESS_RATE:-${minimum}}"
+  local -n pose_args="${pose_name}"
+  mkdir -p "$(dirname "${effective_output}")"
+  "${gpu_cli[@]}" evaluate "${interior_common[@]}" "${pose_args[@]}" \
+    --checkpoint "${checkpoint}" \
+    --seed "${evaluation_seed}" \
+    --num-envs "${acceptance_envs}" \
+    --episodes "${acceptance_envs}" \
+    --evaluation-dr-strength 1 \
+    --minimum-success-rate "${effective_minimum}" \
+    --smoke | tee "${effective_output}"
+}
+
+verify_interior_workspace() {
+  local center_x="${1:-${interior_center_x}}"
+  local center_y="${2:-${interior_center_y}}"
+  local jitter_x="${3:-${interior_jitter_x}}"
+  local jitter_y="${4:-${interior_jitter_y}}"
+  local minimum_margin="${5:-0.03}"
+  uv run --no-sync python - \
+    "${asset_single}" \
+    "${center_x}" "${center_y}" \
+    "${jitter_x}" "${jitter_y}" "${minimum_margin}" <<'PY'
+import json
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+asset_root = Path(sys.argv[1])
+center_x, center_y, jitter_x, jitter_y, minimum_margin = map(float, sys.argv[2:])
+manifest = json.loads((asset_root / "manifest.json").read_text())
+root = ET.parse(asset_root / "scene.xml").getroot()
+table_body = root.find(".//body[@name='table']")
+if table_body is None:
+    raise SystemExit("Cup_6 scene is missing the table body")
+table_geom = table_body.find("geom[@name='table_geom']")
+if table_geom is None:
+    raise SystemExit("Cup_6 scene is missing table_geom")
+
+table_center = [float(value) for value in table_body.attrib["pos"].split()[:2]]
+table_half = [float(value) for value in table_geom.attrib["size"].split()[:2]]
+object_center = [float(value) for value in manifest["reset"]["initial_object_pos"][:2]]
+object_half = [float(value) for value in manifest["object_contract"]["half_extents_m"][:2]]
+offset_bounds = (
+    (center_x - jitter_x, center_x + jitter_x),
+    (center_y - jitter_y, center_y + jitter_y),
+)
+object_bounds = tuple(
+    (object_center[axis] + offset_bounds[axis][0],
+     object_center[axis] + offset_bounds[axis][1])
+    for axis in range(2)
+)
+table_bounds = tuple(
+    (table_center[axis] - table_half[axis],
+     table_center[axis] + table_half[axis])
+    for axis in range(2)
+)
+margins = {
+    "x_min": object_bounds[0][0] - object_half[0] - table_bounds[0][0],
+    "x_max": table_bounds[0][1] - object_bounds[0][1] - object_half[0],
+    "y_min": object_bounds[1][0] - object_half[1] - table_bounds[1][0],
+    "y_max": table_bounds[1][1] - object_bounds[1][1] - object_half[1],
+}
+if min(margins.values()) < minimum_margin:
+    raise SystemExit(
+        f"interior workspace violates {minimum_margin:.3f} m table margin: {margins}"
+    )
+print(json.dumps({
+    "target_offset_bounds_xy_m": offset_bounds,
+    "target_center_bounds_xy_m": object_bounds,
+    "table_bounds_xy_m": table_bounds,
+    "object_half_extents_xy_m": object_half,
+    "table_edge_margins_m": margins,
+    "minimum_required_margin_m": minimum_margin,
+}, indent=2))
+PY
+}
+
 verify_contract() {
   uv run --no-sync python - "${asset}" "${processed_multi}" <<'PY'
 import hashlib
@@ -373,6 +652,9 @@ case "${stage}" in
         --bundle "${asset_single}"
     fi
     ;;
+  verify_interior_workspace)
+    verify_interior_workspace
+    ;;
   reference_smoke64)
     verify_contract
     "${gpu_cli[@]}" evaluate "${common_multi[@]}" \
@@ -526,6 +808,160 @@ case "${stage}" in
         --smoke | tee "${cup6_candidate_release}/acceptance/seed${seed}_dr02_512.json"
     done
     ;;
+  smoke64_interior)
+    verify_interior_workspace
+    "${gpu_cli[@]}" train "${interior_common[@]}" "${interior_s010_pose[@]}" \
+      "${train_interior[@]}" \
+      --output "${run_interior_s010}_smoke64" \
+      --warm-start "${checkpoint_cup6_candidate}" \
+      --warm-start-critic \
+      --num-envs 64 \
+      --iterations 1 \
+      --smoke
+    ;;
+  train_interior_s010)
+    train_fixed_interior_stage "${run_interior_s010}" \
+      "${checkpoint_cup6_candidate}" 20 interior_s010_pose
+    ;;
+  train_interior_s015)
+    train_fixed_interior_stage "${run_interior_s015}" \
+      "${checkpoint_interior_s010}" 20 interior_s015_pose
+    ;;
+  train_interior_s020)
+    train_fixed_interior_stage "${run_interior_s020}" \
+      "${checkpoint_interior_s015}" 20 interior_s020_pose
+    ;;
+  train_interior_frontier_s017x)
+    verify_interior_workspace \
+      "${SIMPLE_PPO_FRONTIER_X_CENTER:-0.023}" 0 \
+      "${SIMPLE_PPO_FRONTIER_X_JITTER:-0.009}" \
+      "${SIMPLE_PPO_FRONTIER_Y_JITTER:-0.015}" \
+      "${SIMPLE_PPO_FRONTIER_MIN_TABLE_MARGIN:--0.03}"
+    require_fresh_training_output "${run_interior_frontier}"
+    "${gpu_cli[@]}" train "${interior_common[@]}" \
+      --reference-target-x-arm-gains "${interior_frontier_x_gains[@]}" \
+      "${interior_frontier_s017x_pose[@]}" \
+      "${train_interior_frontier[@]}" \
+      --output "${run_interior_frontier}" \
+      --warm-start "${checkpoint_interior_frontier_warm_start}" \
+      --warm-start-critic \
+      --num-envs 8192 \
+      --iterations "${frontier_iterations}"
+    ;;
+  train_interior_s030)
+    train_fixed_interior_stage "${run_interior_s030}" \
+      "${checkpoint_interior_s020}" 20 interior_s030_pose
+    ;;
+  train_interior_s040)
+    train_fixed_interior_stage "${run_interior_s040}" \
+      "${checkpoint_interior_s030}" 20 interior_s040_pose
+    ;;
+  train_interior_s060)
+    train_fixed_interior_stage "${run_interior_s060}" \
+      "${checkpoint_interior_s040}" 20 interior_s060_pose
+    ;;
+  train_interior_s080)
+    train_fixed_interior_stage "${run_interior_s080}" \
+      "${checkpoint_interior_s060}" 20 interior_s080_pose
+    ;;
+  train_interior_s100)
+    train_fixed_interior_stage "${run_interior}" \
+      "${checkpoint_interior_s080}" 100 interior_s100_pose
+    ;;
+  accept_interior_s010)
+    evaluate_fixed_interior_stage "${checkpoint_interior_s010}" \
+      "${run_interior_s010}/acceptance/seed20260824_s010_512.json" \
+      interior_s010_pose 0.85
+    ;;
+  accept_interior_s015)
+    evaluate_fixed_interior_stage "${checkpoint_interior_s015}" \
+      "${run_interior_s015}/acceptance/seed20260824_s015_512.json" \
+      interior_s015_pose 0.75
+    ;;
+  accept_interior_s020)
+    evaluate_fixed_interior_stage "${checkpoint_interior_s020}" \
+      "${run_interior_s020}/acceptance/seed20260824_s020_512.json" \
+      interior_s020_pose 0.70
+    ;;
+  accept_interior_frontier_s017x)
+    verify_interior_workspace \
+      "${SIMPLE_PPO_FRONTIER_X_CENTER:-0.023}" 0 \
+      "${SIMPLE_PPO_FRONTIER_X_JITTER:-0.009}" \
+      "${SIMPLE_PPO_FRONTIER_Y_JITTER:-0.015}" \
+      "${SIMPLE_PPO_FRONTIER_MIN_TABLE_MARGIN:--0.03}"
+    original_interior_common=("${interior_common[@]}")
+    interior_common+=(
+      --reference-target-x-arm-gains "${interior_frontier_x_gains[@]}"
+    )
+    evaluate_fixed_interior_stage "${checkpoint_interior_frontier}" \
+      "${run_interior_frontier}/acceptance/seed20260824_frontier_512.json" \
+      interior_frontier_s017x_eval_pose 0.70
+    interior_common=("${original_interior_common[@]}")
+    ;;
+  accept_interior_s030)
+    evaluate_fixed_interior_stage "${checkpoint_interior_s030}" \
+      "${run_interior_s030}/acceptance/seed20260824_s030_512.json" \
+      interior_s030_pose 0.65
+    ;;
+  accept_interior_s040)
+    evaluate_fixed_interior_stage "${checkpoint_interior_s040}" \
+      "${run_interior_s040}/acceptance/seed20260824_s040_512.json" \
+      interior_s040_pose 0.60
+    ;;
+  accept_interior_s060)
+    evaluate_fixed_interior_stage "${checkpoint_interior_s060}" \
+      "${run_interior_s060}/acceptance/seed20260824_s060_512.json" \
+      interior_s060_pose 0.55
+    ;;
+  accept_interior_s080)
+    evaluate_fixed_interior_stage "${checkpoint_interior_s080}" \
+      "${run_interior_s080}/acceptance/seed20260824_s080_512.json" \
+      interior_s080_pose 0.50
+    ;;
+  train_interior_curriculum)
+    "${BASH_SOURCE[0]}" train_interior_s010
+    "${BASH_SOURCE[0]}" accept_interior_s010
+    "${BASH_SOURCE[0]}" train_interior_s015
+    "${BASH_SOURCE[0]}" accept_interior_s015
+    "${BASH_SOURCE[0]}" train_interior_s020
+    "${BASH_SOURCE[0]}" accept_interior_s020
+    "${BASH_SOURCE[0]}" train_interior_s030
+    "${BASH_SOURCE[0]}" accept_interior_s030
+    "${BASH_SOURCE[0]}" train_interior_s040
+    "${BASH_SOURCE[0]}" accept_interior_s040
+    "${BASH_SOURCE[0]}" train_interior_s060
+    "${BASH_SOURCE[0]}" accept_interior_s060
+    "${BASH_SOURCE[0]}" train_interior_s080
+    "${BASH_SOURCE[0]}" accept_interior_s080
+    "${BASH_SOURCE[0]}" train_interior_s100
+    ;;
+  interior_acceptance)
+    verify_interior_workspace
+    mkdir -p "${run_interior}/acceptance"
+    for seed in 20260824 20260825 20260826; do
+      "${gpu_cli[@]}" evaluate "${interior_common[@]}" "${interior_s100_pose[@]}" \
+        --checkpoint "${checkpoint_interior}" \
+        --seed "${seed}" \
+        --num-envs 512 \
+        --episodes 512 \
+        --evaluation-dr-strength 1 \
+        --minimum-success-rate 0.85 \
+        --smoke | tee "${run_interior}/acceptance/seed${seed}_interior_dr1_512.json"
+    done
+    ;;
+  record_interior)
+    verify_interior_workspace
+    "${gpu_cli[@]}" record "${interior_common[@]}" "${interior_s100_pose[@]}" \
+      --checkpoint "${checkpoint_interior}" \
+      --output-dir "${run_interior}/videos_interior_dr1" \
+      --seed 20260825 \
+      --num-envs 32 \
+      --videos 6 \
+      --max-attempts 300 \
+      --camera-view grasp_closeup \
+      --evaluation-dr-strength 1 \
+      --smoke
+    ;;
   train5000_multi_warmstart)
     verify_contract
     "${gpu_cli[@]}" train "${common_multi[@]}" "${train_core[@]}" \
@@ -599,7 +1035,7 @@ case "${stage}" in
     audit_dataset_split production 500 --require-full-dr-coverage
     ;;
   *)
-    echo "usage: $0 {derive_assets|derive_assets_single|prepare_single|verify|reference_smoke64|smoke64_multi|smoke64_single|capacity12288_multi|capacity12288_single|bootstrap_smoke64|bootstrap20|bootstrap200|bootstrap_acceptance|train20_dr02_warmstart|smoke64_dr02_correlated_warmstart|train20_dr02_correlated_warmstart|train20_dr04_pose_warmstart|smoke64_dr04_focused_warmstart|train20_dr04_focused_warmstart|dr02_acceptance|dr04_pose_acceptance|cup6_candidate_acceptance|train5000_multi_warmstart|train5000_multi|train5000_single|acceptance_multi|acceptance_single|record_multi|record_cup6_candidate|dataset_review1|dataset_production500|dataset_all}" >&2
+    echo "usage: $0 {derive_assets|derive_assets_single|prepare_single|verify|verify_interior_workspace|reference_smoke64|smoke64_multi|smoke64_single|capacity12288_multi|capacity12288_single|bootstrap_smoke64|bootstrap20|bootstrap200|bootstrap_acceptance|train20_dr02_warmstart|smoke64_dr02_correlated_warmstart|train20_dr02_correlated_warmstart|train20_dr04_pose_warmstart|smoke64_dr04_focused_warmstart|train20_dr04_focused_warmstart|dr02_acceptance|dr04_pose_acceptance|cup6_candidate_acceptance|smoke64_interior|train_interior_s010|train_interior_s015|train_interior_s020|train_interior_frontier_s017x|train_interior_s030|train_interior_s040|train_interior_s060|train_interior_s080|train_interior_s100|accept_interior_s010|accept_interior_s015|accept_interior_s020|accept_interior_frontier_s017x|accept_interior_s030|accept_interior_s040|accept_interior_s060|accept_interior_s080|train_interior_curriculum|interior_acceptance|record_interior|train5000_multi_warmstart|train5000_multi|train5000_single|acceptance_multi|acceptance_single|record_multi|record_cup6_candidate|dataset_review1|dataset_production500|dataset_all}" >&2
     exit 2
     ;;
 esac
