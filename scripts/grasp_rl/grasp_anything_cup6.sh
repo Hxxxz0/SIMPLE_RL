@@ -379,6 +379,10 @@ interior_frontier_x_gains=(
   "${SIMPLE_PPO_FRONTIER_X_SHOULDER_GAIN:--7.5}"
   "${SIMPLE_PPO_FRONTIER_X_ELBOW_GAIN:-2.4}"
 )
+interior_frontier_y_gains=(
+  "${SIMPLE_PPO_FRONTIER_Y_SHOULDER_GAIN:-0}"
+  "${SIMPLE_PPO_FRONTIER_Y_WRIST_GAIN:-0}"
+)
 
 train_fixed_interior_stage() {
   local output="$1"
@@ -840,6 +844,7 @@ case "${stage}" in
     require_fresh_training_output "${run_interior_frontier}"
     "${gpu_cli[@]}" train "${interior_common[@]}" \
       --reference-target-x-arm-gains "${interior_frontier_x_gains[@]}" \
+      --reference-target-y-arm-gains "${interior_frontier_y_gains[@]}" \
       "${interior_frontier_s017x_pose[@]}" \
       "${train_interior_frontier[@]}" \
       --output "${run_interior_frontier}" \
@@ -892,6 +897,7 @@ case "${stage}" in
     original_interior_common=("${interior_common[@]}")
     interior_common+=(
       --reference-target-x-arm-gains "${interior_frontier_x_gains[@]}"
+      --reference-target-y-arm-gains "${interior_frontier_y_gains[@]}"
     )
     evaluate_fixed_interior_stage "${checkpoint_interior_frontier}" \
       "${run_interior_frontier}/acceptance/seed20260824_frontier_512.json" \

@@ -48,6 +48,89 @@ def test_stage_focuses_new_x_slab(tmp_path: Path) -> None:
     assert environment["SIMPLE_PPO_FRONTIER_X_JITTER"] == "0.010000000"
     assert environment["SIMPLE_PPO_FRONTIER_FOCUS_X_CENTER"] == "0.031500000"
     assert environment["SIMPLE_PPO_FRONTIER_FOCUS_X_JITTER"] == "0.002500000"
+    assert environment["SIMPLE_PPO_FRONTIER_Y_SHOULDER_GAIN"] == "0"
+    assert environment["SIMPLE_PPO_FRONTIER_Y_WRIST_GAIN"] == "0"
+
+
+def _failed_boundary_gate() -> dict:
+    return {
+        "passed": False,
+        "envelope_passed": True,
+        "frontier": {"passed": False, "pooled_success_rate": 0.38},
+        "new_slice": {"passed": False, "pooled_success_rate": 0.18},
+    }
+
+
+def test_half_millimetre_boundary_failure_stalls_before_minimum_probe() -> None:
+    state = {
+        "accepted": {"x_upper_m": 0.039},
+        "curriculum": {"minimum_step_m": 0.00025},
+    }
+    event = {
+        "event": "attempt_rejected",
+        "label": "stage7",
+        "candidate_x_upper_m": 0.0395,
+        "next_step_m": 0.00025,
+        "gate": _failed_boundary_gate(),
+    }
+
+    stall = ADAPTIVE_X._frontier_stall_from_event(state, event)
+
+    assert stall is not None
+    assert stall["boundary_x_m"] == 0.039
+    assert stall["recommended_action"] == "proposal_experiment"
+
+
+def test_minimum_step_failure_does_not_relabel_as_frontier_stall() -> None:
+    state = {
+        "accepted": {"x_upper_m": 0.039},
+        "curriculum": {"minimum_step_m": 0.00025},
+    }
+    event = {
+        "event": "attempt_rejected",
+        "label": "minimum-probe",
+        "candidate_x_upper_m": 0.03925,
+        "next_step_m": 0.00025,
+        "gate": _failed_boundary_gate(),
+    }
+
+    assert ADAPTIVE_X._frontier_stall_from_event(state, event) is None
+
+
+def test_reconcile_stall_uses_existing_evidence_without_changing_accepted(
+    tmp_path: Path,
+) -> None:
+    state = _runtime_state(tmp_path)
+    state["accepted"]["x_upper_m"] = 0.039
+    state["curriculum"]["step_m"] = 0.00025
+    state["curriculum"]["minimum_step_m"] = 0.00025
+    state["active_attempt"] = None
+    accepted = dict(state["accepted"])
+    state_path = tmp_path / "state.json"
+    history_path = tmp_path / "history.jsonl"
+    state_path.write_text(json.dumps(state))
+    history_path.write_text(
+        json.dumps(
+            {
+                "event": "attempt_rejected",
+                "label": "stage7",
+                "candidate_x_upper_m": 0.0395,
+                "next_step_m": 0.00025,
+                "gate": _failed_boundary_gate(),
+            }
+        )
+        + "\n"
+    )
+
+    changed = ADAPTIVE_X._reconcile_frontier_stall(
+        state, state_path, history_path
+    )
+
+    persisted = json.loads(state_path.read_text())
+    assert changed
+    assert persisted["status"] == "frontier_stalled"
+    assert persisted["accepted"] == accepted
+    assert persisted["frontier_stall"]["failed_attempt"] == "stage7"
 
 
 def test_frontier_evaluation_covers_trailing_band(tmp_path: Path) -> None:

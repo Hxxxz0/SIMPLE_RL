@@ -380,6 +380,8 @@ def _stage_environment(state: dict[str, Any], attempt: dict[str, Any]) -> dict[s
         "SIMPLE_PPO_FRONTIER_ACTOR_LR_SCALE": "0.05",
         "SIMPLE_PPO_FRONTIER_X_SHOULDER_GAIN": "-7.5",
         "SIMPLE_PPO_FRONTIER_X_ELBOW_GAIN": "2.4",
+        "SIMPLE_PPO_FRONTIER_Y_SHOULDER_GAIN": "0",
+        "SIMPLE_PPO_FRONTIER_Y_WRIST_GAIN": "0",
         "SIMPLE_PPO_FRONTIER_MIN_TABLE_MARGIN": "-0.03",
         "SIMPLE_PPO_CHECKPOINT_INTERIOR_FRONTIER_WARM_START": str(
             attempt["warm_start"]
@@ -434,6 +436,72 @@ def _record(
     event = {"timestamp": state["updated_at"], **event}
     _append_history(history_path, event)
     _atomic_write_json(state_path, state)
+
+
+def _frontier_stall_from_event(
+    state: dict[str, Any], event: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Describe a structural boundary stall without changing the trust root."""
+
+    if event.get("event") != "attempt_rejected":
+        return None
+    gate = event.get("gate")
+    if not isinstance(gate, dict) or not bool(gate.get("envelope_passed")):
+        return None
+    frontier = gate.get("frontier")
+    new_slice = gate.get("new_slice")
+    if not isinstance(frontier, dict) or not isinstance(new_slice, dict):
+        return None
+    if bool(frontier.get("passed")) and bool(new_slice.get("passed")):
+        return None
+    minimum_step = float(state["curriculum"]["minimum_step_m"])
+    next_step = float(event.get("next_step_m", math.inf))
+    candidate = float(event["candidate_x_upper_m"])
+    accepted_upper = float(state["accepted"]["x_upper_m"])
+    attempted_step = candidate - accepted_upper
+    if attempted_step <= minimum_step + 1e-12:
+        return None
+    if attempted_step > 2 * minimum_step + 1e-12:
+        return None
+    if next_step > minimum_step + 1e-12:
+        return None
+    return {
+        "boundary_x_m": accepted_upper,
+        "candidate_x_upper_m": candidate,
+        "failed_attempt": str(event.get("label", "unknown")),
+        "reason": "boundary_gate_plateau",
+        "recommended_action": "proposal_experiment",
+        "gate": gate,
+    }
+
+
+def _reconcile_frontier_stall(
+    state: dict[str, Any], state_path: Path, history_path: Path
+) -> bool:
+    if state["status"] == "frontier_stalled":
+        return False
+    if not history_path.is_file():
+        raise FileNotFoundError(f"curriculum history does not exist: {history_path}")
+    events = [json.loads(line) for line in history_path.read_text().splitlines() if line]
+    stall = next(
+        (
+            candidate
+            for event in reversed(events)
+            if (candidate := _frontier_stall_from_event(state, event)) is not None
+        ),
+        None,
+    )
+    if stall is None:
+        return False
+    state["status"] = "frontier_stalled"
+    state["frontier_stall"] = stall
+    _record(
+        state,
+        state_path,
+        history_path,
+        {"event": "frontier_stalled", "frontier_stall": stall},
+    )
+    return True
 
 
 def _run_command(stage: str, environment: dict[str, str]) -> None:
@@ -1117,13 +1185,43 @@ def _run_attempt(
             "gate": gate,
         },
     )
+    if not gate["passed"]:
+        stall = _frontier_stall_from_event(
+            state,
+            {
+                "event": event_name,
+                "label": attempt["label"],
+                "candidate_x_upper_m": attempt["candidate_x_upper_m"],
+                "next_step_m": state["curriculum"]["step_m"],
+                "gate": gate,
+            },
+        )
+        if stall is not None:
+            state["status"] = "frontier_stalled"
+            state["frontier_stall"] = stall
+            _record(
+                state,
+                state_path,
+                history_path,
+                {"event": "frontier_stalled", "frontier_stall": stall},
+            )
     return bool(gate["passed"])
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("run", "status"), nargs="?", default="run")
+    parser.add_argument(
+        "action",
+        choices=("run", "status", "reconcile-stall"),
+        nargs="?",
+        default="run",
+    )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--force-minimum-step-probe",
+        action="store_true",
+        help="Explicitly run one minimum-step diagnostic after a frontier stall",
+    )
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument("--max-stages", type=int, default=1)
     parser.add_argument(
@@ -1207,7 +1305,21 @@ def main() -> None:
     if args.action == "status":
         print(json.dumps(state, indent=2, sort_keys=True))
         return
-    if state["status"] in {"reach_gate_complete", "minimum_step_failed"}:
+    if args.action == "reconcile-stall":
+        if not state_path.exists():
+            raise FileNotFoundError(f"curriculum state does not exist: {state_path}")
+        with _exclusive_lock(state_dir):
+            state = _load_state(state_path)
+            _reconcile_frontier_stall(state, state_path, history_path)
+        print(json.dumps(state, indent=2, sort_keys=True))
+        return
+    if state["status"] in {
+        "reach_gate_complete",
+        "minimum_step_failed",
+        "frontier_stalled",
+    } and not (
+        state["status"] == "frontier_stalled" and args.force_minimum_step_probe
+    ):
         print(json.dumps(state, indent=2, sort_keys=True))
         return
     if args.dry_run:
@@ -1229,8 +1341,26 @@ def main() -> None:
                 history_path,
                 {"event": "curriculum_initialized", "accepted": state["accepted"]},
             )
+        if state["status"] == "frontier_stalled":
+            if not args.force_minimum_step_probe:
+                print(json.dumps(state, indent=2, sort_keys=True))
+                return
+            state["status"] = "ready"
+            _record(
+                state,
+                state_path,
+                history_path,
+                {
+                    "event": "minimum_step_probe_forced",
+                    "frontier_stall": state.get("frontier_stall"),
+                },
+            )
         completed = 0
-        while state["status"] not in {"reach_gate_complete", "minimum_step_failed"}:
+        while state["status"] not in {
+            "reach_gate_complete",
+            "minimum_step_failed",
+            "frontier_stalled",
+        }:
             _run_attempt(state, state_path, history_path, state_dir)
             completed += 1
             if args.max_stages and completed >= args.max_stages:
