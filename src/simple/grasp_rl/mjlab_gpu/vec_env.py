@@ -11,6 +11,7 @@ from simple.grasp_rl.mjlab_gpu.amo import BatchedAmoController
 from simple.grasp_rl.mjlab_gpu.config import MjlabPpoConfig
 from simple.grasp_rl.mjlab_gpu.domain_randomization import GpuDomainRandomizer
 from simple.grasp_rl.mjlab_gpu.goal_reward import GpuGoalGraphReward
+from simple.grasp_rl.mjlab_gpu.object_grasp_reward import GpuObjectGraspReward
 from simple.grasp_rl.mjlab_gpu.reference import GpuReferenceLibrary
 from simple.grasp_rl.mjlab_gpu.reward import GpuGraspReward
 from simple.grasp_rl.mjlab_gpu.robometer_reward import (
@@ -80,7 +81,17 @@ class GpuGraspVecEnv(VecEnv):
             raise ValueError(f"Unsupported GPU controller {controller!r}")
         if self.gpu.bundle.manifest["task_metadata"]["task_schema_version"] == 2:
             self.state_reader = GpuTaskStateExtractorV2(self.gpu)
-            self.reward = GpuGoalGraphReward.from_frozen_bundle(self.state_reader)
+            if (
+                config.task == "grasp_anything"
+                and self.gpu.bundle.manifest.get("object_contract") is not None
+            ):
+                self.reward = GpuObjectGraspReward.from_frozen_bundle(
+                    self.state_reader
+                )
+            else:
+                self.reward = GpuGoalGraphReward.from_frozen_bundle(
+                    self.state_reader
+                )
         else:
             self.state_reader = GpuLegacyState(self.gpu)
             self.reward = GpuGraspReward.from_frozen_bundle(self.state_reader)
@@ -103,7 +114,19 @@ class GpuGraspVecEnv(VecEnv):
             target_x_arm_gains=config.reference_target_x_arm_gains,
             target_y_arm_gains=config.reference_target_y_arm_gains,
             target_yaw_arm_gains=config.reference_target_yaw_arm_gains,
+            strict_episode=config.strict_reference_episode,
         )
+        self.reference_alignment: dict[str, object] | None = None
+        if config.max_reference_initial_position_offset is not None:
+            frozen_observation = torch.as_tensor(
+                self.gpu.bundle.manifest["reset"]["actor_observation"],
+                dtype=torch.float32,
+                device=self.device,
+            )
+            self.reference_alignment = self.reference.validate_initial_position_alignment(
+                frozen_observation,
+                config.max_reference_initial_position_offset,
+            )
         self.robometer_reward: RobometerTaskReward | None = None
         if robometer_reward_config is not None:
             if (
@@ -182,11 +205,18 @@ class GpuGraspVecEnv(VecEnv):
         )
         base_observation, _ = self.state_reader.actor_observation()
         base_episode = self.gpu.bundle.manifest.get("base_episode")
-        episode_rows = (
-            None
-            if base_episode is None
-            else self.reference.rows_for_episode(base_episode, len(env_ids))
-        )
+        if self.config.reference_selection == "balanced":
+            episode_rows = self.reference.balanced_rows(
+                len(env_ids), generator=self.reference_generator
+            )
+        elif self.config.reference_selection == "nearest":
+            episode_rows = None
+        else:
+            episode_rows = (
+                None
+                if base_episode is None
+                else self.reference.rows_for_episode(base_episode, len(env_ids))
+            )
         self.reference.reset(
             base_observation[env_ids],
             env_ids,
@@ -494,6 +524,16 @@ class GpuGraspVecEnv(VecEnv):
                 "/reference/executed_action_mse": (
                     (executed_action - clean_reference_action).square().mean()
                 ),
+                "/reference/episode_row_mean": self.reference.episode_rows.float().mean(),
+                "/reference/episode_row_std": self.reference.episode_rows.float().std(
+                    unbiased=False
+                ),
+                "/reference/initial_position_offset_mean": (
+                    self.reference.reference_object_offset.norm(dim=-1).mean()
+                ),
+                "/reference/initial_position_offset_max": (
+                    self.reference.reference_object_offset.norm(dim=-1).max()
+                ),
                 "/task/native_success": terms.native_success.float().mean(),
                 "/task/grasp": terms.is_grasp.float().mean(),
                 "/task/lift_height": terms.lift_height.mean(),
@@ -504,6 +544,30 @@ class GpuGraspVecEnv(VecEnv):
                 ),
             },
         }
+        object_contract = self.gpu.bundle.manifest.get("object_contract")
+        if object_contract is not None:
+            log = extras["log"]
+            assert isinstance(log, dict)
+            log["/task/squeeze_penalty"] = (
+                self.reward.last_squeeze_penalty.mean()
+            )
+            log["/task/object_grip_width_m"] = torch.tensor(
+                float(object_contract["grip_width_m"]), device=self.device
+            )
+            if isinstance(self.reward, GpuObjectGraspReward):
+                log["/task/grasp_band_reach"] = (
+                    self.reward.last_grasp_band_reach.mean()
+                )
+                log["/task/finger_opposition"] = (
+                    self.reward.last_finger_opposition.mean()
+                )
+                log["/task/closure"] = self.reward.last_closure.mean()
+                log["/task/contact_quality"] = (
+                    self.reward.last_contact_quality.mean()
+                )
+                log["/task/min_fingertip_distance"] = (
+                    self.reward.last_min_fingertip_distance.mean()
+                )
         if robometer_snapshot is not None:
             inferred = robometer_snapshot["inferred"]
             progress = robometer_snapshot["progress"]

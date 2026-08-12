@@ -79,6 +79,14 @@ def _usable_replay_episode_ids(
     return usable
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _worker_devices() -> tuple[int, ...]:
     value = os.environ.get("GRASP_RL_WORKER_DEVICES", "0,1,2,3,4,5,6,7")
     devices = tuple(int(item.strip()) for item in value.split(",") if item.strip())
@@ -343,7 +351,9 @@ def _prepare_chunk(dataset_string: str, output_string: str, rows: list[dict[str,
 def prepare_v2_dataset(dataset_dir: str | Path, output_dir: str | Path,
                        num_workers: int = 8, seed: int = 42,
                        task: str | TaskSpecV2 | None = None,
-                       episodes: int | None = None, warmup_steps: int = 60) -> Path:
+                       episodes: int | None = None,
+                       episode_id: int | None = None,
+                       warmup_steps: int = 60) -> Path:
     spec = get_task_spec(task)
     if not isinstance(spec, TaskSpecV2):
         raise ValueError("prepare_v2_dataset requires a v2 task")
@@ -352,15 +362,30 @@ def prepare_v2_dataset(dataset_dir: str | Path, output_dir: str | Path,
     (output / "episodes").mkdir(parents=True, exist_ok=True)
     rows = [json.loads(line) for line in (dataset / "meta" / "episodes.jsonl").read_text().splitlines()]
     all_episode_ids = list(range(len(rows)))
-    episode_ids = [
+    matching_episode_ids = [
         episode for episode in all_episode_ids
         if json.loads(rows[episode]["environment_config"]).get("uid") in spec.source_uids
     ]
-    excluded = sorted(set(all_episode_ids) - set(episode_ids))
-    if not episode_ids:
+    excluded = sorted(set(all_episode_ids) - set(matching_episode_ids))
+    if not matching_episode_ids:
         raise ValueError(f"No episodes match runtime source UIDs {spec.source_uids}")
+    if episodes is not None and episode_id is not None:
+        raise ValueError("episodes and episode_id are mutually exclusive")
     if episodes is not None:
-        episode_ids = episode_ids[:episodes]
+        if episodes < 1:
+            raise ValueError("episodes must be positive")
+        episode_ids = matching_episode_ids[:episodes]
+    elif episode_id is not None:
+        if episode_id < 0:
+            raise ValueError("episode_id must be non-negative")
+        if episode_id not in matching_episode_ids:
+            raise ValueError(
+                f"Episode {episode_id} does not match runtime source UIDs "
+                f"{spec.source_uids}"
+            )
+        episode_ids = [episode_id]
+    else:
+        episode_ids = matching_episode_ids
     repaired = [repair_actions(spec, read_actions(dataset, i))[0] for i in episode_ids]
     transform = compute_action_transform(repaired, legacy_tabletop_locomotion_bounds=False)
     if spec.name == "locomotion_pick_between_tables":
@@ -406,7 +431,9 @@ def prepare_v2_dataset(dataset_dir: str | Path, output_dir: str | Path,
     # Never train a policy on a source episode that the selected controller,
     # simulator and reward graph cannot reproduce.  This gate applies to every
     # v2 task; task registration alone is not evidence of executable data.
-    usable_episode_ids = _usable_replay_episode_ids(reports)
+    usable_episode_ids = _usable_replay_episode_ids(
+        reports, minimum=1 if episode_id is not None else 3
+    )
     # The policy path always executes normalized outputs through decode(), so
     # its transform must reproduce every accepted demonstration exactly.  The
     # earlier quantile-based slew limiter clipped rare but intentional Sonic
@@ -422,14 +449,19 @@ def prepare_v2_dataset(dataset_dir: str | Path, output_dir: str | Path,
     transform = _successful_replay_transform(successful_actions)
     transform.save(transform_path)
     _rewrite_successful_raw_actions(output, usable_episode_ids, transform)
-    shuffled = np.asarray(usable_episode_ids)
-    rng = np.random.default_rng(seed)
-    rng.shuffle(shuffled)
-    train_stop = max(1, int(.8 * len(shuffled)))
-    val_stop = min(train_stop + max(1, int(.1 * len(shuffled))), len(shuffled) - 1)
-    splits = {"train": sorted(shuffled[:train_stop].tolist()),
-              "val": sorted(shuffled[train_stop:val_stop].tolist()),
-              "test": sorted(shuffled[val_stop:].tolist())}
+    if len(usable_episode_ids) == 1:
+        splits = {"train": usable_episode_ids.copy(), "val": [], "test": []}
+    else:
+        shuffled = np.asarray(usable_episode_ids)
+        rng = np.random.default_rng(seed)
+        rng.shuffle(shuffled)
+        train_stop = max(1, int(.8 * len(shuffled)))
+        val_stop = min(
+            train_stop + max(1, int(.1 * len(shuffled))), len(shuffled) - 1
+        )
+        splits = {"train": sorted(shuffled[:train_stop].tolist()),
+                  "val": sorted(shuffled[train_stop:val_stop].tolist()),
+                  "test": sorted(shuffled[val_stop:].tolist())}
     source_hash = hashlib.sha256()
     for episode in episode_ids:
         source_hash.update(episode_file(dataset, episode).read_bytes())
@@ -437,8 +469,10 @@ def prepare_v2_dataset(dataset_dir: str | Path, output_dir: str | Path,
         "source": str(dataset), "source_sha256": source_hash.hexdigest(),
         "source_immutable": True, "source_state_vector_dim": 32,
         "action_transform_version": ACTION_TRANSFORM_VERSION,
+        "action_transform_sha256": _sha256(transform_path),
         "task": spec.name, "task_metadata": spec.metadata(), "seed": seed,
         "unique_episodes": usable_episode_ids, "source_episode_ids": episode_ids,
+        "requested_episode_id": episode_id,
         "splits": splits, "schema": schema_dict(),
         "excluded_episodes": excluded,
         "excluded_reason": "different controller/source UID" if excluded else None,

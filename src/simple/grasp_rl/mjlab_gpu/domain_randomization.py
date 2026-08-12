@@ -41,6 +41,46 @@ def _uniform(
     )
 
 
+def _apply_position_focus_mixture(
+    translation: torch.Tensor,
+    *,
+    probability: float,
+    jitter_xy: tuple[float, float],
+    offset_center_xy: tuple[float, float],
+    scale: float,
+    generator: torch.Generator,
+) -> torch.Tensor:
+    """Mix focused positions into a base distribution without changing legacy RNG."""
+
+    if probability <= 0.0:
+        return translation
+    sample_shape = translation.shape[:-1]
+    device = str(translation.device)
+    focused = torch.stack(
+        (
+            _uniform(
+                scale * (offset_center_xy[0] - jitter_xy[0]),
+                scale * (offset_center_xy[0] + jitter_xy[0]),
+                sample_shape,
+                device=device,
+                generator=generator,
+            ),
+            _uniform(
+                scale * (offset_center_xy[1] - jitter_xy[1]),
+                scale * (offset_center_xy[1] + jitter_xy[1]),
+                sample_shape,
+                device=device,
+                generator=generator,
+            ),
+        ),
+        dim=-1,
+    )
+    selected = torch.rand(
+        sample_shape, device=translation.device, generator=generator
+    ) < float(probability)
+    return torch.where(selected[..., None], focused, translation)
+
+
 def _apply_free_joint_pose(
     qpos: torch.Tensor,
     env_ids: torch.Tensor,
@@ -287,11 +327,18 @@ class GpuDomainRandomizer:
         enabled = bool(training and cfg.enabled and scale > 0.0)
 
         def sample_pose(
-            position_jitter_xy: tuple[float, float], yaw_jitter: float, slots: int = 1
+            position_jitter_xy: tuple[float, float],
+            yaw_jitter: float,
+            slots: int = 1,
+            position_offset_center_xy: tuple[float, float] = (0.0, 0.0),
         ) -> tuple[torch.Tensor, torch.Tensor]:
             translation_shape = (count, 2) if slots == 1 else (count, slots, 2)
             yaw_shape = (count,) if slots == 1 else (count, slots)
-            if not enabled or not (any(position_jitter_xy) or yaw_jitter):
+            if not enabled or not (
+                any(position_jitter_xy)
+                or any(position_offset_center_xy)
+                or yaw_jitter
+            ):
                 return (
                     torch.zeros(translation_shape, device=self.device),
                     torch.zeros(yaw_shape, device=self.device),
@@ -320,6 +367,13 @@ class GpuDomainRandomizer:
                 ),
                 dim=-1,
             )
+            if any(position_offset_center_xy):
+                center = torch.tensor(
+                    position_offset_center_xy,
+                    dtype=translation.dtype,
+                    device=self.device,
+                )
+                translation.add_(center * scale)
             yaw = _uniform(
                 -scale * yaw_jitter,
                 scale * yaw_jitter,
@@ -362,7 +416,17 @@ class GpuDomainRandomizer:
                 generator=self.generator,
             )
             translation, yaw = sample_pose(
-                cfg.target_position_jitter_xy, cfg.target_yaw_jitter
+                cfg.target_position_jitter_xy,
+                cfg.target_yaw_jitter,
+                position_offset_center_xy=cfg.target_position_offset_center_xy,
+            )
+            translation = _apply_position_focus_mixture(
+                translation,
+                probability=cfg.target_position_focus_probability,
+                jitter_xy=cfg.target_position_focus_jitter_xy,
+                offset_center_xy=cfg.target_position_focus_offset_center_xy,
+                scale=scale,
+                generator=self.generator,
             )
             if cfg.action_delay_max_steps:
                 delay = (

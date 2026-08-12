@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +40,81 @@ V2_DESCRIPTOR_INDICES = (
 )
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def derive_strict_reference_subset(
+    processed_dir: str | Path,
+    output_dir: str | Path,
+    episode: int,
+    *,
+    source: str = "bc",
+) -> dict[str, object]:
+    """Copy one episode without refitting the source action transform."""
+
+    root = Path(processed_dir).resolve()
+    output = Path(output_dir).resolve()
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError(f"Refusing to overwrite non-empty output {output}")
+    manifest = json.loads((root / "manifest.json").read_text())
+    episode = int(episode)
+    selected = root / source / f"episode_{episode:06d}.npz"
+    transform = root / "action_transform.npz"
+    if not selected.is_file():
+        raise FileNotFoundError(selected)
+    if not transform.is_file():
+        raise FileNotFoundError(transform)
+    reports = [
+        report
+        for report in manifest.get("reports", [])
+        if int(report["episode"]) == episode
+    ]
+    if reports and not all(bool(report.get("success")) for report in reports):
+        raise ValueError("strict reference episode did not pass replay validation")
+
+    output.mkdir(parents=True, exist_ok=True)
+    (output / source).mkdir(parents=True, exist_ok=True)
+    shutil.copy2(transform, output / transform.name)
+    shutil.copy2(selected, output / source / selected.name)
+    replay = root / "episodes" / selected.name
+    if replay.is_file():
+        (output / "episodes").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(replay, output / "episodes" / replay.name)
+
+    strict = dict(manifest)
+    strict.update(
+        {
+            "unique_episodes": [episode],
+            "source_episode_ids": [episode],
+            "requested_episode_id": episode,
+            "splits": {"train": [episode], "val": [], "test": []},
+            "reports": reports,
+            "excluded_episodes": [],
+            "failed_replay_episodes": [],
+            "replay_gate_passed": True,
+            "replay_success_rate": 1.0,
+            "action_transform_sha256": _sha256(transform),
+            "strict_subset_source": str(root),
+        }
+    )
+    validate_strict_reference_manifest(strict, episode)
+    (output / "manifest.json").write_text(
+        json.dumps(strict, indent=2, sort_keys=True)
+    )
+    return {
+        "output": str(output),
+        "episode": episode,
+        "source": source,
+        "action_transform_sha256": strict["action_transform_sha256"],
+        "reference_sha256": _sha256(output / source / selected.name),
+    }
+
+
 def _file_digest(paths: list[Path]) -> str:
     digest = hashlib.sha256()
     for path in paths:
@@ -47,6 +123,41 @@ def _file_digest(paths: list[Path]) -> str:
             for block in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(block)
     return digest.hexdigest()
+
+
+def validate_strict_reference_manifest(
+    manifest: dict[str, object], episode: int
+) -> None:
+    """Reject any processed library that can expose another trajectory."""
+
+    expected = [int(episode)]
+    if manifest.get("unique_episodes") != expected:
+        raise ValueError(
+            "Strict reference manifest unique_episodes must contain only "
+            f"episode {episode}"
+        )
+    source_ids = manifest.get("source_episode_ids")
+    if source_ids is not None and source_ids != expected:
+        raise ValueError(
+            "Strict reference manifest source_episode_ids must contain only "
+            f"episode {episode}"
+        )
+    splits = manifest.get("splits")
+    required_splits = {"train": expected, "val": [], "test": []}
+    if splits != required_splits:
+        raise ValueError(
+            "Strict reference manifest must use the single-episode train split "
+            "with empty val/test splits"
+        )
+    requested = manifest.get("requested_episode_id")
+    if requested is not None and requested != episode:
+        raise ValueError("Strict reference manifest requested_episode_id mismatch")
+    reports = manifest.get("reports", [])
+    if not isinstance(reports, list):
+        raise TypeError("Strict reference manifest reports must be a list")
+    report_ids = {int(report["episode"]) for report in reports}
+    if report_ids and report_ids != {episode}:
+        raise ValueError("Strict reference manifest reports contain another episode")
 
 
 class GpuReferenceLibrary:
@@ -63,6 +174,7 @@ class GpuReferenceLibrary:
         target_x_arm_gains: tuple[float, float] = (0.0, 0.0),
         target_y_arm_gains: tuple[float, float] = (0.0, 0.0),
         target_yaw_arm_gains: tuple[float, float] = (0.0, 0.0),
+        strict_episode: int | None = None,
     ):
         self.root = Path(processed_dir).resolve()
         self.device = device
@@ -73,8 +185,12 @@ class GpuReferenceLibrary:
         self.target_yaw_arm_gains = tuple(
             float(value) for value in target_yaw_arm_gains
         )
+        self.strict_episode = strict_episode
         manifest_path = self.root / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
+        self.action_transform_sha256 = manifest.get("action_transform_sha256")
+        if strict_episode is not None:
+            validate_strict_reference_manifest(manifest, strict_episode)
         episode_ids = sorted(
             {int(episode) for split in splits for episode in manifest["splits"][split]}
         )
@@ -159,6 +275,7 @@ class GpuReferenceLibrary:
         ) / self.descriptor_std
         self.episode_rows = torch.zeros(self.num_envs, dtype=torch.long, device=device)
         self.indices = torch.zeros_like(self.episode_rows)
+        self._balanced_row_cursor = 0
         self.reference_object_offset = torch.zeros(
             self.num_envs, 3, dtype=torch.float32, device=device
         )
@@ -182,6 +299,8 @@ class GpuReferenceLibrary:
             "target_x_arm_gains": list(self.target_x_arm_gains),
             "target_y_arm_gains": list(self.target_y_arm_gains),
             "target_yaw_arm_gains": list(self.target_yaw_arm_gains),
+            "strict_episode": self.strict_episode,
+            "action_transform_sha256": self.action_transform_sha256,
         }
 
     def _retarget_actions(self, actions: torch.Tensor) -> torch.Tensor:
@@ -224,6 +343,56 @@ class GpuReferenceLibrary:
                 f"Reference episode {episode} is unavailable or duplicated"
             )
         return matches[0].expand(count)
+
+    def balanced_rows(
+        self, count: int, *, generator: torch.Generator
+    ) -> torch.Tensor:
+        """Return shuffled rows that stay balanced across reset batches."""
+
+        if count < 1:
+            raise ValueError("balanced reference count must be positive")
+        reference_count = len(self.episode_ids)
+        rows = (
+            torch.arange(count, device=self.device) + self._balanced_row_cursor
+        ) % reference_count
+        self._balanced_row_cursor = (
+            self._balanced_row_cursor + count
+        ) % reference_count
+        order = torch.randperm(count, device=self.device, generator=generator)
+        return rows[order]
+
+    def validate_initial_position_alignment(
+        self, observation: torch.Tensor, maximum_offset: float
+    ) -> dict[str, object]:
+        """Fail before training when the frozen scene is outside the library."""
+
+        if observation.shape != (self.observation_dim,):
+            raise ValueError("Alignment observation has the wrong shape")
+        position_slice = (
+            V2_PRIMARY_POS
+            if self.observation_dim == ACTOR_OBS_V2_DIM
+            else OBJECT_POS_BODY
+        )
+        offsets = (
+            self.observations[:, 0, position_slice] - observation[position_slice]
+        ).norm(dim=-1)
+        largest, row = offsets.max(dim=0)
+        resolved = {
+            "maximum_allowed_metres": float(maximum_offset),
+            "minimum_metres": float(offsets.min().item()),
+            "mean_metres": float(offsets.mean().item()),
+            "maximum_metres": float(largest.item()),
+            "maximum_episode": int(self.episode_ids[row].item()),
+            "reference_count": len(self.episode_ids),
+        }
+        if float(largest.item()) > float(maximum_offset):
+            raise ValueError(
+                "Frozen scene/reference initial-position mismatch: "
+                f"episode {resolved['maximum_episode']} is "
+                f"{resolved['maximum_metres']:.6f} m away, exceeding "
+                f"{maximum_offset:.6f} m"
+            )
+        return resolved
 
     def reset(
         self,
@@ -268,6 +437,13 @@ class GpuReferenceLibrary:
         starts = torch.minimum(starts.clamp_min(0), self.lengths[rows] - 1)
         self.episode_rows[ids] = rows
         self.indices[ids] = starts
+        if self.strict_episode is not None:
+            selected = self.episode_ids[self.episode_rows[ids]]
+            if not torch.all(selected == self.strict_episode):
+                raise RuntimeError(
+                    "A runtime environment selected a reference other than strict "
+                    f"episode {self.strict_episode}"
+                )
         position_slice = (
             V2_PRIMARY_POS
             if self.observation_dim == ACTOR_OBS_V2_DIM

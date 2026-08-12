@@ -13,7 +13,12 @@ import mujoco
 import torch
 from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
 
+from simple.grasp_rl.grasp_anything import (
+    GRASP_ANYTHING_TASK,
+    GraspAnythingObjectContract,
+)
 from simple.grasp_rl.mjlab_gpu.config import MjlabPpoConfig
+from simple.grasp_rl.mjlab_gpu.reference import validate_strict_reference_manifest
 from simple.grasp_rl.schema import (
     LEFT_CONTACT_LINK_NAMES,
     LEFT_DISTAL_LINK_NAMES,
@@ -108,6 +113,12 @@ class FrozenAssetBundle:
             raise ValueError(
                 f"GPU scene topology mismatch: {_topology(model)} != {manifest['model']}"
             )
+        if expected_task == GRASP_ANYTHING_TASK:
+            contract = GraspAnythingObjectContract.from_metadata(
+                manifest.get("object_contract", {})
+            )
+            if manifest.get("object_id") != contract.object_id:
+                raise ValueError("grasp_anything object_id/contract mismatch")
         return cls(root=root, manifest=manifest, model=model)
 
 
@@ -581,6 +592,59 @@ def build_gpu_simulation(
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is unavailable; CPU fallback is forbidden")
     bundle = FrozenAssetBundle.load(config.asset_bundle, expected_task=config.task)
+    object_contract = bundle.manifest.get("object_contract")
+    if object_contract is not None:
+        if config.reference_processed is None:
+            raise ValueError("grasp_anything requires reference_processed")
+        processed_root = Path(config.reference_processed).resolve()
+        processed_manifest = json.loads(
+            (processed_root / "manifest.json").read_text()
+        )
+        expected_reference_task = object_contract["reference_task"]
+        if processed_manifest.get("task") != expected_reference_task:
+            raise ValueError(
+                "Object contract requires reference task "
+                f"{expected_reference_task!r}, got "
+                f"{processed_manifest.get('task')!r}"
+            )
+        processed_transform = processed_root / "action_transform.npz"
+        if _sha256(processed_transform) != bundle.manifest.get(
+            "action_transform_sha256"
+        ):
+            raise ValueError(
+                "grasp_anything reference/action-transform SHA mismatch"
+            )
+    strict_episode = config.strict_reference_episode
+    if strict_episode is not None:
+        if bundle.manifest.get("base_episode") != strict_episode:
+            raise ValueError(
+                "Strict reference episode does not match the frozen asset "
+                "base_episode"
+            )
+        if config.reference_processed is None:
+            raise ValueError("Strict reference mode requires reference_processed")
+        processed_root = Path(config.reference_processed).resolve()
+        processed_manifest = json.loads(
+            (processed_root / "manifest.json").read_text()
+        )
+        expected_processed_task = (
+            object_contract["reference_task"]
+            if object_contract is not None
+            else config.task
+        )
+        if processed_manifest.get("task") != expected_processed_task:
+            raise ValueError("Strict reference processed task mismatch")
+        validate_strict_reference_manifest(processed_manifest, strict_episode)
+        processed_transform = processed_root / "action_transform.npz"
+        processed_sha256 = _sha256(processed_transform)
+        if processed_manifest.get("action_transform_sha256") != processed_sha256:
+            raise ValueError(
+                "Strict reference processed action-transform SHA mismatch"
+            )
+        if bundle.manifest.get("action_transform_sha256") != processed_sha256:
+            raise ValueError(
+                "Strict reference processed/asset action-transform SHA mismatch"
+            )
     model = bundle.model
     sensors = None
     if bundle.manifest["task_metadata"].get("task_schema_version") == 2:

@@ -16,6 +16,7 @@ import torch
 from simple.grasp_rl.mjlab_gpu.benchmark import compare_paired_results
 from simple.grasp_rl.mjlab_gpu.collect import collect_successful_trajectories
 from simple.grasp_rl.mjlab_gpu.config import MjlabPpoConfig
+from simple.grasp_rl.mjlab_gpu.dataset_audit import audit_ppo_dataset
 from simple.grasp_rl.mjlab_gpu.dataset_export import export_dual_dataset
 from simple.grasp_rl.mjlab_gpu.recording import record_success_videos
 from simple.grasp_rl.mjlab_gpu.release import sha256_file, verify_release
@@ -37,6 +38,31 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
     parser.add_argument("--asset-bundle", type=Path, required=True)
     parser.add_argument("--reference-processed", type=Path, required=True)
     parser.add_argument("--reference-source", default="bc")
+    parser.add_argument(
+        "--strict-reference-episode",
+        type=int,
+        help=(
+            "Fail closed unless processed data, frozen assets and every runtime "
+            "reference use exactly this episode"
+        ),
+    )
+    parser.add_argument(
+        "--reference-selection",
+        choices=("asset", "nearest", "balanced"),
+        default="asset",
+        help=(
+            "Reference reset policy: asset preserves legacy pin/nearest behavior; "
+            "balanced evenly covers the full processed library"
+        ),
+    )
+    parser.add_argument(
+        "--max-reference-initial-position-offset",
+        type=float,
+        help=(
+            "Fail before simulation when any reference initial primary position is "
+            "farther than this many metres from the frozen asset reset"
+        ),
+    )
     parser.add_argument(
         "--reference-reward-weight",
         type=float,
@@ -97,6 +123,11 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
     parser.add_argument("--dr-warmup-steps", type=int)
     parser.add_argument("--dr-ramp-steps", type=int)
     parser.add_argument(
+        "--disable-domain-randomization",
+        action="store_true",
+        help="Disable DR explicitly for a bootstrap or diagnostic run",
+    )
+    parser.add_argument(
         "--target-position-jitter-xy",
         type=float,
         nargs=2,
@@ -105,6 +136,35 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
             "Override the task's symmetric target-position DR envelope in "
             "metres; omitted keeps the legacy 0.025,0.03 default"
         ),
+    )
+    parser.add_argument(
+        "--target-position-offset-center-xy",
+        type=float,
+        nargs=2,
+        metavar=("X", "Y"),
+        help="Center of the staged target-position DR distribution in metres",
+    )
+    parser.add_argument(
+        "--target-position-focus-probability",
+        type=float,
+        help=(
+            "Opt-in probability of replacing a normal target-position sample "
+            "with a focused sample"
+        ),
+    )
+    parser.add_argument(
+        "--target-position-focus-jitter-xy",
+        type=float,
+        nargs=2,
+        metavar=("X", "Y"),
+        help="Symmetric focused target-position jitter in metres",
+    )
+    parser.add_argument(
+        "--target-position-focus-offset-center-xy",
+        type=float,
+        nargs=2,
+        metavar=("X", "Y"),
+        help="Center of the focused target-position distribution in metres",
     )
     parser.add_argument(
         "--target-yaw-jitter",
@@ -149,6 +209,47 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
         "--robot-base-yaw-jitter",
         type=float,
         help="Symmetric floating-base reset-yaw jitter in radians",
+    )
+    parser.add_argument(
+        "--target-mass-scale",
+        type=float,
+        nargs=2,
+        metavar=("LOW", "HIGH"),
+        help="Override target mass randomization scale range",
+    )
+    parser.add_argument(
+        "--friction-scale",
+        type=float,
+        nargs=2,
+        metavar=("LOW", "HIGH"),
+        help="Override contact friction randomization scale range",
+    )
+    parser.add_argument(
+        "--joint-damping-scale",
+        type=float,
+        nargs=2,
+        metavar=("LOW", "HIGH"),
+        help="Override controlled-joint damping randomization scale range",
+    )
+    parser.add_argument(
+        "--actuator-strength-scale",
+        type=float,
+        nargs=2,
+        metavar=("LOW", "HIGH"),
+        help="Override actuator-strength randomization scale range",
+    )
+    parser.add_argument(
+        "--action-delay-max-steps",
+        type=int,
+        choices=(0, 1),
+        help="Override the maximum sampled action delay",
+    )
+    parser.add_argument("--reference-action-noise-std", type=float)
+    parser.add_argument("--reference-position-noise-std", type=float)
+    parser.add_argument("--reference-phase-noise-std", type=float)
+    parser.add_argument(
+        "--reference-future-dropout-probability",
+        type=float,
     )
     parser.add_argument(
         "--dr-profile",
@@ -232,6 +333,24 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     train.add_argument(
+        "--scratch-right-hand-correction",
+        type=float,
+        nargs=7,
+        help=(
+            "Initialize a scratch grasp_anything policy with a reviewed "
+            "right-hand correction around its reference"
+        ),
+    )
+    train.add_argument(
+        "--scratch-right-arm-correction",
+        type=float,
+        nargs=7,
+        help=(
+            "Initialize a scratch grasp_anything policy with a reviewed "
+            "right-arm correction around its reference"
+        ),
+    )
+    train.add_argument(
         "--warm-start-critic",
         action="store_true",
         help=(
@@ -271,6 +390,20 @@ def _parser() -> argparse.ArgumentParser:
         help="Scale the actor LR while retaining the critic base LR",
     )
     train.add_argument(
+        "--actor-anchor-checkpoint",
+        type=Path,
+        help=(
+            "Frozen teacher actor used to constrain a focused PPO run; "
+            "disabled by default"
+        ),
+    )
+    train.add_argument(
+        "--actor-anchor-weight",
+        type=float,
+        default=0.0,
+        help="Weight of the opt-in teacher action loss",
+    )
+    train.add_argument(
         "--schedule",
         choices=("adaptive", "fixed"),
         help="Override the PPO learning-rate schedule",
@@ -279,6 +412,15 @@ def _parser() -> argparse.ArgumentParser:
         "--exploration-std",
         type=float,
         help="Override the fixed Gaussian PPO action standard deviation",
+    )
+    train.add_argument(
+        "--exploration-hold-steps",
+        type=int,
+        default=1,
+        help=(
+            "Hold each standardized exploration sample for this many policy "
+            "steps; one preserves legacy independent Gaussian sampling"
+        ),
     )
     train.add_argument(
         "--ppo-clip-param",
@@ -299,6 +441,11 @@ def _parser() -> argparse.ArgumentParser:
         "--ppo-steps-per-env",
         type=int,
         help="Override fresh rollout length per environment and PPO update",
+    )
+    train.add_argument(
+        "--save-interval",
+        type=int,
+        help="Override the checkpoint interval without changing legacy defaults",
     )
     train.add_argument(
         "--freeze-actor-normalizer",
@@ -339,6 +486,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument("--episodes", type=int, default=200)
     evaluate.add_argument(
+        "--minimum-success-rate",
+        type=float,
+        help="Fail the evaluation when success rate is below this threshold",
+    )
+    evaluate.add_argument(
         "--stress-domain-randomization",
         action="store_true",
         help="Evaluate deterministic policy under full physics/reference DR",
@@ -369,7 +521,10 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         help="Run all paired modes at an exact staged DR strength in [0, 1]",
     )
-    benchmark.set_defaults(stochastic_policy=False)
+    benchmark.set_defaults(
+        stochastic_policy=False,
+        minimum_success_rate=None,
+    )
 
     record = commands.add_parser("record")
     _common(record, num_envs=32)
@@ -465,6 +620,13 @@ def _parser() -> argparse.ArgumentParser:
 
     verify = commands.add_parser("verify-release")
     verify.add_argument("--release-dir", type=Path, required=True)
+
+    audit_dataset = commands.add_parser("audit-dataset")
+    audit_dataset.add_argument("--dataset-root", type=Path, required=True)
+    audit_dataset.add_argument("--expected-successes", type=int)
+    audit_dataset.add_argument("--expected-task")
+    audit_dataset.add_argument("--expected-dr-strength", type=float)
+    audit_dataset.add_argument("--require-full-dr-coverage", action="store_true")
     return parser
 
 
@@ -482,6 +644,11 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         smoke_mode=args.smoke,
         reference_processed=str(args.reference_processed.resolve()),
         reference_source=args.reference_source,
+        strict_reference_episode=args.strict_reference_episode,
+        reference_selection=args.reference_selection,
+        max_reference_initial_position_offset=(
+            args.max_reference_initial_position_offset
+        ),
         reference_reward_weight=args.reference_reward_weight,
         max_reference_action_deviation=args.max_reference_action_deviation,
         reference_target_x_arm_gains=tuple(args.reference_target_x_arm_gains),
@@ -499,6 +666,28 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
                 None
                 if args.target_position_jitter_xy is None
                 else tuple(args.target_position_jitter_xy),
+            ),
+            (
+                "target_position_offset_center_xy",
+                None
+                if args.target_position_offset_center_xy is None
+                else tuple(args.target_position_offset_center_xy),
+            ),
+            (
+                "target_position_focus_probability",
+                args.target_position_focus_probability,
+            ),
+            (
+                "target_position_focus_jitter_xy",
+                None
+                if args.target_position_focus_jitter_xy is None
+                else tuple(args.target_position_focus_jitter_xy),
+            ),
+            (
+                "target_position_focus_offset_center_xy",
+                None
+                if args.target_position_focus_offset_center_xy is None
+                else tuple(args.target_position_focus_offset_center_xy),
             ),
             ("target_yaw_jitter", args.target_yaw_jitter),
             (
@@ -522,6 +711,42 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
                 else tuple(args.robot_base_position_jitter_xy),
             ),
             ("robot_base_yaw_jitter", args.robot_base_yaw_jitter),
+            (
+                "target_mass_scale",
+                None
+                if args.target_mass_scale is None
+                else tuple(args.target_mass_scale),
+            ),
+            (
+                "friction_scale",
+                None if args.friction_scale is None else tuple(args.friction_scale),
+            ),
+            (
+                "joint_damping_scale",
+                None
+                if args.joint_damping_scale is None
+                else tuple(args.joint_damping_scale),
+            ),
+            (
+                "actuator_strength_scale",
+                None
+                if args.actuator_strength_scale is None
+                else tuple(args.actuator_strength_scale),
+            ),
+            ("action_delay_max_steps", args.action_delay_max_steps),
+        )
+        if value is not None
+    }
+    noise_overrides = {
+        name: value
+        for name, value in (
+            ("action_std", args.reference_action_noise_std),
+            ("position_std", args.reference_position_noise_std),
+            ("phase_std", args.reference_phase_noise_std),
+            (
+                "future_dropout_probability",
+                args.reference_future_dropout_probability,
+            ),
         )
         if value is not None
     }
@@ -529,6 +754,24 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         config = replace(
             config,
             domain_randomization=replace(config.domain_randomization, **dr_overrides),
+        )
+    if noise_overrides:
+        config = replace(
+            config,
+            domain_randomization=replace(
+                config.domain_randomization,
+                reference_noise=replace(
+                    config.domain_randomization.reference_noise,
+                    **noise_overrides,
+                ),
+            ),
+        )
+    if args.disable_domain_randomization:
+        config = replace(
+            config,
+            domain_randomization=replace(
+                config.domain_randomization, enabled=False
+            ),
         )
     if args.dr_profile == "pose_only":
         config = replace(
@@ -558,6 +801,37 @@ def _seed_torch(seed: int) -> None:
 
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
+
+
+def _initialize_scratch_correction_head(
+    policy: torch.nn.Module,
+    *,
+    output_scale: float | None,
+    correction_bias: torch.Tensor | None,
+) -> None:
+    """Initialize only the final residual head of a scratch policy."""
+
+    linear_layers = [
+        module
+        for module in policy.mlp.modules()
+        if isinstance(module, torch.nn.Linear)
+    ]
+    if not linear_layers:
+        raise RuntimeError("scratch actor has no linear correction head")
+    head = linear_layers[-1]
+    if head.out_features != ACTION_DIM:
+        raise ValueError("scratch correction head has the wrong action dimension")
+    with torch.no_grad():
+        if output_scale is not None:
+            head.weight.mul_(output_scale)
+            if head.bias is not None:
+                head.bias.mul_(output_scale)
+        if correction_bias is not None:
+            if correction_bias.shape != (ACTION_DIM,):
+                raise ValueError("scratch correction bias must contain 36 values")
+            if head.bias is None:
+                raise ValueError("scratch correction head has no bias")
+            head.bias.copy_(correction_bias.to(head.bias))
 
 
 def _validate_robometer_run(
@@ -593,8 +867,19 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("learning-rate must be positive")
     if args.actor_learning_rate_scale <= 0.0:
         raise ValueError("actor-learning-rate-scale must be positive")
+    if args.actor_anchor_weight < 0.0:
+        raise ValueError("actor-anchor-weight must be non-negative")
+    if (args.actor_anchor_checkpoint is None) != (
+        args.actor_anchor_weight == 0.0
+    ):
+        raise ValueError(
+            "actor-anchor-checkpoint and positive actor-anchor-weight "
+            "must be set together"
+        )
     if args.exploration_std is not None and args.exploration_std <= 0.0:
         raise ValueError("exploration-std must be positive")
+    if args.exploration_hold_steps < 1:
+        raise ValueError("exploration-hold-steps must be at least 1")
     if args.ppo_clip_param is not None and not 0.0 < args.ppo_clip_param <= 1.0:
         raise ValueError("ppo-clip-param must be in (0, 1]")
     if args.ppo_learning_epochs is not None and args.ppo_learning_epochs < 1:
@@ -603,6 +888,8 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("ppo-max-grad-norm must be positive")
     if args.ppo_steps_per_env is not None and args.ppo_steps_per_env < 1:
         raise ValueError("ppo-steps-per-env must be positive")
+    if args.save_interval is not None and args.save_interval < 1:
+        raise ValueError("save-interval must be positive")
     if (
         args.scratch_actor_output_scale is not None
         and args.scratch_actor_output_scale <= 0.0
@@ -619,6 +906,22 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
     if args.warm_start_critic and args.warm_start is None:
         raise ValueError("warm-start-critic requires --warm-start")
     config = _config(args)
+    hand_correction = args.scratch_right_hand_correction
+    arm_correction = args.scratch_right_arm_correction
+    if (hand_correction is None) != (arm_correction is None):
+        raise ValueError(
+            "scratch right-hand and right-arm corrections must be provided together"
+        )
+    if hand_correction is not None and (
+        config.task != "grasp_anything"
+        or args.resume is not None
+        or args.warm_start is not None
+        or not args.plan_conditioned_actor
+    ):
+        raise ValueError(
+            "scratch grasp corrections require a scratch "
+            "grasp_anything --plan-conditioned-actor run"
+        )
     reward_config = _robometer_config(args)
     _validate_robometer_run(config, reward_config)
     if reward_config is not None:
@@ -668,6 +971,7 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         smoke=config.smoke_mode,
         plan_conditioned_actor=plan_conditioned_actor,
         exploration_std=args.exploration_std,
+        exploration_hold_steps=args.exploration_hold_steps,
     )
     train_config["seed"] = config.seed
     if args.learning_rate is not None:
@@ -682,6 +986,17 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         train_config["algorithm"]["max_grad_norm"] = args.ppo_max_grad_norm
     if args.ppo_steps_per_env is not None:
         train_config["num_steps_per_env"] = args.ppo_steps_per_env
+    if args.save_interval is not None:
+        train_config["save_interval"] = args.save_interval
+    correction_bias = None
+    if hand_correction is not None:
+        correction_bias = torch.zeros(ACTION_DIM, device=config.device)
+        correction_bias[7:14] = torch.as_tensor(
+            hand_correction, dtype=torch.float32, device=config.device
+        )
+        correction_bias[21:28] = torch.as_tensor(
+            arm_correction, dtype=torch.float32, device=config.device
+        )
     run_metadata: dict[str, object] = {
         "environment": config.resolved(),
         "ppo": train_config,
@@ -691,8 +1006,17 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         "warm_start_critic": args.warm_start_critic,
         "freeze_actor_normalizer": args.freeze_actor_normalizer,
         "actor_learning_rate_scale": args.actor_learning_rate_scale,
+        "actor_anchor_checkpoint": (
+            None
+            if args.actor_anchor_checkpoint is None
+            else str(args.actor_anchor_checkpoint.resolve())
+        ),
+        "actor_anchor_weight": args.actor_anchor_weight,
         "plan_conditioned_actor": plan_conditioned_actor,
         "scratch_actor_output_scale": args.scratch_actor_output_scale,
+        "scratch_right_hand_correction": hand_correction,
+        "scratch_right_arm_correction": arm_correction,
+        "reference_alignment": env.reference_alignment,
     }
     if reward_config is not None:
         run_metadata["task_reward_override"] = reward_config.metadata()
@@ -709,21 +1033,17 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         log_dir=str(output),
         integrity_path=output / "ppo_integrity.jsonl",
         actor_learning_rate_scale=args.actor_learning_rate_scale,
+        actor_anchor_checkpoint=args.actor_anchor_checkpoint,
+        actor_anchor_weight=args.actor_anchor_weight,
     )
     initial_checkpoint: Path | None = None
     if args.resume is None and args.warm_start is None:
-        if args.scratch_actor_output_scale is not None:
-            linear_layers = [
-                module
-                for module in runner.alg.get_policy().mlp.modules()
-                if isinstance(module, torch.nn.Linear)
-            ]
-            if not linear_layers:
-                raise RuntimeError("scratch actor has no linear correction head")
-            with torch.no_grad():
-                linear_layers[-1].weight.mul_(args.scratch_actor_output_scale)
-                if linear_layers[-1].bias is not None:
-                    linear_layers[-1].bias.mul_(args.scratch_actor_output_scale)
+        if args.scratch_actor_output_scale is not None or correction_bias is not None:
+            _initialize_scratch_correction_head(
+                runner.alg.get_policy(),
+                output_scale=args.scratch_actor_output_scale,
+                correction_bias=correction_bias,
+            )
         run_metadata["random_initialization"] = {
             "seed": config.seed,
             "actor_sha256": _tensor_collection_sha256(
@@ -899,6 +1219,10 @@ def _evaluation_world_sha256(
 def _evaluate(args: argparse.Namespace) -> dict[str, object]:
     if args.episodes < 1:
         raise ValueError("episodes must be positive")
+    if args.minimum_success_rate is not None and not (
+        0.0 <= args.minimum_success_rate <= 1.0
+    ):
+        raise ValueError("minimum-success-rate must be in [0, 1]")
     if args.reference_only and args.proposal_only:
         raise ValueError("reference-only and proposal-only are mutually exclusive")
     baseline_only = args.reference_only or args.proposal_only
@@ -1084,7 +1408,7 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         for value, success in zip(completed_task_return, completed_success, strict=True)
         if not success
     ]
-    return {
+    result = {
         "mode": (
             "reference_only"
             if args.reference_only
@@ -1151,6 +1475,15 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
             (outcomes == 0).nonzero(as_tuple=False).flatten().cpu().tolist()
         ),
     }
+    if (
+        args.minimum_success_rate is not None
+        and result["success_rate"] < args.minimum_success_rate
+    ):
+        raise RuntimeError(
+            "Evaluation success-rate gate failed: "
+            f"{result['success_rate']:.6f} < {args.minimum_success_rate:.6f}"
+        )
+    return result
 
 
 def _finite_mean(values: list[float]) -> float | None:
@@ -1471,6 +1804,10 @@ def _collect_dataset(args: argparse.Namespace) -> dict[str, object]:
         if getattr(args, name) < 1:
             raise ValueError(f"{name} must be positive")
     output_root = args.output_root.resolve()
+    if output_root.exists() and any(output_root.iterdir()):
+        raise FileExistsError(
+            f"Refusing to overwrite non-empty dataset root: {output_root}"
+        )
     rollouts = output_root / "rollouts"
     values = vars(args).copy()
     values.update(command="collect", output_dir=rollouts)
@@ -1523,7 +1860,7 @@ def _record(args: argparse.Namespace) -> dict[str, object]:
         width=args.width,
         height=args.height,
         fps=args.fps,
-        domain_randomization=args.stress_domain_randomization,
+        domain_randomization=dr_strength > 0.0,
         allow_diagnostic_fallback=args.allow_diagnostic_fallback,
         camera_view=args.camera_view,
         stochastic_policy=args.stochastic_policy,
@@ -1541,6 +1878,13 @@ def main() -> None:
         "collect-dataset": _collect_dataset,
         "record": _record,
         "verify-release": lambda value: verify_release(value.release_dir),
+        "audit-dataset": lambda value: audit_ppo_dataset(
+            value.dataset_root,
+            expected_successes=value.expected_successes,
+            expected_task=value.expected_task,
+            expected_dr_strength=value.expected_dr_strength,
+            require_full_dr_coverage=value.require_full_dr_coverage,
+        ),
     }
     result = handlers[args.command](args)
     print(json.dumps({"result": result}, indent=2))

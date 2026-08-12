@@ -10,6 +10,10 @@ from simple.grasp_rl.mjlab_gpu.goal_reward import (
     _supported_grasp_progress,
     _terminal_adjustment,
 )
+from simple.grasp_rl.mjlab_gpu.object_grasp_reward import (
+    object_grasp_geometry,
+    object_grasp_progress,
+)
 from simple.grasp_rl.mjlab_gpu.reward import GpuGraspReward, finger_closure_score
 from simple.grasp_rl.schema import JOINT_NAMES
 from simple.grasp_rl.task_spec import GraspLiftRewardSpec
@@ -175,3 +179,33 @@ def test_finger_closure_score_requires_thumb_and_opposing_distal_motion() -> Non
     torch.testing.assert_close(
         finger_closure_score(qpos, initial), torch.tensor([1.0, 0.0, 0.0])
     )
+
+
+def test_object_grasp_geometry_prefers_a_centered_opposing_grip() -> None:
+    center = torch.zeros(2, 3)
+    distal = torch.tensor(
+        [
+            [[0.04, 0.0, 0.0], [-0.04, 0.0, 0.0], [-0.04, 0.0, 0.0]],
+            [[0.12, 0.0, 0.0], [0.12, 0.0, 0.0], [0.12, 0.0, 0.0]],
+        ]
+    )
+
+    reach, opposition, nearest = object_grasp_geometry(
+        distal, center, grip_width_m=0.08
+    )
+
+    assert reach[0] > reach[1]
+    assert opposition[0] > opposition[1]
+    torch.testing.assert_close(nearest, torch.tensor([0.04, 0.12]))
+
+
+def test_object_grasp_progress_requires_reach_before_geometry() -> None:
+    progress = object_grasp_progress(
+        torch.tensor([1.0, 0.0, 1.0]),
+        torch.tensor([1.0, 1.0, 1.0]),
+        torch.tensor([1.0, 1.0, 1.0]),
+        torch.tensor([0.0, 0.0, 1.0]),
+    )
+
+    assert progress[0] > progress[1]
+    assert progress[2] > progress[0]

@@ -1,10 +1,15 @@
 import json
 
 import numpy as np
+import pytest
 import torch
 
 from simple.grasp_rl.mjlab_gpu.config import ReferenceNoiseConfig
-from simple.grasp_rl.mjlab_gpu.reference import GpuReferenceLibrary
+from simple.grasp_rl.mjlab_gpu.reference import (
+    GpuReferenceLibrary,
+    derive_strict_reference_subset,
+    validate_strict_reference_manifest,
+)
 from simple.grasp_rl.reference import build_reference_context
 from simple.grasp_rl.schema import (
     ACTION_DIM,
@@ -38,6 +43,99 @@ def _reference_data(tmp_path):
         raw_actions=actions,
     )
     return root, observations, actions
+
+
+def test_strict_reference_manifest_rejects_trajectory_leakage() -> None:
+    manifest = {
+        "unique_episodes": [20],
+        "source_episode_ids": [20],
+        "requested_episode_id": 20,
+        "splits": {"train": [20], "val": [], "test": []},
+        "reports": [{"episode": 20, "success": True}],
+    }
+    validate_strict_reference_manifest(manifest, 20)
+    manifest["unique_episodes"] = [20, 21]
+    with pytest.raises(ValueError, match="only episode 20"):
+        validate_strict_reference_manifest(manifest, 20)
+
+
+def test_strict_reference_subset_preserves_source_transform(tmp_path) -> None:
+    root = tmp_path / "multi"
+    (root / "bc").mkdir(parents=True)
+    transform = b"same-action-transform"
+    (root / "action_transform.npz").write_bytes(transform)
+    for episode in (7, 82):
+        np.savez(
+            root / "bc" / f"episode_{episode:06d}.npz",
+            observations=np.zeros((2, ACTOR_OBS_DIM), dtype=np.float32),
+            raw_actions=np.zeros((2, ACTION_DIM), dtype=np.float32),
+        )
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "unique_episodes": [7, 82],
+                "source_episode_ids": [7, 82],
+                "splits": {"train": [7, 82], "val": [], "test": []},
+                "reports": [
+                    {"episode": 7, "success": True},
+                    {"episode": 82, "success": True},
+                ],
+            }
+        )
+    )
+
+    output = tmp_path / "single"
+    result = derive_strict_reference_subset(root, output, 82)
+    manifest = json.loads((output / "manifest.json").read_text())
+
+    validate_strict_reference_manifest(manifest, 82)
+    assert (output / "action_transform.npz").read_bytes() == transform
+    assert result["action_transform_sha256"] == manifest[
+        "action_transform_sha256"
+    ]
+    assert not (output / "bc" / "episode_000007.npz").exists()
+
+
+def test_balanced_rows_cover_library_and_alignment_gate_rejects_bad_scene(
+    tmp_path,
+) -> None:
+    root = tmp_path / "multi"
+    source = root / "bc"
+    source.mkdir(parents=True)
+    episodes = [3, 7, 11]
+    (root / "manifest.json").write_text(
+        json.dumps({"splits": {"train": episodes, "val": [], "test": []}})
+    )
+    for row, episode in enumerate(episodes):
+        observations = np.zeros((8, ACTOR_OBS_DIM), dtype=np.float32)
+        observations[:, 132] = 0.01 * row
+        np.savez(
+            source / f"episode_{episode:06d}.npz",
+            observations=observations,
+            raw_actions=np.zeros((8, ACTION_DIM), dtype=np.float32),
+        )
+    library = GpuReferenceLibrary(root, num_envs=8, device="cpu")
+    rows = library.balanced_rows(
+        8, generator=torch.Generator().manual_seed(17)
+    )
+    counts = torch.bincount(rows, minlength=3)
+    assert sorted(counts.tolist()) == [2, 3, 3]
+    one_at_a_time = [
+        int(
+            library.balanced_rows(
+                1, generator=torch.Generator().manual_seed(seed)
+            ).item()
+        )
+        for seed in range(3)
+    ]
+    assert one_at_a_time == [2, 0, 1]
+
+    observation = torch.zeros(ACTOR_OBS_DIM)
+    alignment = library.validate_initial_position_alignment(observation, 0.021)
+    assert alignment["maximum_episode"] == 11
+    assert alignment["maximum_metres"] == pytest.approx(0.02)
+    with pytest.raises(ValueError, match="initial-position mismatch"):
+        library.validate_initial_position_alignment(observation, 0.019)
 
 
 def test_gpu_clean_reference_context_matches_legacy_builder(tmp_path) -> None:

@@ -345,6 +345,11 @@ def record_success_videos(
 
     provenance = _checkpoint_provenance(checkpoint)
     render_model, render_source = _render_model(env)
+    recorded_dr_strength = (
+        env.config.domain_randomization.strength(env.common_step_counter)
+        if domain_randomization
+        else 0.0
+    )
     physics_audit = _target_physics_audit(
         env.gpu.sim.mj_model, env.gpu.bundle.manifest["roles"]["primary"]
     )
@@ -537,11 +542,7 @@ def record_success_videos(
             "policy_seed": env.config.seed,
             "domain_randomization": domain_randomization,
             "reference_noise": domain_randomization,
-            "dr_strength": (
-                env.config.domain_randomization.strength(env.common_step_counter)
-                if domain_randomization
-                else 0.0
-            ),
+            "dr_strength": recorded_dr_strength,
             "fps": fps,
             "resolution": [width, height],
             "render_source": render_source,

@@ -16,11 +16,16 @@ from simple.grasp_rl.collect import collect_policy_dataset
 from simple.grasp_rl.diffusion import DiffusionTrainConfig, train_diffusion
 from simple.grasp_rl.evaluate import evaluate_policy
 from simple.grasp_rl.hard_targets import mine_hard_targets
+from simple.grasp_rl.grasp_anything import (
+    derive_grasp_anything_bundle,
+    validate_grasp_anything_bundle,
+)
 from simple.grasp_rl.mjlab_assets import (
     export_mjlab_render_scene,
     export_mjlab_scene,
     validate_asset_bundle,
 )
+from simple.grasp_rl.mjlab_gpu.reference import derive_strict_reference_subset
 from simple.grasp_rl.policy import build_knn_actor_checkpoint
 from simple.grasp_rl.paired import compare_paired_evaluations
 from simple.grasp_rl.rewards import (
@@ -76,6 +81,11 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         help="Freeze the exact recorded scene used by this reference episode",
     )
+    export_mjlab.add_argument(
+        "--action-transform",
+        type=Path,
+        help="Freeze this explicit processed action transform into the asset bundle",
+    )
 
     validate_mjlab = commands.add_parser("validate-mjlab-assets")
     validate_mjlab.set_defaults(task=DEFAULT_TASK)
@@ -84,6 +94,45 @@ def _parser() -> argparse.ArgumentParser:
     export_mjlab_render = commands.add_parser("export-mjlab-render-assets")
     export_mjlab_render.set_defaults(task=DEFAULT_TASK)
     export_mjlab_render.add_argument("--bundle", type=Path, required=True)
+
+    derive_object = commands.add_parser("derive-grasp-anything-assets")
+    derive_object.set_defaults(task="grasp_anything")
+    derive_object.add_argument("--base-bundle", type=Path, required=True)
+    derive_object.add_argument("--source-mjcf", type=Path, required=True)
+    derive_object.add_argument("--output", type=Path, required=True)
+    derive_object.add_argument("--object-id", required=True)
+    derive_object.add_argument("--grip-width-m", type=float, required=True)
+    derive_object.add_argument("--mass-kg", type=float, default=0.25)
+    derive_object.add_argument("--scale", type=float, default=1.0)
+    derive_object.add_argument(
+        "--upright-quaternion-wxyz",
+        type=float,
+        nargs=4,
+        default=(1.0, 0.0, 0.0, 0.0),
+    )
+    derive_object.add_argument(
+        "--grasp-frame-position-m",
+        type=float,
+        nargs=3,
+        default=(0.0, 0.0, 0.0),
+    )
+    derive_object.add_argument(
+        "--grasp-frame-quaternion-wxyz",
+        type=float,
+        nargs=4,
+        default=(1.0, 0.0, 0.0, 0.0),
+    )
+    derive_object.add_argument(
+        "--maximum-grip-force-newtons", type=float, default=80.0
+    )
+    derive_object.add_argument("--table-clearance-m", type=float, default=0.002)
+
+    strict_reference = commands.add_parser("derive-strict-reference")
+    strict_reference.set_defaults(task="xmove_pick")
+    strict_reference.add_argument("--processed", type=Path, required=True)
+    strict_reference.add_argument("--output", type=Path, required=True)
+    strict_reference.add_argument("--episode", type=int, required=True)
+    strict_reference.add_argument("--reference-source", default="bc")
 
     compare_paired = commands.add_parser("compare-paired")
     compare_paired.set_defaults(task=DEFAULT_TASK)
@@ -109,7 +158,13 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     prepare.add_argument("--output", type=Path, default=DEFAULT_PROCESSED)
     prepare.add_argument("--workers", type=int, default=8)
-    prepare.add_argument("--episodes", type=int)
+    prepare_selection = prepare.add_mutually_exclusive_group()
+    prepare_selection.add_argument("--episodes", type=int)
+    prepare_selection.add_argument(
+        "--episode-id",
+        type=int,
+        help="Prepare exactly this source episode (single-reference mode)",
+    )
     prepare.add_argument("--warmup-steps", type=int, default=60)
 
     repair = commands.add_parser("repair-data")
@@ -565,11 +620,40 @@ def main() -> None:
             target_object=args.target_object,
             warmup_steps=args.warmup_steps,
             base_episode=args.base_episode,
+            action_transform=args.action_transform,
         )
     elif args.command == "validate-mjlab-assets":
         result = validate_asset_bundle(args.bundle)
+        if result.get("task") == "grasp_anything":
+            result["object_validation"] = validate_grasp_anything_bundle(
+                args.bundle
+            )
     elif args.command == "export-mjlab-render-assets":
         result = export_mjlab_render_scene(args.bundle)
+    elif args.command == "derive-grasp-anything-assets":
+        result = derive_grasp_anything_bundle(
+            args.base_bundle,
+            args.source_mjcf,
+            args.output,
+            object_id=args.object_id,
+            grip_width_m=args.grip_width_m,
+            mass_kg=args.mass_kg,
+            scale=args.scale,
+            upright_quaternion_wxyz=tuple(args.upright_quaternion_wxyz),
+            grasp_frame_position_m=tuple(args.grasp_frame_position_m),
+            grasp_frame_quaternion_wxyz=tuple(
+                args.grasp_frame_quaternion_wxyz
+            ),
+            maximum_grip_force_newtons=args.maximum_grip_force_newtons,
+            table_clearance_m=args.table_clearance_m,
+        )
+    elif args.command == "derive-strict-reference":
+        result = derive_strict_reference_subset(
+            args.processed,
+            args.output,
+            args.episode,
+            source=args.reference_source,
+        )
     elif args.command == "compare-paired":
         result = compare_paired_evaluations(
             args.policy_evaluation,
@@ -590,6 +674,7 @@ def main() -> None:
                 num_workers=args.workers,
                 task=task_spec,
                 episodes=args.episodes,
+                episode_id=args.episode_id,
                 warmup_steps=args.warmup_steps,
             )
             if isinstance(task_spec, TaskSpecV2)
@@ -598,6 +683,7 @@ def main() -> None:
                 args.output,
                 num_workers=args.workers,
                 task=task_spec,
+                episode_id=args.episode_id,
             )
         )
     elif args.command == "repair-data":

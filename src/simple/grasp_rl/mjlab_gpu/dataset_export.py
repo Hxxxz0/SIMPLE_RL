@@ -21,10 +21,6 @@ from simple.grasp_rl.mjlab_gpu.action import tracker_hand_targets
 from simple.grasp_rl.mjlab_gpu.collect import validate_episode_arrays
 from simple.grasp_rl.schema import JOINT_NAMES
 
-DEFAULT_INSTRUCTION = (
-    "bend the robot and pick up the cracker box, then place it on the table."
-)
-OBJECT_BODIES = ("brasket", "cracker_box", "toy_zebra", "bowl")
 WRIST_BODIES = ("left_wrist_yaw_link", "right_wrist_yaw_link")
 
 # The source GR00T datasets put hands directly after the corresponding arm.
@@ -83,6 +79,18 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def _source_instruction(source_episode: dict[str, Any]) -> str:
+    """Resolve the language label from the frozen source episode."""
+
+    tasks = source_episode.get("tasks")
+    if not isinstance(tasks, list) or len(tasks) != 1:
+        raise ValueError("Source episode must contain exactly one task instruction")
+    instruction = tasks[0]
+    if not isinstance(instruction, str) or not instruction.strip():
+        raise ValueError("Source episode task instruction must be a non-empty string")
+    return instruction.strip()
+
+
 def _stats(value: np.ndarray, *, include_count: bool = True) -> dict[str, Any]:
     array = np.asarray(value, dtype=np.float32)
     if array.ndim == 1:
@@ -137,6 +145,33 @@ def _joint_addresses(model: mujoco.MjModel) -> tuple[np.ndarray, np.ndarray]:
     return qpos, qvel
 
 
+def _object_qpos_addresses(
+    model: mujoco.MjModel, source_info: dict[str, Any]
+) -> np.ndarray:
+    """Match source object-pose columns to non-robot free joints in scene order."""
+
+    try:
+        shape = source_info["features"]["observation.object_poses"]["shape"]
+    except (KeyError, TypeError) as error:
+        raise ValueError("Source dataset is missing observation.object_poses") from error
+    if not isinstance(shape, list) or len(shape) != 1 or int(shape[0]) % 7:
+        raise ValueError("Source object poses must be a flat sequence of 7-D poses")
+    expected_objects = int(shape[0]) // 7
+    root_joint = model.joint("floating_base_joint").id
+    free_joint = int(mujoco.mjtJoint.mjJNT_FREE)
+    addresses = [
+        int(model.jnt_qposadr[index])
+        for index in range(model.njnt)
+        if index != root_joint and int(model.jnt_type[index]) == free_joint
+    ]
+    if len(addresses) != expected_objects:
+        raise ValueError(
+            "Render scene object topology does not match source metadata: "
+            f"found {len(addresses)} free objects, expected {expected_objects}"
+        )
+    return np.asarray(addresses, dtype=np.int64)
+
+
 def _eef(data: mujoco.MjData) -> np.ndarray:
     values = []
     for name in WRIST_BODIES:
@@ -168,6 +203,7 @@ def _render_and_derive(
     model: mujoco.MjModel,
     arrays: dict[str, np.ndarray],
     raw_video: Path,
+    object_qpos_addresses: np.ndarray,
     *,
     camera: str,
     width: int,
@@ -183,10 +219,6 @@ def _render_and_derive(
     root_joint = model.joint("floating_base_joint").id
     root_qpos = int(model.jnt_qposadr[root_joint])
     root_qvel = int(model.jnt_dofadr[root_joint])
-    object_addresses = [
-        int(model.jnt_qposadr[model.joint(f"{name}_joint").id])
-        for name in OBJECT_BODIES
-    ]
     command = _physical_to_joint_command(
         arrays["physical_action"], arrays["joint_target"]
     )
@@ -196,7 +228,7 @@ def _render_and_derive(
     raw_action = command[:, raw_order].astype(np.float64)
     observation_eef = np.empty((steps, 14), dtype=np.float64)
     action_eef = np.empty((steps, 14), dtype=np.float64)
-    object_poses = np.empty((steps, 28), dtype=np.float64)
+    object_poses = np.empty((steps, 7 * len(object_qpos_addresses)), dtype=np.float64)
     base_pose = arrays["qpos"][:-1, root_qpos : root_qpos + 7].astype(np.float64)
     base_vel = arrays["qvel"][:-1, root_qvel : root_qvel + 6].astype(np.float64)
 
@@ -218,7 +250,10 @@ def _render_and_derive(
             mujoco.mj_forward(model, data)
             observation_eef[index] = _eef(data)
             object_poses[index] = np.concatenate(
-                [data.qpos[address : address + 7] for address in object_addresses]
+                [
+                    data.qpos[address : address + 7]
+                    for address in object_qpos_addresses
+                ]
             )
             renderer.update_scene(data, camera=camera)
             writer.append_data(renderer.render())
@@ -373,10 +408,24 @@ def export_dual_dataset(
     bundle_manifest = json.loads((asset_bundle / "manifest.json").read_text())
     base_episode = int(bundle_manifest["base_episode"])
     source_episode = next(
-        row for row in source_episodes if int(row["episode_index"]) == base_episode
+        (
+            row
+            for row in source_episodes
+            if int(row["episode_index"]) == base_episode
+        ),
+        None,
     )
+    if source_episode is None:
+        raise ValueError(f"Source dataset has no base episode {base_episode}")
+    if rollout_summary["task"] != bundle_manifest["task"]:
+        raise ValueError(
+            "Rollout task does not match frozen asset bundle: "
+            f"{rollout_summary['task']} != {bundle_manifest['task']}"
+        )
+    instruction = _source_instruction(source_episode)
     environment_config = source_episode.get("environment_config", "")
     model = _load_render_model(asset_bundle)
+    object_qpos_addresses = _object_qpos_addresses(model, source_info)
 
     raw_tables: list[dict[str, np.ndarray]] = []
     psi_tables: list[dict[str, np.ndarray]] = []
@@ -400,7 +449,14 @@ def export_dual_dataset(
             / f"episode_{episode_index:06d}.mp4"
         )
         derived = _render_and_derive(
-            model, arrays, raw_video, camera=camera, width=width, height=height, fps=fps
+            model,
+            arrays,
+            raw_video,
+            object_qpos_addresses,
+            camera=camera,
+            width=width,
+            height=height,
+            fps=fps,
         )
         psi_video = (
             psi_root
@@ -496,7 +552,7 @@ def export_dual_dataset(
         raw_episode_meta.append(
             {
                 "episode_index": episode_index,
-                "tasks": [DEFAULT_INSTRUCTION],
+                "tasks": [instruction],
                 "length": steps,
                 "environment_config": environment_config,
                 "policy_provenance": provenance,
@@ -510,7 +566,7 @@ def export_dual_dataset(
                 "dataset_from_index": total_frames,
                 "dataset_to_index": total_frames + steps - 1,
                 "robot_type": "g1",
-                "instruction": {"task_index": 0, "task": DEFAULT_INSTRUCTION},
+                "instruction": {"task_index": 0, "task": instruction},
                 "environment_config": environment_config,
                 "policy_provenance": provenance,
             }
@@ -570,8 +626,8 @@ def export_dual_dataset(
     )
     psi_info["features"]["observation.images.egocentric"]["shape"] = [height, width, 3]
 
-    task_row = {"task_index": 0, "task": DEFAULT_INSTRUCTION}
-    psi_task_row = {**task_row, "category": "", "description": DEFAULT_INSTRUCTION}
+    task_row = {"task_index": 0, "task": instruction}
+    psi_task_row = {**task_row, "category": "", "description": instruction}
     _write_json(groot_root / "meta" / "info.json", raw_info)
     _write_jsonl(groot_root / "meta" / "tasks.jsonl", [task_row])
     _write_jsonl(groot_root / "meta" / "episodes.jsonl", raw_episode_meta)
@@ -587,7 +643,7 @@ def export_dual_dataset(
     shutil.copy2(
         psi0_template / "meta" / "modality.json", psi_root / "meta" / "modality.json"
     )
-    _write_json(psi_root / "meta" / "lang_map.json", {DEFAULT_INSTRUCTION: 0})
+    _write_json(psi_root / "meta" / "lang_map.json", {instruction: 0})
     all_psi = {
         key: np.concatenate([row[key] for row in psi_tables], axis=0)
         for key in psi_tables[0]

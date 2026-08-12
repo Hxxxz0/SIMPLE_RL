@@ -322,6 +322,20 @@ _TASKS: dict[str, TaskSpec] = {
                 ("grasp", "grasp", 0, 3, "right"),
                 ("lift", "lift", .09, 13, "right")), lift_height=.09,
     ),
+    # GPU-only, one-object-per-policy specialization.  It deliberately reuses
+    # the audited xmove task implementation and observation/action schemas;
+    # object identity and geometry are frozen in a separate derived asset
+    # bundle, so registering this entry cannot alter any existing task.
+    "grasp_anything": TaskSpecV2(
+        "grasp_anything", "g1_wholebody_xmove_pick_teleop",
+        ("g1_wholebody_xmove_pick_teleop",),
+        "G1WholebodyGraspAnythingPhysicalPPO-v0",
+        "Grasp one frozen object", "grasp", "sonic_wbc",
+        EntityRoles("target", "table"),
+        _stages(("approach", "approach", .06, 1, "right"),
+                ("grasp", "grasp", 0, 3, "right"),
+                ("lift", "lift", .09, 13, "right")), lift_height=.09,
+    ),
 }
 
 
@@ -330,6 +344,11 @@ _ALIASES: dict[str, str] = {
 }
 for _name, _spec in _TASKS.items():
     _ALIASES[_spec.dataset_name] = _name
+    # grasp_anything deliberately reuses the xmove runtime UID, but the public
+    # UID alias must continue resolving to the released xmove_pick task.  The
+    # new specialization is selected only by its own task/dataset name.
+    if _name == "grasp_anything":
+        continue
     _ALIASES[_spec.registry_uid] = _name
     if isinstance(_spec, TaskSpecV2):
         for _uid in _spec.source_uids:

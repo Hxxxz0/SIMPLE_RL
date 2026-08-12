@@ -98,13 +98,19 @@ def test_v2_schema_and_catalog_cover_merged_tasks() -> None:
     assert ACTOR_OBS_V2_DIM == 331
     assert REFERENCE_CONTEXT_V2_DIM == 511
     assert REFERENCE_ACTOR_OBS_V2_DIM == 842
-    assert len(task_names()) == 14
+    assert len(task_names()) == 15
     flagship = get_task_spec("G1WholebodyLocomotionPickBetweenTablesMixed-v0")
     assert isinstance(flagship, TaskSpecV2)
     assert flagship.controller_backend == "amo"
     assert flagship.family == "place"
     assert flagship.source_uids[0] == "g1_wholebody_locomotion_pick_between_tables_variant5"
     assert get_task_spec("open_oven").controller_backend == "sonic_wbc"
+    grasp_anything = get_task_spec("grasp_anything")
+    assert grasp_anything.dataset_name == "G1WholebodyGraspAnythingPhysicalPPO-v0"
+    assert grasp_anything.registry_uid == get_task_spec("xmove_pick").registry_uid
+    assert (
+        get_task_spec("g1_wholebody_xmove_pick_teleop").name == "xmove_pick"
+    )
     assert list(V2_SLICES.values())[0].start == 0
     assert list(V2_SLICES.values())[-1].stop == ACTOR_OBS_V2_DIM
 
@@ -824,6 +830,37 @@ def test_cli_selects_task_scoped_dataset_defaults(monkeypatch) -> None:
     assert captured["dataset"] == get_task_spec("bend_pick").dataset_path()
     assert captured["output"] == get_task_spec("bend_pick").processed_path()
     assert captured["task"].name == "bend_pick"
+
+
+def test_cli_forwards_exact_single_reference_episode(monkeypatch, tmp_path) -> None:
+    from simple.grasp_rl import cli
+
+    captured = {}
+
+    def fake_prepare(dataset, output, **kwargs):
+        captured.update(dataset=dataset, output=output, **kwargs)
+        return output
+
+    monkeypatch.setattr(cli, "prepare_v2_dataset", fake_prepare)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "grasp-rl",
+            "prepare",
+            "--task",
+            "bend_pick_teleop",
+            "--output",
+            str(tmp_path),
+            "--episode-id",
+            "20",
+            "--workers",
+            "1",
+        ],
+    )
+    cli.main()
+    assert captured["episode_id"] == 20
+    assert captured["episodes"] is None
 
 
 def test_reference_context_contains_future_full_commands_and_contact() -> None:

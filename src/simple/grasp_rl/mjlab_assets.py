@@ -649,6 +649,7 @@ def export_mjlab_scene(
     target_object: str | None = None,
     warmup_steps: int = 60,
     base_episode: int | None = None,
+    action_transform: str | Path | None = None,
 ) -> dict:
     """Export one stabilized task/asset variant for GPU training."""
 
@@ -656,7 +657,13 @@ def export_mjlab_scene(
     repo_root = _repo_root()
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    transform_path = _default_action_transform(task_spec, repo_root)
+    transform_path = (
+        _default_action_transform(task_spec, repo_root)
+        if action_transform is None
+        else Path(action_transform).resolve()
+    )
+    if not transform_path.is_file():
+        raise FileNotFoundError(f"Action transform is unavailable: {transform_path}")
     transform = ActionTransform.from_npz(transform_path)
     frozen_transform_path = output / "controller" / "action_transform.npz"
     frozen_transform_path.parent.mkdir(parents=True, exist_ok=True)
@@ -751,6 +758,7 @@ def export_mjlab_scene(
             "robot_xml_sha256": _sha256(robot_xml),
             "action_transform": str(frozen_transform_path.relative_to(output)),
             "action_transform_sha256": _sha256(frozen_transform_path),
+            "action_transform_source": str(transform_path),
             "source_model": _model_topology(model),
             "model": _model_topology(exported_model),
             "reset": {

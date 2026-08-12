@@ -12,6 +12,7 @@ from simple.grasp_rl.mjlab_gpu.cli import (
     _evaluate,
     _evaluation_dr_strength,
     _parser,
+    _record,
     _seed_torch,
 )
 from simple.grasp_rl.mjlab_gpu.config import (
@@ -54,6 +55,42 @@ def test_train_cli_accepts_full_trajectory_rollout_override() -> None:
     assert args.ppo_steps_per_env == 240
 
 
+def test_train_cli_defaults_to_legacy_independent_exploration() -> None:
+    args = _parser().parse_args(
+        [
+            "train",
+            "--asset-bundle",
+            "assets",
+            "--reference-processed",
+            "reference",
+            "--output",
+            "output",
+        ]
+    )
+    assert args.exploration_hold_steps == 1
+
+
+def test_train_cli_can_explicitly_disable_bootstrap_randomization(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    args = _parser().parse_args(
+        [
+            "train",
+            "--asset-bundle",
+            str(tmp_path / "assets"),
+            "--reference-processed",
+            str(tmp_path / "reference"),
+            "--output",
+            str(tmp_path / "output"),
+            "--disable-domain-randomization",
+            "--smoke",
+        ]
+    )
+
+    assert not _config(args).domain_randomization.enabled
+
+
 def test_reproduction_cli_exposes_paired_benchmark_and_collection() -> None:
     common = [
         "--task",
@@ -68,6 +105,7 @@ def test_reproduction_cli_exposes_paired_benchmark_and_collection() -> None:
     benchmark = _parser().parse_args(["benchmark", *common, "--output", "paired.json"])
     assert benchmark.episodes == 128
     assert benchmark.output.name == "paired.json"
+    assert benchmark.minimum_success_rate is None
 
     collect = _parser().parse_args(
         [
@@ -82,6 +120,23 @@ def test_reproduction_cli_exposes_paired_benchmark_and_collection() -> None:
     assert collect.smoke
     assert collect.num_envs == 64
     assert collect.successes == 3
+
+    audit = _parser().parse_args(
+        [
+            "audit-dataset",
+            "--dataset-root",
+            "dataset",
+            "--expected-successes",
+            "500",
+            "--expected-task",
+            "bend_pick_teleop",
+            "--expected-dr-strength",
+            "1",
+            "--require-full-dr-coverage",
+        ]
+    )
+    assert audit.expected_successes == 500
+    assert audit.require_full_dr_coverage
 
 
 def test_record_cli_diagnostic_fallback_is_explicit() -> None:
@@ -123,6 +178,62 @@ def test_record_cli_diagnostic_fallback_is_explicit() -> None:
     assert not _parser().parse_args(evaluate).proposal_only
     assert _parser().parse_args([*evaluate, "--stochastic-policy"]).stochastic_policy
     assert _parser().parse_args([*evaluate, "--proposal-only"]).proposal_only
+
+
+def test_record_marks_explicit_staged_dr_as_randomized(monkeypatch, tmp_path) -> None:
+    args = _parser().parse_args(
+        [
+            "record",
+            "--asset-bundle",
+            str(tmp_path / "assets"),
+            "--reference-processed",
+            str(tmp_path / "reference"),
+            "--checkpoint",
+            str(tmp_path / "model.pt"),
+            "--output-dir",
+            str(tmp_path / "videos"),
+            "--evaluation-dr-strength",
+            "0.2",
+        ]
+    )
+    env = SimpleNamespace(
+        common_step_counter=0,
+        device="cuda:0",
+        close=lambda: None,
+    )
+    runner = SimpleNamespace(
+        alg=SimpleNamespace(get_policy=lambda: SimpleNamespace(eval=lambda: "actor")),
+        load_actor_warm_start=lambda _path: None,
+    )
+    captured = {}
+
+    monkeypatch.setattr(
+        "simple.grasp_rl.mjlab_gpu.cli._config",
+        lambda _args: SimpleNamespace(seed=42),
+    )
+    monkeypatch.setattr(
+        "simple.grasp_rl.mjlab_gpu.cli.GpuGraspVecEnv", lambda *args, **kwargs: env
+    )
+    monkeypatch.setattr(
+        "simple.grasp_rl.mjlab_gpu.cli._set_evaluation_dr_strength",
+        lambda _env, strength: captured.update(strength=strength),
+    )
+    monkeypatch.setattr(
+        "simple.grasp_rl.mjlab_gpu.cli.checkpoint_uses_plan_conditioned_actor",
+        lambda _path: True,
+    )
+    monkeypatch.setattr(
+        "simple.grasp_rl.mjlab_gpu.cli.GpuPpoRunner", lambda *args, **kwargs: runner
+    )
+    monkeypatch.setattr(
+        "simple.grasp_rl.mjlab_gpu.cli.record_success_videos",
+        lambda *args, **kwargs: captured.update(kwargs) or {"videos": []},
+    )
+
+    _record(args)
+
+    assert captured["strength"] == pytest.approx(0.2)
+    assert captured["domain_randomization"] is True
 
     reference_only = _parser().parse_args(
         [
@@ -192,10 +303,56 @@ def test_train_cli_accepts_scratch_plan_conditioned_actor() -> None:
             "--plan-conditioned-actor",
             "--scratch-actor-output-scale",
             "0.001",
+            "--scratch-right-hand-correction",
+            *(["0"] * 7),
+            "--scratch-right-arm-correction",
+            *(["0"] * 7),
+            "--save-interval",
+            "10",
         ]
     )
     assert args.plan_conditioned_actor
     assert args.scratch_actor_output_scale == 0.001
+    assert args.scratch_right_hand_correction == [0.0] * 7
+    assert args.scratch_right_arm_correction == [0.0] * 7
+    assert args.save_interval == 10
+
+
+def test_cli_accepts_guarded_balanced_reference_selection(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    args = _parser().parse_args(
+        [
+            "train",
+            "--asset-bundle",
+            str(tmp_path / "assets"),
+            "--reference-processed",
+            str(tmp_path / "reference"),
+            "--output",
+            str(tmp_path / "output"),
+            "--reference-selection",
+            "balanced",
+            "--max-reference-initial-position-offset",
+            "0.05",
+        ]
+    )
+    config = _config(args)
+    assert config.reference_selection == "balanced"
+    assert config.max_reference_initial_position_offset == 0.05
+    with pytest.raises(ValueError, match="alignment limit"):
+        replace(config, max_reference_initial_position_offset=None)
+
+
+def test_strict_reference_rejects_non_asset_selection(tmp_path) -> None:
+    with pytest.raises(ValueError, match="requires asset reference selection"):
+        MjlabPpoConfig(
+            "tabletop_grasp",
+            str(tmp_path),
+            strict_reference_episode=20,
+            reference_selection="balanced",
+            max_reference_initial_position_offset=0.05,
+        )
 
 
 def test_cli_accepts_task_specific_dr_envelope(monkeypatch, tmp_path) -> None:
@@ -213,6 +370,17 @@ def test_cli_accepts_task_specific_dr_envelope(monkeypatch, tmp_path) -> None:
             "--target-position-jitter-xy",
             "0.015",
             "0.02",
+            "--target-position-offset-center-xy",
+            "0.01",
+            "-0.005",
+            "--target-position-focus-probability",
+            "0.5",
+            "--target-position-focus-jitter-xy",
+            "0.01",
+            "0.02",
+            "--target-position-focus-offset-center-xy",
+            "0.04",
+            "0.03",
             "--target-yaw-jitter",
             "0.1",
             "--destination-position-jitter-xy",
@@ -234,6 +402,19 @@ def test_cli_accepts_task_specific_dr_envelope(monkeypatch, tmp_path) -> None:
     )
     config = _config(args)
     assert config.domain_randomization.target_position_jitter_xy == (0.015, 0.02)
+    assert config.domain_randomization.target_position_offset_center_xy == (
+        0.01,
+        -0.005,
+    )
+    assert config.domain_randomization.target_position_focus_probability == 0.5
+    assert config.domain_randomization.target_position_focus_jitter_xy == (
+        0.01,
+        0.02,
+    )
+    assert config.domain_randomization.target_position_focus_offset_center_xy == (
+        0.04,
+        0.03,
+    )
     assert config.domain_randomization.target_yaw_jitter == 0.1
     assert config.domain_randomization.destination_position_jitter_xy == (
         0.02,
@@ -244,6 +425,63 @@ def test_cli_accepts_task_specific_dr_envelope(monkeypatch, tmp_path) -> None:
     assert config.domain_randomization.distractor_yaw_jitter == 0.2
     assert config.domain_randomization.robot_base_position_jitter_xy == (0.01, 0.015)
     assert config.domain_randomization.robot_base_yaw_jitter == 0.03
+
+
+def test_cli_accepts_strict_reference_and_wide_physics_noise_dr(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4")
+    args = _parser().parse_args(
+        [
+            "train",
+            "--task",
+            "bend_pick_teleop",
+            "--asset-bundle",
+            str(tmp_path / "assets"),
+            "--reference-processed",
+            str(tmp_path / "reference"),
+            "--output",
+            str(tmp_path / "output"),
+            "--strict-reference-episode",
+            "20",
+            "--target-mass-scale",
+            "0.6",
+            "1.4",
+            "--friction-scale",
+            "0.5",
+            "1.5",
+            "--joint-damping-scale",
+            "0.8",
+            "1.2",
+            "--actuator-strength-scale",
+            "0.85",
+            "1.15",
+            "--action-delay-max-steps",
+            "1",
+            "--reference-action-noise-std",
+            "0.004",
+            "--reference-position-noise-std",
+            "0.005",
+            "--reference-phase-noise-std",
+            "0.02",
+            "--reference-future-dropout-probability",
+            "0.05",
+        ]
+    )
+    config = _config(args)
+    dr = config.domain_randomization
+    assert config.strict_reference_episode == 20
+    assert dr.target_mass_scale == (0.6, 1.4)
+    assert dr.friction_scale == (0.5, 1.5)
+    assert dr.joint_damping_scale == (0.8, 1.2)
+    assert dr.actuator_strength_scale == (0.85, 1.15)
+    assert dr.action_delay_max_steps == 1
+    assert dr.reference_noise == ReferenceNoiseConfig(
+        action_std=0.004,
+        position_std=0.005,
+        phase_std=0.02,
+        future_dropout_probability=0.05,
+    )
 
 
 def test_cli_exposes_backward_compatible_reference_residual_limit(
@@ -316,6 +554,15 @@ def test_zero_retarget_accepts_legacy_checkpoint_metadata(tmp_path) -> None:
     legacy_resolved.pop("reference_target_x_arm_gains")
     legacy_resolved.pop("reference_target_y_arm_gains")
     legacy_resolved.pop("reference_target_yaw_arm_gains")
+    legacy_resolved.pop("strict_reference_episode")
+    legacy_resolved.pop("reference_selection")
+    legacy_resolved.pop("max_reference_initial_position_offset")
+    legacy_resolved["domain_randomization"] = dict(
+        legacy_resolved["domain_randomization"]
+    )
+    legacy_resolved["domain_randomization"].pop(
+        "target_position_offset_center_xy"
+    )
     metadata["resolved"] = legacy_resolved
     metadata["resolved_sha256"] = hashlib.sha256(
         json.dumps(legacy_resolved, sort_keys=True, separators=(",", ":")).encode()
@@ -418,6 +665,10 @@ def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
     full = DomainRandomizationConfig(
         curriculum_initial_strength=0.25,
         curriculum_ramp_steps=19_200,
+        target_position_offset_center_xy=(0.01, -0.02),
+        target_position_focus_probability=0.5,
+        target_position_focus_jitter_xy=(0.03, 0.04),
+        target_position_focus_offset_center_xy=(0.02, -0.01),
         destination_position_jitter_xy=(0.02, 0.025),
         destination_yaw_jitter=0.1,
         distractor_position_jitter_xy=(0.03, 0.03),
@@ -431,6 +682,13 @@ def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
     target_yaw = full.target_yaw_only()
 
     assert pose.target_position_jitter_xy == full.target_position_jitter_xy
+    assert (
+        pose.target_position_offset_center_xy
+        == full.target_position_offset_center_xy
+    )
+    assert pose.target_position_focus_probability == 0.5
+    assert pose.target_position_focus_jitter_xy == (0.03, 0.04)
+    assert pose.target_position_focus_offset_center_xy == (0.02, -0.01)
     assert pose.target_yaw_jitter == full.target_yaw_jitter
     assert pose.curriculum_initial_strength == 0.25
     assert pose.curriculum_ramp_steps == 19_200
@@ -451,6 +709,9 @@ def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
         full.target_position_jitter_xy[0],
         0.0,
     )
+    assert target_x.target_position_offset_center_xy == (0.01, 0.0)
+    assert target_x.target_position_focus_jitter_xy == (0.03, 0.0)
+    assert target_x.target_position_focus_offset_center_xy == (0.02, 0.0)
     assert target_x.target_yaw_jitter == 0.0
     assert target_x.destination_position_jitter_xy == (0.0, 0.0)
     assert target_x.distractor_position_jitter_xy == (0.0, 0.0)
@@ -460,10 +721,15 @@ def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
         0.0,
         full.target_position_jitter_xy[1],
     )
+    assert target_y.target_position_offset_center_xy == (0.0, -0.02)
+    assert target_y.target_position_focus_jitter_xy == (0.0, 0.04)
+    assert target_y.target_position_focus_offset_center_xy == (0.0, -0.01)
     assert target_y.target_yaw_jitter == 0.0
     assert target_y.destination_position_jitter_xy == (0.0, 0.0)
     assert not target_y.reference_noise.enabled
     assert target_yaw.target_position_jitter_xy == (0.0, 0.0)
+    assert target_yaw.target_position_offset_center_xy == (0.0, 0.0)
+    assert target_yaw.target_position_focus_probability == 0.0
     assert target_yaw.target_yaw_jitter == full.target_yaw_jitter
     assert target_yaw.destination_yaw_jitter == 0.0
     assert target_yaw.distractor_yaw_jitter == 0.0

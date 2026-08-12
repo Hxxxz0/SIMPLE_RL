@@ -94,7 +94,8 @@ class GpuTaskStateExtractorV2:
         for role in ("primary", "destination", "auxiliary", "support"):
             self.role_ids.setdefault(role, None)
         self.role_extents = {
-            role: self._extent(body_id) for role, body_id in self.role_ids.items()
+            role: self._extent(role, body_id)
+            for role, body_id in self.role_ids.items()
         }
         qpos, qvel = [], []
         for name in JOINT_NAMES:
@@ -118,7 +119,19 @@ class GpuTaskStateExtractorV2:
         self._articulation_layout()
         self.sync_episode_origin(torch.arange(self.num_envs, device=self.device))
 
-    def _extent(self, body_id: int | None) -> torch.Tensor:
+    def _extent(self, role: str, body_id: int | None) -> torch.Tensor:
+        object_contract = self.gpu.bundle.manifest.get("object_contract")
+        if role == "primary" and object_contract is not None:
+            extents = torch.as_tensor(
+                object_contract["half_extents_m"],
+                dtype=torch.float32,
+                device=self.device,
+            )
+            if extents.shape != (3,) or not torch.isfinite(extents).all() or (
+                extents <= 0.0
+            ).any():
+                raise ValueError("Invalid grasp_anything primary half extents")
+            return extents
         if body_id is None:
             radius = 0.0
         else:

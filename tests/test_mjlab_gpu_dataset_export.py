@@ -1,9 +1,13 @@
+import mujoco
 import numpy as np
+import pytest
 
 from simple.grasp_rl.mjlab_gpu.dataset_export import (
     RAW_ACTION_NAMES,
+    _object_qpos_addresses,
     _physical_to_joint_command,
     _psi_arrays,
+    _source_instruction,
 )
 from simple.grasp_rl.schema import JOINT_NAMES
 
@@ -53,3 +57,46 @@ def test_psi_arrays_match_public_training_shapes() -> None:
     assert result["observation.hand_joints"].shape == (3, 14)
     assert result["observation.arm_joints"].shape == (3, 14)
     assert result["observation.leg_joints"].shape == (3, 15)
+
+
+def test_source_instruction_comes_from_frozen_episode() -> None:
+    instruction = _source_instruction(
+        {"tasks": ["bend the robot and pick up the cracker box"]}
+    )
+
+    assert instruction == "bend the robot and pick up the cracker box"
+    with pytest.raises(ValueError, match="exactly one"):
+        _source_instruction({"tasks": []})
+
+
+def test_object_pose_addresses_follow_scene_free_joint_order() -> None:
+    model = mujoco.MjModel.from_xml_string(
+        """
+        <mujoco>
+          <worldbody>
+            <body name="robot">
+              <freejoint name="floating_base_joint"/><geom size=".01"/>
+            </body>
+            <body name="target">
+              <freejoint name="target_joint"/><geom size=".01"/>
+            </body>
+            <body name="first">
+              <freejoint name="first_joint"/><geom size=".01"/>
+            </body>
+            <body name="second">
+              <freejoint name="second_joint"/><geom size=".01"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+    )
+    source_info = {
+        "features": {"observation.object_poses": {"shape": [21]}}
+    }
+
+    addresses = _object_qpos_addresses(model, source_info)
+
+    np.testing.assert_array_equal(addresses, [7, 14, 21])
+    source_info["features"]["observation.object_poses"]["shape"] = [28]
+    with pytest.raises(ValueError, match="expected 4"):
+        _object_qpos_addresses(model, source_info)

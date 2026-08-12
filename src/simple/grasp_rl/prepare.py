@@ -138,6 +138,7 @@ def prepare_dataset(
     num_workers: int = 8,
     seed: int = 42,
     task: str | GraspTaskSpec | None = None,
+    episode_id: int | None = None,
 ) -> Path:
     task_spec = get_task_spec(task)
     dataset_dir = Path(dataset_dir).resolve()
@@ -146,12 +147,18 @@ def prepare_dataset(
     episode_dir.mkdir(parents=True, exist_ok=True)
 
     rows = [json.loads(line) for line in (dataset_dir / "meta" / "episodes.jsonl").read_text().splitlines()]
-    episodes = list(range(len(rows)))
-    action_episodes = [_read_actions(_episode_file(dataset_dir, episode)) for episode in episodes]
+    if episode_id is not None and not 0 <= episode_id < len(rows):
+        raise ValueError(f"Episode {episode_id} is not present in the dataset")
+    episodes = [episode_id] if episode_id is not None else list(range(len(rows)))
+    action_episodes = {
+        episode: _read_actions(_episode_file(dataset_dir, episode))
+        for episode in episodes
+    }
     fingerprints: dict[str, int] = {}
     duplicates: dict[int, int] = {}
     unique_episodes = []
-    for episode, actions in zip(episodes, action_episodes, strict=True):
+    for episode in episodes:
+        actions = action_episodes[episode]
         digest = hashlib.sha256()
         digest.update(rows[episode]["environment_config"].encode())
         digest.update(np.ascontiguousarray(actions).tobytes())
@@ -161,7 +168,7 @@ def prepare_dataset(
         else:
             fingerprints[fingerprint] = episode
             unique_episodes.append(episode)
-    if len(unique_episodes) < 3:
+    if len(unique_episodes) < 3 and episode_id is None:
         raise ValueError("At least three unique demonstrations are required")
     transform = compute_action_transform(
         [action_episodes[episode] for episode in unique_episodes],
@@ -171,17 +178,20 @@ def prepare_dataset(
     )
     transform.save(output_dir / "action_transform.npz")
 
-    rng = np.random.default_rng(seed)
-    shuffled = np.asarray(unique_episodes)
-    rng.shuffle(shuffled)
-    train_stop = max(1, int(np.floor(0.8 * len(shuffled))))
-    val_count = max(1, int(np.floor(0.1 * len(shuffled))))
-    val_stop = min(train_stop + val_count, len(shuffled) - 1)
-    splits = {
-        "train": sorted(shuffled[:train_stop].tolist()),
-        "val": sorted(shuffled[train_stop:val_stop].tolist()),
-        "test": sorted(shuffled[val_stop:].tolist()),
-    }
+    if len(unique_episodes) == 1:
+        splits = {"train": unique_episodes.copy(), "val": [], "test": []}
+    else:
+        rng = np.random.default_rng(seed)
+        shuffled = np.asarray(unique_episodes)
+        rng.shuffle(shuffled)
+        train_stop = max(1, int(np.floor(0.8 * len(shuffled))))
+        val_count = max(1, int(np.floor(0.1 * len(shuffled))))
+        val_stop = min(train_stop + val_count, len(shuffled) - 1)
+        splits = {
+            "train": sorted(shuffled[:train_stop].tolist()),
+            "val": sorted(shuffled[train_stop:val_stop].tolist()),
+            "test": sorted(shuffled[val_stop:].tolist()),
+        }
 
     chunks = [
         list(map(int, chunk))
@@ -245,6 +255,10 @@ def prepare_dataset(
         "task": task_spec.name,
         "task_metadata": task_spec.metadata(),
         "seed": seed,
+        "requested_episode_id": episode_id,
+        "action_transform_sha256": hashlib.sha256(
+            (output_dir / "action_transform.npz").read_bytes()
+        ).hexdigest(),
         "unique_episodes": unique_episodes,
         "duplicates": {str(key): value for key, value in duplicates.items()},
         "splits": splits,

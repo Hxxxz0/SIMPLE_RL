@@ -81,6 +81,10 @@ class ReferenceNoiseConfig:
 class DomainRandomizationConfig:
     enabled: bool = True
     target_position_jitter_xy: tuple[float, float] = (0.025, 0.03)
+    target_position_offset_center_xy: tuple[float, float] = (0.0, 0.0)
+    target_position_focus_probability: float = 0.0
+    target_position_focus_jitter_xy: tuple[float, float] = (0.0, 0.0)
+    target_position_focus_offset_center_xy: tuple[float, float] = (0.0, 0.0)
     target_yaw_jitter: float = 0.15
     destination_position_jitter_xy: tuple[float, float] = (0.0, 0.0)
     destination_yaw_jitter: float = 0.0
@@ -111,6 +115,7 @@ class DomainRandomizationConfig:
                 raise ValueError(f"{name} values must be positive")
         for name in (
             "target_position_jitter_xy",
+            "target_position_focus_jitter_xy",
             "destination_position_jitter_xy",
             "distractor_position_jitter_xy",
             "robot_base_position_jitter_xy",
@@ -118,6 +123,17 @@ class DomainRandomizationConfig:
             value = getattr(self, name)
             if len(value) != 2 or any(item < 0.0 for item in value):
                 raise ValueError(f"{name} values must be non-negative")
+        for name in (
+            "target_position_offset_center_xy",
+            "target_position_focus_offset_center_xy",
+        ):
+            value = getattr(self, name)
+            if len(value) != 2 or not all(
+                math.isfinite(float(item)) for item in value
+            ):
+                raise ValueError(f"{name} values must be finite")
+        if not 0.0 <= self.target_position_focus_probability <= 1.0:
+            raise ValueError("target_position_focus_probability must be in [0, 1]")
         for name in (
             "target_yaw_jitter",
             "destination_yaw_jitter",
@@ -177,6 +193,18 @@ class DomainRandomizationConfig:
         return replace(
             pose,
             target_position_jitter_xy=(pose.target_position_jitter_xy[0], 0.0),
+            target_position_offset_center_xy=(
+                pose.target_position_offset_center_xy[0],
+                0.0,
+            ),
+            target_position_focus_jitter_xy=(
+                pose.target_position_focus_jitter_xy[0],
+                0.0,
+            ),
+            target_position_focus_offset_center_xy=(
+                pose.target_position_focus_offset_center_xy[0],
+                0.0,
+            ),
             target_yaw_jitter=0.0,
             destination_position_jitter_xy=(0.0, 0.0),
             destination_yaw_jitter=0.0,
@@ -193,6 +221,18 @@ class DomainRandomizationConfig:
         return replace(
             pose,
             target_position_jitter_xy=(0.0, pose.target_position_jitter_xy[1]),
+            target_position_offset_center_xy=(
+                0.0,
+                pose.target_position_offset_center_xy[1],
+            ),
+            target_position_focus_jitter_xy=(
+                0.0,
+                pose.target_position_focus_jitter_xy[1],
+            ),
+            target_position_focus_offset_center_xy=(
+                0.0,
+                pose.target_position_focus_offset_center_xy[1],
+            ),
             target_yaw_jitter=0.0,
             destination_position_jitter_xy=(0.0, 0.0),
             destination_yaw_jitter=0.0,
@@ -209,6 +249,10 @@ class DomainRandomizationConfig:
         return replace(
             pose,
             target_position_jitter_xy=(0.0, 0.0),
+            target_position_offset_center_xy=(0.0, 0.0),
+            target_position_focus_probability=0.0,
+            target_position_focus_jitter_xy=(0.0, 0.0),
+            target_position_focus_offset_center_xy=(0.0, 0.0),
             destination_position_jitter_xy=(0.0, 0.0),
             destination_yaw_jitter=0.0,
             distractor_position_jitter_xy=(0.0, 0.0),
@@ -230,6 +274,9 @@ class MjlabPpoConfig:
     smoke_mode: bool = False
     reference_processed: str | None = None
     reference_source: str = "bc"
+    strict_reference_episode: int | None = None
+    reference_selection: str = "asset"
+    max_reference_initial_position_offset: float | None = None
     reference_reward_weight: float = 0.05
     reference_target_x_arm_gains: tuple[float, float] = (0.0, 0.0)
     reference_target_y_arm_gains: tuple[float, float] = (0.0, 0.0)
@@ -257,6 +304,34 @@ class MjlabPpoConfig:
             raise ValueError("asset_bundle must be non-empty")
         if not self.reference_source:
             raise ValueError("reference_source must be non-empty")
+        if self.strict_reference_episode is not None and self.strict_reference_episode < 0:
+            raise ValueError("strict_reference_episode must be non-negative")
+        if self.reference_selection not in ("asset", "nearest", "balanced"):
+            raise ValueError(
+                "reference_selection must be asset, nearest, or balanced"
+            )
+        if (
+            self.strict_reference_episode is not None
+            and self.reference_selection != "asset"
+        ):
+            raise ValueError(
+                "strict_reference_episode requires asset reference selection"
+            )
+        if self.max_reference_initial_position_offset is not None and (
+            not math.isfinite(self.max_reference_initial_position_offset)
+            or self.max_reference_initial_position_offset <= 0.0
+        ):
+            raise ValueError(
+                "max_reference_initial_position_offset must be positive and finite"
+            )
+        if (
+            self.reference_selection != "asset"
+            and self.max_reference_initial_position_offset is None
+        ):
+            raise ValueError(
+                "non-asset reference selection requires an explicit initial-position "
+                "alignment limit"
+            )
         if self.reference_reward_weight < 0.0:
             raise ValueError("reference_reward_weight must be non-negative")
         if len(self.reference_target_x_arm_gains) != 2 or not all(
@@ -332,6 +407,41 @@ class MjlabPpoConfig:
             ):
                 if name not in normalized and gains == (0.0, 0.0):
                     normalized[name] = [0.0, 0.0]
+            if (
+                "strict_reference_episode" not in normalized
+                and self.strict_reference_episode is None
+            ):
+                normalized["strict_reference_episode"] = None
+            if (
+                "reference_selection" not in normalized
+                and self.reference_selection == "asset"
+            ):
+                normalized["reference_selection"] = "asset"
+            if (
+                "max_reference_initial_position_offset" not in normalized
+                and self.max_reference_initial_position_offset is None
+            ):
+                normalized["max_reference_initial_position_offset"] = None
+            expected_dr = expected["resolved"]["domain_randomization"]
+            legacy_dr = normalized.get("domain_randomization")
+            if isinstance(legacy_dr, dict):
+                legacy_dr = dict(legacy_dr)
+                if (
+                    "target_position_offset_center_xy" not in legacy_dr
+                    and tuple(
+                        expected_dr.get("target_position_offset_center_xy", ())
+                    )
+                    == (0.0, 0.0)
+                ):
+                    legacy_dr["target_position_offset_center_xy"] = [0.0, 0.0]
+                for name, default in (
+                    ("target_position_focus_probability", 0.0),
+                    ("target_position_focus_jitter_xy", [0.0, 0.0]),
+                    ("target_position_focus_offset_center_xy", [0.0, 0.0]),
+                ):
+                    if name not in legacy_dr and expected_dr.get(name) == default:
+                        legacy_dr[name] = default
+                normalized["domain_randomization"] = legacy_dr
             # A portable release may relocate frozen assets and reference data.
             # The runner separately verifies both content hashes, so filesystem
             # paths are not part of behavioral compatibility.

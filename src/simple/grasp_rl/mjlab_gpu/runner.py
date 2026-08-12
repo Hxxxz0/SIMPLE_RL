@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import warnings
 from copy import deepcopy
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from rsl_rl.runners import OnPolicyRunner
+from tensordict import TensorDictBase
+from torch import nn
 
 from simple.grasp_rl.mjlab_gpu.vec_env import GpuGraspVecEnv
 from simple.grasp_rl.ppo_integrity import PpoIntegrityAuditor
@@ -19,8 +23,31 @@ def ppo_train_config(
     smoke: bool = False,
     plan_conditioned_actor: bool = False,
     exploration_std: float | None = None,
+    exploration_hold_steps: int = 1,
 ) -> dict:
     """Return the reviewed PPO hyperparameters for the reference actor."""
+
+    if exploration_hold_steps < 1:
+        raise ValueError("exploration_hold_steps must be at least 1")
+    distribution_cfg: dict[str, object] = {
+        "class_name": (
+            "GaussianDistribution"
+            if exploration_hold_steps == 1
+            else (
+                "simple.grasp_rl.distribution."
+                "TemporallyCorrelatedGaussianDistribution"
+            )
+        ),
+        "init_std": (
+            exploration_std
+            if exploration_std is not None
+            else (0.05 if smoke else 0.02)
+        ),
+        "std_type": "scalar",
+        "learn_std": False,
+    }
+    if exploration_hold_steps > 1:
+        distribution_cfg["hold_steps"] = exploration_hold_steps
 
     return {
         "seed": 42,
@@ -43,16 +70,7 @@ def ppo_train_config(
             "hidden_dims": (512, 256, 128),
             "activation": "elu",
             "obs_normalization": True,
-            "distribution_cfg": {
-                "class_name": "GaussianDistribution",
-                "init_std": (
-                    exploration_std
-                    if exploration_std is not None
-                    else (0.05 if smoke else 0.02)
-                ),
-                "std_type": "scalar",
-                "learn_std": False,
-            },
+            "distribution_cfg": distribution_cfg,
         },
         "critic": {
             "class_name": "MLPModel",
@@ -92,6 +110,14 @@ def _move_optimizer_state(optimizer: torch.optim.Optimizer, device: str) -> None
         for key, value in tuple(state.items()):
             if torch.is_tensor(value):
                 state[key] = value.to(device)
+
+
+def _sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _load_policy_warm_start(
@@ -136,6 +162,12 @@ def _reference_metadata_matches(actual: object, expected: dict[str, object]) -> 
     ):
         if name not in normalized and expected.get(name) == [0.0, 0.0]:
             normalized[name] = [0.0, 0.0]
+    if "strict_episode" not in normalized and expected.get("strict_episode") is None:
+        normalized["strict_episode"] = None
+    if "action_transform_sha256" not in normalized:
+        normalized["action_transform_sha256"] = expected.get(
+            "action_transform_sha256"
+        )
     return normalized == expected
 
 
@@ -160,6 +192,8 @@ class GpuPpoRunner(OnPolicyRunner):
         log_dir: str | None,
         integrity_path: str | Path | None = None,
         actor_learning_rate_scale: float = 1.0,
+        actor_anchor_checkpoint: str | Path | None = None,
+        actor_anchor_weight: float = 0.0,
     ):
         super().__init__(env, deepcopy(train_cfg), log_dir, env.device)
         self.actor_learning_rate_scale = float(actor_learning_rate_scale)
@@ -181,11 +215,144 @@ class GpuPpoRunner(OnPolicyRunner):
                 ]
             )
         _make_optimizer_capturable(self.alg.optimizer)
+        self.actor_anchor_metadata: dict[str, object] | None = None
+        if actor_anchor_weight < 0.0:
+            raise ValueError("actor_anchor_weight must be non-negative")
+        if (actor_anchor_checkpoint is None) != (actor_anchor_weight == 0.0):
+            raise ValueError(
+                "actor anchor checkpoint and positive weight must be set together"
+            )
+        if actor_anchor_checkpoint is not None:
+            self._install_actor_anchor(
+                actor_anchor_checkpoint,
+                weight=float(actor_anchor_weight),
+            )
         self.integrity_auditor = (
             PpoIntegrityAuditor(self, integrity_path)
             if integrity_path is not None
             else None
         )
+
+    def _install_actor_anchor(
+        self,
+        checkpoint: str | Path,
+        *,
+        weight: float,
+    ) -> None:
+        """Keep focused PPO close to a frozen, validated teacher actor."""
+
+        checkpoint = Path(checkpoint).resolve()
+        payload = torch.load(
+            checkpoint, map_location=self.device, weights_only=False
+        )
+        state = self._validated_actor_state(payload, checkpoint=checkpoint)
+
+        actor = self.alg.get_policy()
+        teacher = deepcopy(actor)
+        _load_policy_warm_start(teacher, state)
+        teacher.eval()
+        teacher.requires_grad_(False)
+
+        optimizer = self.alg.optimizer
+        base_step = optimizer.step
+        base_update = self.alg.update
+        base_forward = actor.forward
+        captured_observations: TensorDictBase | None = None
+        anchor_losses: list[float] = []
+        dimension_weights = torch.ones(
+            int(actor.mlp[-1].out_features), device=self.device
+        )
+        # Preserve the demonstrated grasp while still allowing small, targeted
+        # corrections in the manipulation joints.
+        dimension_weights[7:14] = 10.0
+        dimension_weights[21:28] = 5.0
+
+        def capturing_forward(observations, *args, **kwargs):
+            nonlocal captured_observations
+            result = base_forward(observations, *args, **kwargs)
+            if kwargs.get("stochastic_output", False):
+                captured_observations = observations.detach()
+            return result
+
+        actor.forward = capturing_forward
+
+        def anchored_step(*args, **kwargs):
+            if captured_observations is None:
+                raise RuntimeError("PPO actor observations were not captured")
+            with torch.no_grad():
+                targets = teacher(
+                    captured_observations, stochastic_output=False
+                )
+            prediction = actor(
+                captured_observations, stochastic_output=False
+            )
+            element_loss = F.smooth_l1_loss(
+                prediction, targets, reduction="none"
+            )
+            anchor_loss = (
+                element_loss * dimension_weights
+            ).sum(-1).mean() / dimension_weights.sum()
+            (weight * anchor_loss).backward()
+            nn.utils.clip_grad_norm_(actor.parameters(), self.alg.max_grad_norm)
+            anchor_losses.append(float(anchor_loss.detach()))
+            return base_step(*args, **kwargs)
+
+        optimizer.step = anchored_step
+
+        def anchored_update():
+            anchor_losses.clear()
+            metrics = base_update()
+            if not anchor_losses:
+                raise RuntimeError("PPO actor anchor did not run an optimizer step")
+            metrics["actor_anchor"] = float(
+                sum(anchor_losses) / len(anchor_losses)
+            )
+            return metrics
+
+        self.alg.update = anchored_update
+        self._actor_anchor_teacher = teacher
+        self.actor_anchor_metadata = {
+            "weight": weight,
+            "checkpoint_sha256": _sha256_file(checkpoint),
+        }
+
+    def _validated_actor_state(
+        self,
+        payload: dict,
+        *,
+        checkpoint: str | Path,
+    ) -> dict[str, torch.Tensor]:
+        bundle = self.env.gpu.bundle
+        gpu_metadata = payload.get("mjlab_gpu_metadata")
+        if gpu_metadata is not None:
+            resolved = gpu_metadata.get("config", {}).get("resolved", {})
+            if resolved.get("task") != self.env.config.task:
+                raise ValueError("GPU checkpoint task does not match this environment")
+            if gpu_metadata.get("asset_manifest_hash") != bundle.manifest[
+                "manifest_hash"
+            ]:
+                raise ValueError("GPU checkpoint asset bundle does not match")
+        else:
+            validate_task_metadata(
+                payload,
+                self.env.config.task,
+                checkpoint=checkpoint,
+                action_transform=bundle.root / bundle.manifest["action_transform"],
+            )
+        state = payload.get("actor_state_dict")
+        if not isinstance(state, dict):
+            raise TypeError("Checkpoint does not contain an actor_state_dict")
+        expected_observation_dim = (
+            self.env.reference.observation_dim + self.env.reference.context_dim
+        )
+        first_weight = state.get("mlp.0.weight")
+        if first_weight is None or first_weight.shape[1] != expected_observation_dim:
+            raise ValueError(
+                "Actor checkpoint observation dimension does not match the task: "
+                f"{None if first_weight is None else first_weight.shape[1]} != "
+                f"{expected_observation_dim}"
+            )
+        return state
 
     def set_learning_rate(self, learning_rate: float) -> None:
         """Set the critic base rate while retaining the actor rate scale."""
@@ -204,35 +371,7 @@ class GpuPpoRunner(OnPolicyRunner):
 
     def load_actor_warm_start(self, checkpoint: str | Path) -> None:
         payload = torch.load(checkpoint, map_location=self.device, weights_only=False)
-        bundle = self.env.gpu.bundle
-        gpu_metadata = payload.get("mjlab_gpu_metadata")
-        if gpu_metadata is not None:
-            resolved = gpu_metadata.get("config", {}).get("resolved", {})
-            if resolved.get("task") != self.env.config.task:
-                raise ValueError("GPU checkpoint task does not match this environment")
-            if (
-                gpu_metadata.get("asset_manifest_hash")
-                != bundle.manifest["manifest_hash"]
-            ):
-                raise ValueError("GPU checkpoint asset bundle does not match")
-        else:
-            validate_task_metadata(
-                payload,
-                self.env.config.task,
-                checkpoint=checkpoint,
-                action_transform=bundle.root / bundle.manifest["action_transform"],
-            )
-        state = payload["actor_state_dict"]
-        expected_observation_dim = (
-            self.env.reference.observation_dim + self.env.reference.context_dim
-        )
-        first_weight = state.get("mlp.0.weight")
-        if first_weight is None or first_weight.shape[1] != expected_observation_dim:
-            raise ValueError(
-                "Actor warm start observation dimension does not match the task: "
-                f"{None if first_weight is None else first_weight.shape[1]} != "
-                f"{expected_observation_dim}"
-            )
+        state = self._validated_actor_state(payload, checkpoint=checkpoint)
         # A BC checkpoint contains the old policy's sampling distribution too.
         # Warm-start the network and observation normalizer, but keep the PPO
         # run's reviewed exploration settings (notably init_std) authoritative.
@@ -306,6 +445,7 @@ class GpuPpoRunner(OnPolicyRunner):
             "optimizer": {
                 "actor_learning_rate_scale": self.actor_learning_rate_scale,
             },
+            "actor_anchor": getattr(self, "actor_anchor_metadata", None),
         }
         reward_override = self.env.robometer_reward_metadata()
         if reward_override is not None:
@@ -364,6 +504,7 @@ class GpuPpoRunner(OnPolicyRunner):
                 "reward",
                 "reference",
                 "optimizer",
+                "actor_anchor",
             ):
                 actual = metadata.get(key)
                 if key == "optimizer" and actual is None:
