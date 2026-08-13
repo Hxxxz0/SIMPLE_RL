@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "release_id": "grasp-anything-mjlab-gpu-ppo-v1",
+  "task": "grasp_anything",
+  "backend": "mjlab_mujoco_warp",
+  "success_definition": {
+    "native_physical_lift_m": 0.09,
+    "hold_steps": 13,
+    "requires_grasp": true
+  },
+  "checkpoints": [
+    {
+      "object_id": "Soap_Bottle_1",
+      "path": "checkpoints/soap_bottle_1_model_199.pt",
+      "sha256": "e834c6a5df519b522f7e6c918950c9e8de67c133bdba8c107196287e79e355c5",
+      "bytes": 18288971,
+      "total_on_policy_transitions": 39321600,
+      "scope": "narrow_pose_dr_with_lift_arm_decay_v1",
+      "runtime": {
+        "grasp_anything_lift_arm_residual_min_scale": 0.1,
+        "grasp_anything_lift_arm_residual_decay_steps": 10,
+        "grasp_anything_lift_arm_residual_grasp_steps": 3
+      },
+      "evaluation": {
+        "seed": 20260870,
+        "episodes": 512,
+        "successes": 512,
+        "success_rate": 1.0,
+        "mean_max_lift_m": 0.1260716881370172,
+        "max_lift_m": 0.1315632462501526,
+        "initial_world_sha256": "fc34cf21e3fa06c6ab305731f803e9a2afae33511c9f821a3ff8130b113506a8"
+      },
+      "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Soap_Bottle_1/single_ref_ep82_per_object_v1/videos_narrow_dr1_lift_arm_decay_v1"
+    },
+    {
+      "object_id": "Bottle_1",
+      "path": "checkpoints/bottle_1_model_199.pt",
+      "sha256": "1a3c234790de844e540a70f0050a1c2c3b6db098369de39753197f8ecd7752db",
+      "bytes": 18288907,
+      "total_on_policy_transitions": 39321600,
+      "scope": "narrow_pose_dr_with_lift_arm_decay_v1",
+      "runtime": {
+        "grasp_anything_lift_arm_residual_min_scale": 0.1,
+        "grasp_anything_lift_arm_residual_decay_steps": 10,
+        "grasp_anything_lift_arm_residual_grasp_steps": 3
+      },
+      "evaluation": {
+        "seed": 20260873,
+        "episodes": 512,
+        "successes": 492,
+        "success_rate": 0.9609375,
+        "mean_max_lift_m": 0.11192112823482603,
+        "max_lift_m": 0.12006378173828125,
+        "initial_world_sha256": "dd414deef8893e7dcda8fae31e1d36cd98b8f4a4799bcafd6c2d173634450aa0"
+      },
+      "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Bottle_1/single_ref_ep82_per_object_v1/videos_narrow_dr1_lift_arm_decay_v1"
+    },
+    {
+      "object_id": "Apple_1",
+      "path": "checkpoints/apple_1_model_0.pt",
+      "sha256": "bb05379f2a427026e009596be2915e536215a6f78130c6cfa0ca0dd21cf0827f",
+      "bytes": 18288627,
+      "total_on_policy_transitions": 196608,
+      "scope": "fixed_pose_baseline_only",
+      "evaluation": {
+        "seed": 20260884,
+        "episodes": 512,
+        "successes": 112,
+        "success_rate": 0.21875,
+        "max_lift_m": 0.16258174180984497,
+        "initial_world_sha256": "9d3d769d077e974fb934637765d7b2a9a378f3491f5873a86487daf091521feb"
+      },
+      "known_narrow_evaluation": {
+        "seed": 20260889,
+        "episodes": 512,
+        "successes": 3,
+        "success_rate": 0.005859375
+      },
+      "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/single_ref_ep82_small_v4_multireplay/videos_fixed_dr1_model_0"
+    },
+    {
+      "object_id": "Bowl_1",
+      "path": "checkpoints/bowl_1_model_0.pt",
+      "sha256": "5ea8d9ea276235f301810fc06ea9fc6edb34d26ba478a8e832825fe84dfdfd28",
+      "bytes": 18288691,
+      "total_on_policy_transitions": 196608,
+      "scope": "fixed_pose_rim_grasp_baseline_only",
+      "evaluation": {
+        "seed": 20260892,
+        "episodes": 512,
+        "successes": 194,
+        "success_rate": 0.37890625,
+        "mean_max_lift_m": 0.07422212162055075,
+        "max_lift_m": 0.18365025520324707,
+        "initial_world_sha256": "d519027c1ce10df39cbbf3faa6c37aa87dc3b94f8f3ad2eed8bf05d52c0e803b"
+      },
+      "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Bowl_1/single_ref_ep82_rim_v4_staged/videos_fixed_dr1_model_0"
+    },
+    {
+      "object_id": "Cup_6",
+      "path": "checkpoints/cup_6_model_39.pt",
+      "sha256": "2d84d43c4f7235ff36375166fa4554cc7d4c044890b5bd0917c9c7b2c3ac6e1e",
+      "bytes": 18288863,
+      "total_on_policy_transitions": 7864320,
+      "scope": "full_dr_profile_strength_0.2_with_x_conditioned_proposal",
+      "evaluations": [
+        {
+          "seed": 20260814,
+          "episodes": 512,
+          "successes": 510,
+          "success_rate": 0.99609375,
+          "max_lift_m": 0.11917674541473389,
+          "initial_world_sha256": "ac6339078f6e36bbc6691b304873d4bf43620beacce073c93343337f5aac0d1c"
+        },
+        {
+          "seed": 20260815,
+          "episodes": 512,
+          "successes": 506,
+          "success_rate": 0.98828125,
+          "max_lift_m": 0.11926615238189697,
+          "initial_world_sha256": "2c9051642bdcdf09859b74b957f2f504e37d62cc9273e901ea5bf61b1dc7b77c"
+        },
+        {
+          "seed": 20260819,
+          "episodes": 512,
+          "successes": 507,
+          "success_rate": 0.990234375,
+          "max_lift_m": 0.11862307786941528,
+          "initial_world_sha256": "74fd993d603f3a110114048581736507baccae0530561f725874b5e03e05477b"
+        }
+      ],
+      "aggregate": {
+        "episodes": 1536,
+        "successes": 1523,
+        "success_rate": 0.9915364583333334
+      },
+      "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Cup_6/release_single_ref_ep82_dr02_xonly_s12p5_e4/videos_dr02_final"
+    }
+  ]
+}

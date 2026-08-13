@@ -26,6 +26,19 @@ Contributors: [Songlin Wei](https://songlin.github.io/)\*, [Zhenhao Ni](https://
 + [2026-07-14] We released support for World Action Models: [Cosmos3](https://github.com/songlin/cosmos-framework/blob/main/docs/action_policy_simple_posttrain.md) and [DreamZero](https://github.com/physical-superintelligence-lab/Psi0/blob/main/baselines/dreamzero/README.md). 
 + [ ] Integrate SONIC whole-body controller.
 
+## grasp_anything 物体抓取发布（2026-08-14）
+
+`grasp_anything` 当前已有 5 种物体的独立 RL checkpoint：`Soap_Bottle_1`、
+`Bottle_1`、`Apple_1`、`Bowl_1` 和 `Cup_6`。选定权重、SHA256、验收数据、
+适用边界和本机视频绝对路径已归档到
+[`releases/grasp_rl/mjlab_gpu/grasp_anything/v1`](releases/grasp_rl/mjlab_gpu/grasp_anything/v1)，
+大文件通过 Git LFS 发布。
+
+验收成功要求物体在原生物理中被抓住、抬高至少 9 cm 并保持 13 个控制步，
+不把仅接触或闭合手指计为成功。`Soap_Bottle_1` 和 `Bottle_1` 支持 narrow
+pose DR，但需要 lift-arm-decay 运行时变体；`Apple_1` 和 `Bowl_1` 目前只是
+fixed-pose baseline，不宣称 narrow/workspace DR 支持。五种物体都已有成功视频。
+
 ## mjlab CUDA PPO 可复现发布（2026-08-03）
 
 `xmove_pick` 的首个自包含 GPU release 位于
