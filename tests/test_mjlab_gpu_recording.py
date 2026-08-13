@@ -78,6 +78,25 @@ def test_checkpoint_provenance_uses_portable_paths(tmp_path) -> None:
     assert result["ppo_integrity"]["audit_path"] == "ppo_integrity.jsonl"
 
 
+def test_checkpoint_provenance_cleanly_rejects_zero_update_checkpoint(
+    tmp_path,
+) -> None:
+    checkpoint = tmp_path / "model_initial.pt"
+    torch.save(
+        {
+            "mjlab_gpu_metadata": {"config": {"backend": "mjlab_mujoco_warp"}},
+            "ppo_integrity": {
+                "algorithm": "rsl_rl.algorithms.ppo.PPO",
+                "latest_record": None,
+            },
+        },
+        checkpoint,
+    )
+
+    with pytest.raises(ValueError, match="audited on-policy PPO"):
+        _checkpoint_provenance(checkpoint.resolve())
+
+
 def test_diagnostic_rank_prioritizes_task_stage() -> None:
     early_high_lift = {
         "max_stage": 1,

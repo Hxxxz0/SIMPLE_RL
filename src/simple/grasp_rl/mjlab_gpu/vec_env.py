@@ -42,6 +42,17 @@ def _nonfinite_output_rows(
     return rows, value_count
 
 
+def _lift_arm_residual_scale(
+    decay_step: torch.Tensor, *, minimum_scale: float, decay_steps: int
+) -> torch.Tensor:
+    """Return the linear arm-only residual scale after stable grasp."""
+
+    if decay_steps < 1:
+        return torch.ones_like(decay_step, dtype=torch.float32)
+    progress = decay_step.to(torch.float32).div(float(decay_steps)).clamp(0.0, 1.0)
+    return 1.0 - (1.0 - minimum_scale) * progress
+
+
 class GpuGraspVecEnv(VecEnv):
     """GPU-only tabletop grasp environment with noisy actor/clean critic views."""
 
@@ -167,6 +178,13 @@ class GpuGraspVecEnv(VecEnv):
         self.last_numerical_failure = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device
         )
+        self._lift_arm_grasp_streak = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
+        self._lift_arm_decay_step = torch.zeros_like(self._lift_arm_grasp_streak)
+        self._lift_arm_decay_triggered = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
         self._reset_forward_repair_events = torch.zeros(
             (), dtype=torch.long, device=self.device
         )
@@ -229,6 +247,9 @@ class GpuGraspVecEnv(VecEnv):
         self.episode_length_buf[env_ids] = 0
         self._episode_return[env_ids] = 0.0
         self._episode_success[env_ids] = 0.0
+        self._lift_arm_grasp_streak[env_ids] = 0
+        self._lift_arm_decay_step[env_ids] = 0
+        self._lift_arm_decay_triggered[env_ids] = False
         self._last_base_observation = None
         self._last_clean_context = None
 
@@ -377,7 +398,34 @@ class GpuGraspVecEnv(VecEnv):
             mask[:, 21:28] = active[:, None]
             correction = correction * mask
         limit = self.config.max_reference_action_deviation
-        return reference + correction.clamp(-limit, limit)
+        correction = correction.clamp(-limit, limit)
+        if self.config.grasp_anything_lift_arm_residual_min_scale < 1.0:
+            arm_scale = _lift_arm_residual_scale(
+                self._lift_arm_decay_step,
+                minimum_scale=(
+                    self.config.grasp_anything_lift_arm_residual_min_scale
+                ),
+                decay_steps=(
+                    self.config.grasp_anything_lift_arm_residual_decay_steps
+                ),
+            )
+            correction[:, 21:28] *= arm_scale[:, None]
+        return reference + correction
+
+    def _update_lift_arm_residual_decay(self, is_grasp: torch.Tensor) -> None:
+        if self.config.grasp_anything_lift_arm_residual_min_scale >= 1.0:
+            return
+        self._lift_arm_grasp_streak.copy_(
+            torch.where(is_grasp, self._lift_arm_grasp_streak + 1, 0)
+        )
+        self._lift_arm_decay_triggered.logical_or_(
+            self._lift_arm_grasp_streak
+            >= self.config.grasp_anything_lift_arm_residual_grasp_steps
+        )
+        self._lift_arm_decay_step.add_(self._lift_arm_decay_triggered)
+        self._lift_arm_decay_step.clamp_max_(
+            self.config.grasp_anything_lift_arm_residual_decay_steps
+        )
 
     def get_observations(self) -> TensorDict:
         base_observation, _ = self.state_reader.actor_observation()
@@ -475,6 +523,7 @@ class GpuGraspVecEnv(VecEnv):
             terms.penalty[invalid_ids] = 0.0
             terms.terminal_adjustment[invalid_ids] = -10.0
         self.last_numerical_failure.copy_(numerical_failure)
+        self._update_lift_arm_residual_decay(terms.is_grasp)
         reference_action_mse = (
             (actions.clamp(-1.0, 1.0) - clean_reference_action).square().mean(dim=-1)
         )
@@ -540,6 +589,15 @@ class GpuGraspVecEnv(VecEnv):
                 "/task/native_success": terms.native_success.float().mean(),
                 "/task/grasp": terms.is_grasp.float().mean(),
                 "/task/lift_height": terms.lift_height.mean(),
+                "/task/lift_arm_residual_scale": _lift_arm_residual_scale(
+                    self._lift_arm_decay_step,
+                    minimum_scale=(
+                        self.config.grasp_anything_lift_arm_residual_min_scale
+                    ),
+                    decay_steps=(
+                        self.config.grasp_anything_lift_arm_residual_decay_steps
+                    ),
+                ).mean(),
                 "/task/numerical_failure": numerical_failure.float().mean(),
                 "/domain_randomization/strength": torch.tensor(
                     self._domain_randomization_strength(),

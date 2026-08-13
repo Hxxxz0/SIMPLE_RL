@@ -23,6 +23,16 @@ REFERENCE = (
     REPO_ROOT
     / "data/grasp_rl/G1WholebodyXMovePickTeleop-v0/v2_single_ref_ep82_shared_transform"
 )
+APPLE_STAGED_REFERENCE = (
+    REPO_ROOT
+    / "outputs/grasp_rl/other/references/grasp_anything/Apple_1_staged_native_success_v2"
+)
+BOWL_STAGED_REFERENCE = (
+    REPO_ROOT
+    / "outputs/grasp_rl/other/references/grasp_anything/Bowl_1_staged_native_success_v1"
+)
+
+
 @dataclass(frozen=True)
 class ObjectSpec:
     object_id: str
@@ -118,39 +128,28 @@ OBJECTS = {
             object_id="Apple_1",
             category="round",
             source_relative="Kitchen Objects/Apple/Prefabs/Apple_1/Apple_1.xml",
-            asset_version="object_reward_v2",
-            policy_version="single_ref_ep82_search_init_v2",
-            scale=0.8,
-            grip_width_m=0.075,
-            mass_kg=0.16,
+            # The v2 apple was 8.5 cm wide, larger than both graspable bottle
+            # bodies and the reference hand aperture. Keep that failed asset
+            # immutable and derive a realistically sized 6.4 cm variant.
+            asset_version="object_reward_v3_small",
+            policy_version="single_ref_ep82_small_v4_multireplay",
+            scale=0.6,
+            grip_width_m=0.064,
+            mass_kg=0.14,
             grasp_frame_position_m=(0.0, 0.0, 0.0),
             maximum_grip_force_newtons=60.0,
-            scratch_right_hand_correction=(
-                0.04059120,
-                -0.13898824,
-                0.00281936,
-                -0.03971771,
-                -0.08360039,
-                0.05712654,
-                0.11362694,
-            ),
-            scratch_right_arm_correction=(
-                -0.43554437,
-                0.18331219,
-                -0.17780514,
-                0.59081149,
-                -0.24559888,
-                0.70000000,
-                -0.63880301,
-            ),
-            exploration_std=0.05,
+            # The isolated staged reference already contains Apple's complete
+            # grasp trajectory. Start PPO exactly on it with a zero residual.
+            scratch_right_hand_correction=(0.0,) * 7,
+            scratch_right_arm_correction=(0.0,) * 7,
+            exploration_std=0.005,
         ),
         ObjectSpec(
             object_id="Bowl_1",
             category="bowl",
             source_relative="Kitchen Objects/Bowl/Prefabs/Bowl_1/Bowl_1.xml",
             asset_version="object_reward_v3_rim",
-            policy_version="single_ref_ep82_rim_v3",
+            policy_version="single_ref_ep82_rim_v4_staged",
             scale=0.45,
             grip_width_m=0.085,
             mass_kg=0.18,
@@ -158,9 +157,10 @@ OBJECTS = {
             # at the near rim instead of the root-centred point near the table.
             grasp_frame_position_m=(0.0, 0.012, -0.024),
             maximum_grip_force_newtons=70.0,
-            scratch_right_hand_correction=BASE_HAND_CORRECTION,
-            scratch_right_arm_correction=BASE_ARM_CORRECTION,
-            exploration_std=0.05,
+            # The isolated staged reference already contains the rim grasp.
+            scratch_right_hand_correction=(0.0,) * 7,
+            scratch_right_arm_correction=(0.0,) * 7,
+            exploration_std=0.005,
         ),
     )
 }
@@ -175,12 +175,20 @@ class StageSpec:
 
 
 STAGES = {
+    # Bootstrap a newly exported reference at its exact verified object pose.
+    # Position/yaw DR remains gated on success here.
+    "fixed": StageSpec((0.087, 0.0), (0.0, 0.0), 0.0, 80),
     # The original reference is near the edge. Both stages shift the object
     # inward far enough to retain a conservative 3 cm table margin even for
     # the largest yaw-randomized footprint in this catalog.
     "narrow": StageSpec((0.087, 0.0), (0.005, 0.005), 0.015, 200),
     "workspace": StageSpec((0.105, 0.0), (0.020, 0.025), 0.080, 40),
 }
+
+LIFT_ARM_DECAY_MIN_SCALE = 0.1
+LIFT_ARM_DECAY_STEPS = 10
+LIFT_ARM_DECAY_GRASP_STEPS = 3
+LIFT_ARM_DECAY_VARIANT = "lift_arm_decay_v1"
 
 
 def asset_path(object_id: str) -> Path:
@@ -190,6 +198,13 @@ def asset_path(object_id: str) -> Path:
         / "outputs/grasp_rl/other/assets/mjlab_assets/grasp_anything"
         / f"{object_id}_{spec.asset_version}"
     )
+
+
+def reference_path(object_id: str) -> Path:
+    return {
+        "Apple_1": APPLE_STAGED_REFERENCE,
+        "Bowl_1": BOWL_STAGED_REFERENCE,
+    }.get(object_id, REFERENCE)
 
 
 def run_root(object_id: str) -> Path:
@@ -341,7 +356,9 @@ def verify(spec: ObjectSpec, molmo_root: Path) -> dict[str, object]:
         raise ValueError("source object hash changed")
     if manifest["source_task"] != "xmove_pick" or contract["reference_task"] != "xmove_pick":
         raise ValueError("reference task contract changed")
-    if not (REFERENCE / "episodes/episode_000082.npz").is_file():
+    reference = reference_path(spec.object_id)
+    expected_reference = "bc/episode_000082.npz"
+    if not (reference / expected_reference).is_file():
         raise FileNotFoundError("strict episode-82 reference is missing")
 
     import mujoco
@@ -372,21 +389,24 @@ def verify(spec: ObjectSpec, molmo_root: Path) -> dict[str, object]:
             "half_extents_m": contract["half_extents_m"],
         },
         "workspaces": [
+            _workspace_audit(manifest, "fixed"),
             _workspace_audit(manifest, "narrow"),
             _workspace_audit(manifest, "workspace"),
         ],
     }
 
 
-def _environment_args(spec: ObjectSpec, stage: str, seed: int) -> list[str]:
+def _environment_args(
+    spec: ObjectSpec, stage: str, seed: int, *, lift_arm_decay: bool = False
+) -> list[str]:
     profile = STAGES[stage]
-    return [
+    arguments = [
         "--task",
         "grasp_anything",
         "--asset-bundle",
         str(asset_path(spec.object_id)),
         "--reference-processed",
-        str(REFERENCE),
+        str(reference_path(spec.object_id)),
         "--strict-reference-episode",
         "82",
         "--device",
@@ -428,16 +448,33 @@ def _environment_args(spec: ObjectSpec, stage: str, seed: int) -> list[str]:
         "0",
         "--robot-base-yaw-jitter",
         "0",
-        "--reference-target-x-arm-gains",
-        "-5.3",
-        "2.4",
-        "--reference-target-y-arm-gains",
-        "12",
-        "0",
-        "--reference-target-positive-y-arm-gains",
-        "22",
-        "0",
     ]
+    if spec.object_id != "Apple_1":
+        arguments.extend(
+            [
+                "--reference-target-x-arm-gains",
+                "-5.3",
+                "2.4",
+                "--reference-target-y-arm-gains",
+                "12",
+                "0",
+                "--reference-target-positive-y-arm-gains",
+                "22",
+                "0",
+            ]
+        )
+    if lift_arm_decay:
+        arguments.extend(
+            [
+                "--grasp-anything-lift-arm-residual-min-scale",
+                str(LIFT_ARM_DECAY_MIN_SCALE),
+                "--grasp-anything-lift-arm-residual-decay-steps",
+                str(LIFT_ARM_DECAY_STEPS),
+                "--grasp-anything-lift-arm-residual-grasp-steps",
+                str(LIFT_ARM_DECAY_GRASP_STEPS),
+            ]
+        )
+    return arguments
 
 
 def _gpu_cli(gpu: int) -> tuple[list[str], dict[str, str]]:
@@ -497,6 +534,22 @@ def _run_gpu(arguments: list[str], *, gpu: int, log: Path | None = None) -> None
         raise subprocess.CalledProcessError(process.returncode, command)
 
 
+def _validate_checkpoint_object(spec: ObjectSpec, checkpoint: Path) -> None:
+    import torch
+
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    metadata = payload.get("mjlab_gpu_metadata")
+    object_id = (
+        None
+        if not isinstance(metadata, dict)
+        else metadata.get("reward", {}).get("object_id")
+    )
+    if object_id != spec.object_id:
+        raise ValueError(
+            f"checkpoint object {object_id!r} does not match {spec.object_id!r}"
+        )
+
+
 def train(
     spec: ObjectSpec,
     *,
@@ -507,12 +560,18 @@ def train(
     iterations: int,
     warm_start: Path | None,
     smoke: bool = False,
+    lift_arm_decay: bool = False,
 ) -> Path:
-    output = stage_output(spec.object_id, f"{stage}_smoke" if smoke else stage)
+    output_stage = f"{stage}_smoke" if smoke else stage
+    if lift_arm_decay:
+        output_stage = f"{output_stage}_{LIFT_ARM_DECAY_VARIANT}"
+    output = stage_output(spec.object_id, output_stage)
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"refusing to overwrite existing PPO run: {output}")
     if warm_start is not None and not warm_start.is_file():
         raise FileNotFoundError(warm_start)
+    if warm_start is not None:
+        _validate_checkpoint_object(spec, warm_start)
     initialization = (
         [
             "--plan-conditioned-actor",
@@ -529,7 +588,9 @@ def train(
     _run_gpu(
         [
             "train",
-            *_environment_args(spec, stage, seed),
+            *_environment_args(
+                spec, stage, seed, lift_arm_decay=lift_arm_decay
+            ),
             "--learning-rate",
             "0.0003",
             "--actor-learning-rate-scale",
@@ -573,14 +634,18 @@ def evaluate(
     episodes: int,
     checkpoint: Path,
     label: str,
+    lift_arm_decay: bool = False,
 ) -> Path:
     if not checkpoint.is_file():
         raise FileNotFoundError(checkpoint)
+    _validate_checkpoint_object(spec, checkpoint)
     log = run_root(spec.object_id) / "acceptance" / f"{label}_seed{seed}_{episodes}.json"
     _run_gpu(
         [
             "evaluate",
-            *_environment_args(spec, stage, seed),
+            *_environment_args(
+                spec, stage, seed, lift_arm_decay=lift_arm_decay
+            ),
             "--checkpoint",
             str(checkpoint),
             "--num-envs",
@@ -607,14 +672,19 @@ def record(
     seed: int,
     checkpoint: Path,
     videos: int,
+    lift_arm_decay: bool = False,
 ) -> Path:
     if not checkpoint.is_file():
         raise FileNotFoundError(checkpoint)
-    output = run_root(spec.object_id) / f"videos_{stage}_dr1"
+    _validate_checkpoint_object(spec, checkpoint)
+    suffix = f"_{LIFT_ARM_DECAY_VARIANT}" if lift_arm_decay else ""
+    output = run_root(spec.object_id) / f"videos_{stage}_dr1{suffix}"
     _run_gpu(
         [
             "record",
-            *_environment_args(spec, stage, seed),
+            *_environment_args(
+                spec, stage, seed, lift_arm_decay=lift_arm_decay
+            ),
             "--checkpoint",
             str(checkpoint),
             "--output-dir",
@@ -664,6 +734,7 @@ def _parser() -> argparse.ArgumentParser:
         child.add_argument("--gpu", type=int, default=0)
         child.add_argument("--seed", type=int, default=20260830)
         child.add_argument("--checkpoint", type=Path)
+        child.add_argument("--lift-arm-decay", action="store_true")
         if command == "evaluate":
             child.add_argument("--episodes", type=int, default=512)
         elif command == "record":
@@ -704,6 +775,7 @@ def main(argv: list[str] | None = None) -> int:
             iterations=iterations,
             warm_start=warm_start,
             smoke=args.smoke,
+            lift_arm_decay=args.lift_arm_decay,
         )
     elif args.command == "evaluate":
         checkpoint = args.checkpoint or default_checkpoint(spec.object_id, args.stage)
@@ -714,7 +786,12 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             episodes=args.episodes,
             checkpoint=checkpoint,
-            label=f"policy_{args.stage}",
+            label=(
+                f"policy_{args.stage}_{LIFT_ARM_DECAY_VARIANT}"
+                if args.lift_arm_decay
+                else f"policy_{args.stage}"
+            ),
+            lift_arm_decay=args.lift_arm_decay,
         )
     else:
         checkpoint = args.checkpoint or default_checkpoint(spec.object_id, args.stage)
@@ -725,6 +802,7 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             checkpoint=checkpoint,
             videos=args.videos,
+            lift_arm_decay=args.lift_arm_decay,
         )
     print(json.dumps({"object_id": spec.object_id, "output": str(output)}, indent=2))
     return 0

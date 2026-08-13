@@ -40,7 +40,7 @@ def _checkpoint_provenance(checkpoint: Path) -> dict[str, Any]:
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     gpu = payload.get("mjlab_gpu_metadata", {})
     integrity = payload.get("ppo_integrity", {})
-    latest = integrity.get("latest_record", {})
+    latest = integrity.get("latest_record") or {}
     if gpu.get("config", {}).get("backend") != "mjlab_mujoco_warp":
         raise ValueError("Video recording requires an mjlab GPU checkpoint")
     if (

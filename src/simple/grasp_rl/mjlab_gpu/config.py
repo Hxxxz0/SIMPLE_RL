@@ -284,6 +284,9 @@ class MjlabPpoConfig:
     reference_target_yaw_arm_gains: tuple[float, float] = (0.0, 0.0)
     max_reference_action_deviation: float = 0.35
     full_dr_reference_reward_scale: float = 0.2
+    grasp_anything_lift_arm_residual_min_scale: float = 1.0
+    grasp_anything_lift_arm_residual_decay_steps: int = 0
+    grasp_anything_lift_arm_residual_grasp_steps: int = 3
     sensor_schema_version: int = GPU_SENSOR_SCHEMA_VERSION
     domain_randomization: DomainRandomizationConfig = field(
         default_factory=DomainRandomizationConfig
@@ -367,6 +370,31 @@ class MjlabPpoConfig:
             raise ValueError("max_reference_action_deviation must be in (0, 2]")
         if not 0.0 <= self.full_dr_reference_reward_scale <= 1.0:
             raise ValueError("full_dr_reference_reward_scale must be in [0, 1]")
+        if not 0.0 < self.grasp_anything_lift_arm_residual_min_scale <= 1.0:
+            raise ValueError(
+                "grasp_anything_lift_arm_residual_min_scale must be in (0, 1]"
+            )
+        if self.grasp_anything_lift_arm_residual_decay_steps < 0:
+            raise ValueError(
+                "grasp_anything_lift_arm_residual_decay_steps must be non-negative"
+            )
+        if self.grasp_anything_lift_arm_residual_grasp_steps < 1:
+            raise ValueError(
+                "grasp_anything_lift_arm_residual_grasp_steps must be positive"
+            )
+        lift_arm_decay_enabled = (
+            self.grasp_anything_lift_arm_residual_min_scale < 1.0
+            or self.grasp_anything_lift_arm_residual_decay_steps > 0
+        )
+        if lift_arm_decay_enabled and (
+            self.task != "grasp_anything"
+            or self.grasp_anything_lift_arm_residual_min_scale >= 1.0
+            or self.grasp_anything_lift_arm_residual_decay_steps < 1
+        ):
+            raise ValueError(
+                "lift arm residual decay requires grasp_anything, a minimum scale "
+                "below one, and positive decay steps"
+            )
         if not self.device.startswith("cuda:"):
             raise ValueError("mjlab PPO requires an explicit cuda:<index> device")
         if self.num_envs <= 0:
@@ -440,6 +468,13 @@ class MjlabPpoConfig:
                 and self.max_reference_initial_position_offset is None
             ):
                 normalized["max_reference_initial_position_offset"] = None
+            for name, default in (
+                ("grasp_anything_lift_arm_residual_min_scale", 1.0),
+                ("grasp_anything_lift_arm_residual_decay_steps", 0),
+                ("grasp_anything_lift_arm_residual_grasp_steps", 3),
+            ):
+                if name not in normalized and getattr(self, name) == default:
+                    normalized[name] = default
             expected_dr = expected["resolved"]["domain_randomization"]
             legacy_dr = normalized.get("domain_randomization")
             if isinstance(legacy_dr, dict):

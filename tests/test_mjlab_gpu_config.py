@@ -24,6 +24,10 @@ from simple.grasp_rl.mjlab_gpu.reference_noise import (
     apply_reference_noise,
     transform_reference_positions,
 )
+from simple.grasp_rl.mjlab_gpu.vec_env import (
+    GpuGraspVecEnv,
+    _lift_arm_residual_scale,
+)
 from simple.grasp_rl.schema import REFERENCE_CONTEXT_DIM, REFERENCE_FRAME_DIM
 
 
@@ -36,6 +40,70 @@ def test_gpu_ppo_config_rejects_cpu_and_small_long_runs(tmp_path) -> None:
         "tabletop_grasp", str(tmp_path), num_envs=16, smoke_mode=True
     )
     assert smoke.num_envs == 16
+
+
+def test_lift_arm_residual_decay_is_opt_in_and_grasp_anything_only(tmp_path) -> None:
+    default = MjlabPpoConfig("grasp_anything", str(tmp_path))
+    assert default.grasp_anything_lift_arm_residual_min_scale == 1.0
+    assert default.grasp_anything_lift_arm_residual_decay_steps == 0
+    with pytest.raises(ValueError, match="requires grasp_anything"):
+        replace(
+            default,
+            task="tabletop_grasp",
+            grasp_anything_lift_arm_residual_min_scale=0.2,
+            grasp_anything_lift_arm_residual_decay_steps=20,
+        )
+    with pytest.raises(ValueError, match="requires grasp_anything"):
+        replace(default, grasp_anything_lift_arm_residual_min_scale=0.2)
+
+
+def test_lift_arm_residual_scale_decays_linearly_to_floor() -> None:
+    steps = torch.tensor([0, 5, 10, 20])
+    scale = _lift_arm_residual_scale(
+        steps, minimum_scale=0.2, decay_steps=10
+    )
+    assert scale.tolist() == pytest.approx([1.0, 0.6, 0.2, 0.2])
+
+
+def test_lift_arm_residual_decay_keeps_right_hand_correction() -> None:
+    env = object.__new__(GpuGraspVecEnv)
+    env.config = SimpleNamespace(
+        max_reference_action_deviation=0.7,
+        grasp_anything_lift_arm_residual_min_scale=0.2,
+        grasp_anything_lift_arm_residual_decay_steps=10,
+    )
+    env.reference = SimpleNamespace(
+        observation_dim=0,
+        current_action=lambda: torch.zeros(2, 36),
+    )
+    env._lift_arm_decay_step = torch.tensor([0, 10])
+    action = torch.ones(2, 36)
+
+    bounded = env._bounded_reference_action(action)
+
+    assert torch.allclose(bounded[:, 7:14], torch.full((2, 7), 0.7))
+    assert torch.allclose(bounded[0, 21:28], torch.full((7,), 0.7))
+    assert torch.allclose(bounded[1, 21:28], torch.full((7,), 0.14))
+
+
+def test_lift_arm_residual_decay_requires_stable_grasp() -> None:
+    env = object.__new__(GpuGraspVecEnv)
+    env.config = SimpleNamespace(
+        grasp_anything_lift_arm_residual_min_scale=0.2,
+        grasp_anything_lift_arm_residual_decay_steps=10,
+        grasp_anything_lift_arm_residual_grasp_steps=3,
+    )
+    env._lift_arm_grasp_streak = torch.zeros(2, dtype=torch.long)
+    env._lift_arm_decay_step = torch.zeros(2, dtype=torch.long)
+    env._lift_arm_decay_triggered = torch.zeros(2, dtype=torch.bool)
+
+    env._update_lift_arm_residual_decay(torch.tensor([True, True]))
+    env._update_lift_arm_residual_decay(torch.tensor([False, True]))
+    env._update_lift_arm_residual_decay(torch.tensor([True, True]))
+
+    assert env._lift_arm_grasp_streak.tolist() == [1, 3]
+    assert env._lift_arm_decay_triggered.tolist() == [False, True]
+    assert env._lift_arm_decay_step.tolist() == [0, 1]
 
 
 def test_train_cli_accepts_full_trajectory_rollout_override() -> None:
@@ -562,6 +630,9 @@ def test_zero_retarget_accepts_legacy_checkpoint_metadata(tmp_path) -> None:
     legacy_resolved.pop("strict_reference_episode")
     legacy_resolved.pop("reference_selection")
     legacy_resolved.pop("max_reference_initial_position_offset")
+    legacy_resolved.pop("grasp_anything_lift_arm_residual_min_scale")
+    legacy_resolved.pop("grasp_anything_lift_arm_residual_decay_steps")
+    legacy_resolved.pop("grasp_anything_lift_arm_residual_grasp_steps")
     legacy_resolved["domain_randomization"] = dict(
         legacy_resolved["domain_randomization"]
     )

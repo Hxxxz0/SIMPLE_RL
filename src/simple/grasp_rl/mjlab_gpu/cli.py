@@ -86,6 +86,30 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
         ),
     )
     parser.add_argument(
+        "--grasp-anything-lift-arm-residual-min-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Opt-in minimum right-arm residual scale after a stable "
+            "grasp_anything grasp; one preserves existing behavior"
+        ),
+    )
+    parser.add_argument(
+        "--grasp-anything-lift-arm-residual-decay-steps",
+        type=int,
+        default=0,
+        help=(
+            "Steps used to reach the opt-in lift-stage right-arm residual "
+            "minimum; zero preserves existing behavior"
+        ),
+    )
+    parser.add_argument(
+        "--grasp-anything-lift-arm-residual-grasp-steps",
+        type=int,
+        default=3,
+        help="Consecutive physical grasp steps required before arm decay starts",
+    )
+    parser.add_argument(
         "--reference-target-x-arm-gains",
         type=float,
         nargs=2,
@@ -661,6 +685,15 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         ),
         reference_reward_weight=args.reference_reward_weight,
         max_reference_action_deviation=args.max_reference_action_deviation,
+        grasp_anything_lift_arm_residual_min_scale=(
+            args.grasp_anything_lift_arm_residual_min_scale
+        ),
+        grasp_anything_lift_arm_residual_decay_steps=(
+            args.grasp_anything_lift_arm_residual_decay_steps
+        ),
+        grasp_anything_lift_arm_residual_grasp_steps=(
+            args.grasp_anything_lift_arm_residual_grasp_steps
+        ),
         reference_target_x_arm_gains=tuple(args.reference_target_x_arm_gains),
         reference_target_y_arm_gains=tuple(args.reference_target_y_arm_gains),
         reference_target_positive_y_arm_gains=(
