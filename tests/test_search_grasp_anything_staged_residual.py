@@ -16,6 +16,75 @@ SEARCH = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SEARCH)
 
 
+def _required_cli_args() -> list[str]:
+    return [
+        "--asset",
+        "asset",
+        "--reference",
+        "reference",
+        "--output",
+        "result.json",
+        "--base-arm",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+    ]
+
+
+def test_reference_episode_defaults_to_legacy_episode_82() -> None:
+    args = SEARCH._parser().parse_args(_required_cli_args())
+
+    assert args.reference_episode == 82
+    assert SEARCH.reference_episode_path(args.reference, args.reference_episode) == Path(
+        "reference/bc/episode_000082.npz"
+    )
+
+
+def test_reference_episode_can_select_bend_pick_episode_11() -> None:
+    args = SEARCH._parser().parse_args(
+        [*_required_cli_args(), "--reference-episode", "11"]
+    )
+
+    assert args.reference_episode == 11
+    assert SEARCH.reference_episode_path(args.reference, args.reference_episode) == Path(
+        "reference/bc/episode_000011.npz"
+    )
+
+
+def test_reference_episode_path_rejects_negative_episode() -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        SEARCH.reference_episode_path(Path("reference"), -1)
+
+
+def test_arm_bounds_default_to_legacy_search_domain() -> None:
+    args = SEARCH._parser().parse_args(_required_cli_args())
+
+    assert SEARCH._arm_bounds(args) == SEARCH.ARM_BOUNDS
+
+
+def test_arm_bounds_allow_an_explicit_isolated_search_domain() -> None:
+    values = [value for index in range(7) for value in (-1.0, index + 1.0)]
+    args = SEARCH._parser().parse_args(
+        [*_required_cli_args(), "--arm-bounds", *map(str, values)]
+    )
+
+    assert SEARCH._arm_bounds(args) == tuple(
+        (-1.0, index + 1.0) for index in range(7)
+    )
+
+
+def test_arm_bounds_reject_unordered_pair() -> None:
+    args = SEARCH._parser().parse_args(_required_cli_args())
+    args.arm_bounds = [0.0, 0.0, *args.arm_bounds[2:]]
+
+    with pytest.raises(ValueError, match="strictly ordered"):
+        SEARCH._arm_bounds(args)
+
+
 def test_phase_blend_has_separate_approach_and_close_windows() -> None:
     kwargs = {"arm_start": 10, "capture_step": 20, "close_end": 40}
     assert SEARCH.phase_blend(0, **kwargs) == (0.0, 0.0)

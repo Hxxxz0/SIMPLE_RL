@@ -1,0 +1,423 @@
+{
+  "action_transform_sha256": "0b0ac2e1f69c2e304f2cc720fadbdc7fab5d678f0f492ad24815d5ae4e9002be",
+  "action_transform_version": "successful_replay_cover_v1",
+  "excluded_episodes": [],
+  "excluded_reason": null,
+  "failed_replay_episodes": [],
+  "independent_replay_success_rate_at_first_terminal_step": 1.0,
+  "reference_derivation": {
+    "aperture": [
+      1.2007073163986206,
+      0.023297160863876343,
+      0.1299716830253601,
+      0.16929495334625244
+    ],
+    "arm_bounds": [
+      [
+        -0.75,
+        0.25
+      ],
+      [
+        -0.15,
+        0.7
+      ],
+      [
+        0.1,
+        0.9
+      ],
+      [
+        0.2,
+        0.9
+      ],
+      [
+        -0.9,
+        0.2
+      ],
+      [
+        -0.1,
+        0.8
+      ],
+      [
+        -1.0,
+        0.5
+      ]
+    ],
+    "environment_adaptation": {
+      "reference_target_positive_y_arm_gains": [
+        0.0,
+        0.0
+      ],
+      "reference_target_x_arm_gains": [
+        0.0,
+        0.0
+      ],
+      "reference_target_y_arm_gains": [
+        0.0,
+        0.0
+      ],
+      "target_position_offset_center_xy": [
+        0.0,
+        -0.09
+      ]
+    },
+    "phase": {
+      "arm_release_end": 295,
+      "arm_release_start": 250,
+      "arm_start": 145,
+      "capture_step": 198,
+      "close_end": 220,
+      "open_hand_step": 180
+    },
+    "replay_attempts": [
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.0078125,
+        "max_bilateral_contact_streak": 83,
+        "max_grasp_streak": 84,
+        "max_lift_m": 0.2744128108024597,
+        "max_min_opposing_force_n": 11.046003341674805,
+        "rank": 0,
+        "reproduced": true,
+        "search_env_id": 0,
+        "search_round": 1,
+        "selected": false,
+        "success_neighbor_radius": 0.05200005695223808,
+        "successes_at_first_terminal_step": 4,
+        "successful_world_id": 165,
+        "terminal_step": 317
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.66015625,
+        "max_bilateral_contact_streak": 87,
+        "max_grasp_streak": 88,
+        "max_lift_m": 0.2682371139526367,
+        "max_min_opposing_force_n": 12.702658653259277,
+        "rank": 1,
+        "reproduced": true,
+        "search_env_id": 0,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.05503290891647339,
+        "successes_at_first_terminal_step": 338,
+        "successful_world_id": 179,
+        "terminal_step": 318
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.00390625,
+        "max_bilateral_contact_streak": 84,
+        "max_grasp_streak": 85,
+        "max_lift_m": 0.2690753936767578,
+        "max_min_opposing_force_n": 11.321711540222168,
+        "rank": 2,
+        "reproduced": true,
+        "search_env_id": 34,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.0604000985622406,
+        "successes_at_first_terminal_step": 2,
+        "successful_world_id": 103,
+        "terminal_step": 317
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 1.0,
+        "max_bilateral_contact_streak": 87,
+        "max_grasp_streak": 88,
+        "max_lift_m": 0.2647847533226013,
+        "max_min_opposing_force_n": 13.37382984161377,
+        "rank": 3,
+        "reproduced": true,
+        "search_env_id": 285,
+        "search_round": 0,
+        "selected": true,
+        "success_neighbor_radius": 0.060749124735593796,
+        "successes_at_first_terminal_step": 512,
+        "successful_world_id": 189,
+        "terminal_step": 318
+      }
+    ],
+    "reproduction": {
+      "independent_replay_success_rate_at_first_terminal_step": 1.0,
+      "max_bilateral_contact_streak": 87,
+      "max_grasp_streak": 88,
+      "max_lift_m": 0.2647847533226013,
+      "max_min_opposing_force_n": 13.37382984161377,
+      "replay_envs": 512,
+      "successes_at_first_terminal_step": 512,
+      "successful_world_id": 189,
+      "terminal_step": 318
+    },
+    "right_arm_correction": [
+      0.10861627757549286,
+      0.32711246609687805,
+      0.7560995817184448,
+      0.7528715133666992,
+      -0.6397584676742554,
+      0.7428662776947021,
+      -0.9609564542770386
+    ],
+    "search_env_id": 285,
+    "search_result": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/diagnostics/staged_export_seed20260902_512.json",
+    "search_round": 0,
+    "source_immutable": true,
+    "source_reference_sha256": "7d10a9060a0690f3a58c9983964c4d9f0fb29ad75c3d8fffb896f68b9166eec3",
+    "success_neighbor_radius": 0.060749124735593796,
+    "version": "apple_xmove_bend_ep11_staged_native_v1"
+  },
+  "repair_version": "none",
+  "replay_gate_passed": true,
+  "replay_success_rate": 1.0,
+  "reports": [
+    {
+      "episode": 11,
+      "failure": false,
+      "frames": 318,
+      "max_grasp_streak": 88,
+      "max_lift": 0.2647847533226013,
+      "native_success_criteria": {
+        "lift_height_m": 0.09,
+        "stable_hold_steps": 13
+      },
+      "success": true,
+      "terminal_step": 318,
+      "timeout": false
+    }
+  ],
+  "requested_episode_id": 11,
+  "schema": {
+    "action_dim": 36,
+    "action_slices": {
+      "base_height": {
+        "start": 31,
+        "stop": 32
+      },
+      "left_arm": {
+        "start": 14,
+        "stop": 21
+      },
+      "left_hand": {
+        "start": 0,
+        "stop": 7
+      },
+      "right_arm": {
+        "start": 21,
+        "stop": 28
+      },
+      "right_hand": {
+        "start": 7,
+        "stop": 14
+      },
+      "target_yaw": {
+        "start": 35,
+        "stop": 36
+      },
+      "torso_rpy": {
+        "start": 28,
+        "stop": 31
+      },
+      "torso_vx": {
+        "start": 32,
+        "stop": 33
+      },
+      "torso_vy": {
+        "start": 33,
+        "stop": 34
+      },
+      "turning_flag": {
+        "start": 34,
+        "stop": 35
+      }
+    },
+    "actor_obs_dim": 192,
+    "actor_obs_v2_dim": 331,
+    "joint_names": [
+      "left_hip_pitch_joint",
+      "left_hip_roll_joint",
+      "left_hip_yaw_joint",
+      "left_knee_joint",
+      "left_ankle_pitch_joint",
+      "left_ankle_roll_joint",
+      "right_hip_pitch_joint",
+      "right_hip_roll_joint",
+      "right_hip_yaw_joint",
+      "right_knee_joint",
+      "right_ankle_pitch_joint",
+      "right_ankle_roll_joint",
+      "waist_yaw_joint",
+      "waist_roll_joint",
+      "waist_pitch_joint",
+      "left_shoulder_pitch_joint",
+      "left_shoulder_roll_joint",
+      "left_shoulder_yaw_joint",
+      "left_elbow_joint",
+      "left_wrist_roll_joint",
+      "left_wrist_pitch_joint",
+      "left_wrist_yaw_joint",
+      "right_shoulder_pitch_joint",
+      "right_shoulder_roll_joint",
+      "right_shoulder_yaw_joint",
+      "right_elbow_joint",
+      "right_wrist_roll_joint",
+      "right_wrist_pitch_joint",
+      "right_wrist_yaw_joint",
+      "left_hand_thumb_0_joint",
+      "left_hand_thumb_1_joint",
+      "left_hand_thumb_2_joint",
+      "left_hand_index_0_joint",
+      "left_hand_index_1_joint",
+      "left_hand_middle_0_joint",
+      "left_hand_middle_1_joint",
+      "right_hand_thumb_0_joint",
+      "right_hand_thumb_1_joint",
+      "right_hand_thumb_2_joint",
+      "right_hand_index_0_joint",
+      "right_hand_index_1_joint",
+      "right_hand_middle_0_joint",
+      "right_hand_middle_1_joint"
+    ],
+    "left_contact_link_names": [
+      "left_wrist_yaw_link",
+      "left_hand_thumb_0_link",
+      "left_hand_thumb_1_link",
+      "left_hand_thumb_2_link",
+      "left_hand_index_0_link",
+      "left_hand_index_1_link",
+      "left_hand_middle_0_link",
+      "left_hand_middle_1_link"
+    ],
+    "max_episode_steps": 192,
+    "motion_feature_dim": 82,
+    "motion_frame_dim": 80,
+    "motion_link_names": [
+      "left_wrist_yaw_link",
+      "right_wrist_yaw_link",
+      "left_hand_thumb_2_link",
+      "left_hand_index_1_link",
+      "left_hand_middle_1_link",
+      "right_hand_thumb_2_link",
+      "right_hand_index_1_link",
+      "right_hand_middle_1_link"
+    ],
+    "motion_window": 10,
+    "reference_actor_obs_dim": 593,
+    "reference_actor_obs_v2_dim": 842,
+    "reference_context_dim": 401,
+    "reference_context_v2_dim": 511,
+    "reference_frame_dim": 40,
+    "reference_frame_v2_dim": 51,
+    "reference_future_offsets": [
+      0,
+      5,
+      10,
+      15,
+      20,
+      25,
+      30,
+      35,
+      40,
+      45
+    ],
+    "right_contact_link_names": [
+      "right_wrist_yaw_link",
+      "right_hand_thumb_0_link",
+      "right_hand_thumb_1_link",
+      "right_hand_thumb_2_link",
+      "right_hand_index_0_link",
+      "right_hand_index_1_link",
+      "right_hand_middle_0_link",
+      "right_hand_middle_1_link"
+    ]
+  },
+  "seed": 42,
+  "source": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/data/simple/G1WholebodyXMoveBendPickTeleop-v0",
+  "source_episode_ids": [
+    11
+  ],
+  "source_immutable": true,
+  "source_sha256": "d147d1ca84971ebe8f21495d0b315bd2d253d902aa55368dcef34d485d8568f4",
+  "source_state_vector_dim": 32,
+  "splits": {
+    "test": [],
+    "train": [
+      11
+    ],
+    "val": []
+  },
+  "strict_subset_source": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Apple_1_xmove_bend_ep11_strict_v1",
+  "task": "xmove_bend_pick",
+  "task_metadata": {
+    "action_dim": 36,
+    "action_schema": "g1_wholebody_tracker_36_v1",
+    "actor_observation_dim": 331,
+    "observation_schema": "task_privileged_v2",
+    "reference_actor_observation_dim": 842,
+    "reference_schema": "complete_plan_10x51_plus_phase_v2",
+    "registry_uid": "g1_wholebody_xmove_bend_pick_teleop",
+    "robot_uid": "g1_sonic",
+    "spec": {
+      "action_schema": "g1_wholebody_tracker_36_v1",
+      "articulation": null,
+      "controller_backend": "sonic_wbc",
+      "dataset_name": "G1WholebodyXMoveBendPickTeleop-v0",
+      "family": "grasp",
+      "fast_reset": false,
+      "label": "Move and bend pick",
+      "lift_height": 0.08,
+      "max_episode_steps": 800,
+      "name": "xmove_bend_pick",
+      "native_target_x": [
+        0.0,
+        0.0
+      ],
+      "native_target_y": [
+        0.0,
+        0.0
+      ],
+      "native_yaw_jitter": 0.15,
+      "observation_schema": "task_privileged_v2",
+      "placement_xy_tolerance": 0.12,
+      "reference_schema": "complete_plan_10x51_plus_phase_v2",
+      "registry_uid": "g1_wholebody_xmove_bend_pick_teleop",
+      "robot_uid": "g1_sonic",
+      "roles": {
+        "auxiliary": null,
+        "destination": "table",
+        "primary": "target"
+      },
+      "schema_version": 2,
+      "source_uids": [
+        "g1_wholebody_xmove_bend_pick_teleop",
+        "g1_sonic_xmove_bend_pick_teleop"
+      ],
+      "stable_angular_speed": 1.0,
+      "stable_linear_speed": 0.1,
+      "stages": [
+        {
+          "hand": "right",
+          "hold_steps": 1,
+          "name": "approach",
+          "primitive": "approach",
+          "threshold": 0.06
+        },
+        {
+          "hand": "right",
+          "hold_steps": 3,
+          "name": "grasp",
+          "primitive": "grasp",
+          "threshold": 0
+        },
+        {
+          "hand": "right",
+          "hold_steps": 13,
+          "name": "lift",
+          "primitive": "lift",
+          "threshold": 0.08
+        }
+      ],
+      "target_object": null
+    },
+    "task": "xmove_bend_pick",
+    "task_schema_version": 2
+  },
+  "unique_episodes": [
+    11
+  ]
+}

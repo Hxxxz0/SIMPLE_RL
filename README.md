@@ -39,6 +39,12 @@ Contributors: [Songlin Wei](https://songlin.github.io/)\*, [Zhenhao Ni](https://
 pose DR，但需要 lift-arm-decay 运行时变体；`Apple_1` 和 `Bowl_1` 目前只是
 fixed-pose baseline，不宣称 narrow/workspace DR 支持。五种物体都已有成功视频。
 
+针对低矮的 `Apple_1`，另增加了不覆盖旧结果的 `xmove_bend_pick` episode 11
+固定参考变体：精确 512-world Warp 合同下 reference-only 为 512/512，平均抬升
+0.26416 m；未训练新 PPO，原 episode-82 Apple 权重仍保持 112/512。该结果在
+32-world batch 下为 0/32，因此不宣称 DR 或 batch-size 泛化。staged reference、
+两条成功视频、SHA256、完整运行参数和本机绝对路径均记录在同一 release README。
+
 ## mjlab CUDA PPO 可复现发布（2026-08-03）
 
 `xmove_pick` 的首个自包含 GPU release 位于

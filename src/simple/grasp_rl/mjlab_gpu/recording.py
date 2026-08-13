@@ -60,6 +60,26 @@ def _checkpoint_provenance(checkpoint: Path) -> dict[str, Any]:
     }
 
 
+def _reference_provenance(env: GpuGraspVecEnv) -> dict[str, Any]:
+    root = env.reference.root.resolve()
+    manifest = root / "manifest.json"
+    metadata = env.reference.metadata()
+    return {
+        "checkpoint": None,
+        "checkpoint_sha256": None,
+        "backend": "mjlab_mujoco_warp",
+        "ppo_integrity": None,
+        "reference": {
+            "directory_absolute": str(root),
+            "manifest_sha256": _sha256(manifest),
+            "data_sha256": metadata["data_sha256"],
+            "action_transform_sha256": metadata["action_transform_sha256"],
+            "episodes": metadata["episodes"],
+            "strict_episode": metadata["strict_episode"],
+        },
+    }
+
+
 def _episode_randomization(env: GpuGraspVecEnv) -> list[dict[str, Any]]:
     randomizer = env.randomizer
     translations = randomizer.target_translation_xy.detach().cpu().tolist()
@@ -327,8 +347,8 @@ def _contact_forces(env: GpuGraspVecEnv) -> torch.Tensor:
 @torch.inference_mode()
 def record_success_videos(
     env: GpuGraspVecEnv,
-    actor: torch.nn.Module,
-    checkpoint: Path,
+    actor: torch.nn.Module | None,
+    checkpoint: Path | None,
     output_dir: Path,
     *,
     videos: int,
@@ -340,10 +360,20 @@ def record_success_videos(
     allow_diagnostic_fallback: bool = False,
     camera_view: str = "full_robot",
     stochastic_policy: bool = False,
+    reference_only: bool = False,
 ) -> dict[str, Any]:
     """Render verified successes, optionally falling back to best failed episodes."""
 
-    provenance = _checkpoint_provenance(checkpoint)
+    if reference_only:
+        if actor is not None or checkpoint is not None:
+            raise ValueError("Reference-only recording cannot use a PPO checkpoint")
+        if stochastic_policy:
+            raise ValueError("Reference-only recording cannot be stochastic")
+        provenance = _reference_provenance(env)
+    else:
+        if actor is None or checkpoint is None:
+            raise ValueError("PPO video recording requires a checkpoint and actor")
+        provenance = _checkpoint_provenance(checkpoint)
     render_model, render_source = _render_model(env)
     recorded_dr_strength = (
         env.config.domain_randomization.strength(env.common_step_counter)
@@ -401,7 +431,11 @@ def record_success_videos(
         )
         grasp_hold.copy_(torch.where(audit["valid_grasp"], grasp_hold + 1, 0))
         max_grasp_hold.copy_(torch.maximum(max_grasp_hold, grasp_hold))
-        actions = actor(observations, stochastic_output=stochastic_policy)
+        actions = (
+            env.reference.current_action().clone()
+            if reference_only
+            else actor(observations, stochastic_output=stochastic_policy)
+        )
         observations, _, dones, extras = env.step(actions)
         assert env.last_terms is not None
         terms = env.last_terms
@@ -512,7 +546,8 @@ def record_success_videos(
     target_body = env.gpu.bundle.manifest["roles"]["primary"]
     for index, (qpos, episode) in enumerate(records, 1):
         outcome = "success" if episode["success"] else "diagnostic"
-        stem = f"gpu_ppo_{outcome}_{mode}_{index:02d}"
+        policy_name = "reference" if reference_only else "ppo"
+        stem = f"gpu_{policy_name}_{outcome}_{mode}_{index:02d}"
         video = output_dir / f"{stem}.mp4"
         metadata = output_dir / f"{stem}.json"
         camera = _write_video(
@@ -537,11 +572,21 @@ def record_success_videos(
                 if episode["success"]
                 else "best_available_failed_episode"
             ),
+            "policy": "reference_only" if reference_only else "ppo",
             "deterministic_actor": not stochastic_policy,
-            "policy_sampling": "ppo_gaussian" if stochastic_policy else "mean",
+            "policy_sampling": (
+                "reference"
+                if reference_only
+                else "ppo_gaussian"
+                if stochastic_policy
+                else "mean"
+            ),
             "policy_seed": env.config.seed,
             "domain_randomization": domain_randomization,
-            "reference_noise": domain_randomization,
+            "reference_noise": bool(
+                domain_randomization
+                and env.config.domain_randomization.reference_noise.enabled
+            ),
             "dr_strength": recorded_dr_strength,
             "fps": fps,
             "resolution": [width, height],

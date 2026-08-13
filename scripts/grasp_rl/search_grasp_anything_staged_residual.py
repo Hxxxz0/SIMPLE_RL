@@ -36,6 +36,14 @@ PARAMETER_NAMES = (
     "index_open",
     "middle_open",
 )
+
+
+def reference_episode_path(reference: Path, episode: int) -> Path:
+    """Return the canonical strict-reference episode path."""
+
+    if episode < 0:
+        raise ValueError("reference episode must be non-negative")
+    return reference / "bc" / f"episode_{episode:06d}.npz"
 ARM_BOUNDS = (
     (-0.75, -0.25),
     (-0.15, 0.35),
@@ -53,6 +61,16 @@ APERTURE_BOUNDS = (
     (0.00, 0.55),
     (0.00, 0.55),
 )
+
+
+def _arm_bounds(args: argparse.Namespace) -> tuple[tuple[float, float], ...]:
+    values = tuple(float(value) for value in args.arm_bounds)
+    if len(values) != 2 * len(ARM_BOUNDS):
+        raise ValueError("arm bounds require one low/high pair per arm joint")
+    bounds = tuple(zip(values[::2], values[1::2], strict=True))
+    if any(low >= high for low, high in bounds):
+        raise ValueError("each arm bound must be strictly ordered")
+    return bounds
 
 
 def phase_blend(
@@ -103,6 +121,7 @@ def _sample_candidates(
     *,
     count: int,
     generator: torch.Generator,
+    arm_bounds: tuple[tuple[float, float], ...] = ARM_BOUNDS,
 ) -> torch.Tensor:
     if count < 32:
         raise ValueError("staged residual search requires at least 32 candidates")
@@ -110,7 +129,7 @@ def _sample_candidates(
         count, PARAMETER_COUNT, device=mean.device, generator=generator
     )
     candidates[0] = mean
-    bounds = (*ARM_BOUNDS, *APERTURE_BOUNDS)
+    bounds = (*arm_bounds, *APERTURE_BOUNDS)
     for index, (low, high) in enumerate(bounds):
         candidates[:, index].clamp_(low, high)
     # Always probe each bound independently. The previous narrow Apple run
@@ -163,12 +182,13 @@ def _environment(args: argparse.Namespace) -> GpuGraspVecEnv:
         seed=args.seed,
         smoke_mode=args.num_envs < 2048,
         reference_processed=str(args.reference.resolve()),
-        strict_reference_episode=82,
+        strict_reference_episode=args.reference_episode,
         max_reference_initial_position_offset=0.12,
         reference_reward_weight=0.005,
-        # Episode 82 closes the hand to approximately +/-0.99 in one frame.
-        # Apple search must be able to reopen that proposal completely. This is
-        # local to this diagnostic and does not change any training default.
+        # The audited pick references close the hand to approximately +/-0.99
+        # in one frame. Apple search must be able to reopen that proposal
+        # completely. This is local to this diagnostic and does not change any
+        # training default.
         max_reference_action_deviation=1.0,
         reference_target_x_arm_gains=tuple(args.reference_target_x_arm_gains),
         reference_target_y_arm_gains=tuple(args.reference_target_y_arm_gains),
@@ -257,9 +277,13 @@ def candidate_score(
     )
 
 
-def _parameter_bound_mask(candidates: torch.Tensor) -> torch.Tensor:
+def _parameter_bound_mask(
+    candidates: torch.Tensor,
+    *,
+    arm_bounds: tuple[tuple[float, float], ...] = ARM_BOUNDS,
+) -> torch.Tensor:
     bounds = torch.tensor(
-        (*ARM_BOUNDS, *APERTURE_BOUNDS),
+        (*arm_bounds, *APERTURE_BOUNDS),
         dtype=candidates.dtype,
         device=candidates.device,
     )
@@ -276,7 +300,10 @@ def _candidate_parameters(candidate: dict[str, object]) -> torch.Tensor:
 
 
 def rank_export_candidates(
-    result: dict[str, object], *, limit: int
+    result: dict[str, object],
+    *,
+    limit: int,
+    arm_bounds: tuple[tuple[float, float], ...] = ARM_BOUNDS,
 ) -> list[dict[str, object]]:
     """Rank distinct native successes by local density and physical margin."""
 
@@ -304,7 +331,7 @@ def rank_export_candidates(
         unique.append(candidate)
         unique_parameters.append(parameters)
 
-    bounds = torch.tensor((*ARM_BOUNDS, *APERTURE_BOUNDS), dtype=torch.float32)
+    bounds = torch.tensor((*arm_bounds, *APERTURE_BOUNDS), dtype=torch.float32)
     widths = bounds[:, 1] - bounds[:, 0]
     normalized = torch.stack(unique_parameters) / widths
     pairwise = torch.cdist(normalized, normalized)
@@ -371,8 +398,8 @@ def _action(
             capture_arm, reference[:, ARM], arm_release_weight
         )
     # The hand remains exactly on the reference before it starts closing. Once
-    # episode 82 snaps shut, explicitly hold it open, then close to a candidate
-    # aperture after the arm pose has been captured.
+    # the reference snaps shut, explicitly hold it open, then close to a
+    # candidate aperture after the arm pose has been captured.
     if hand_active:
         open_hand = torch.zeros_like(reference[:, HAND])
         closed_hand = aperture_hand_target(candidates[:, 7:])
@@ -519,7 +546,9 @@ def export_reference(
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"refusing to overwrite staged reference {output}")
     candidates = rank_export_candidates(
-        result, limit=args.export_max_candidate_replays
+        result,
+        limit=args.export_max_candidate_replays,
+        arm_bounds=_arm_bounds(args),
     )
     if not candidates:
         raise RuntimeError("staged reference export requires a native-success candidate")
@@ -592,13 +621,15 @@ def export_reference(
     assert isinstance(raw_actions, np.ndarray)
 
     source = args.reference.resolve()
-    source_episode = source / "bc/episode_000082.npz"
+    episode_path = reference_episode_path(Path("."), args.reference_episode)
+    source_episode = reference_episode_path(source, args.reference_episode)
+    output_episode = output / episode_path
     length = len(raw_actions)
     stage_indices = observations[:, 322:330].argmax(axis=-1)
 
     (output / "bc").mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
-        output / "bc/episode_000082.npz",
+        output_episode,
         observations=observations,
         raw_actions=raw_actions,
         sample_weights=np.ones(length, dtype=np.float32),
@@ -617,7 +648,7 @@ def export_reference(
         {
             "reports": [
                 {
-                    "episode": 82,
+                    "episode": args.reference_episode,
                     "success": True,
                     "failure": False,
                     "timeout": False,
@@ -649,6 +680,8 @@ def export_reference(
                 "search_env_id": selected.get("env_id"),
                 "success_neighbor_radius": selected["success_neighbor_radius"],
                 "phase": result["phase"],
+                "environment_adaptation": result["environment_adaptation"],
+                "arm_bounds": result["arm_bounds"],
                 "reproduction": replay,
                 "replay_attempts": replay_attempts,
                 "source_immutable": True,
@@ -659,7 +692,7 @@ def export_reference(
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return {
         "output": str(output),
-        "reference_sha256": _sha256(output / "bc/episode_000082.npz"),
+        "reference_sha256": _sha256(output_episode),
         **replay,
     }
 
@@ -668,6 +701,7 @@ def export_reference(
 def search(args: argparse.Namespace) -> dict[str, object]:
     env = _environment(args)
     mean, std = _initial_distribution(args)
+    arm_bounds = _arm_bounds(args)
     generator = torch.Generator(device=args.device).manual_seed(args.seed + 97)
     all_ids = torch.arange(args.num_envs, device=args.device)
     elite_count = max(8, round(args.num_envs * args.elite_fraction))
@@ -679,7 +713,11 @@ def search(args: argparse.Namespace) -> dict[str, object]:
             if round_index:
                 env._reset(all_ids)
             candidates = _sample_candidates(
-                mean, std, count=args.num_envs, generator=generator
+                mean,
+                std,
+                count=args.num_envs,
+                generator=generator,
+                arm_bounds=arm_bounds,
             )
             max_score = torch.full(
                 (args.num_envs,), -torch.inf, device=args.device
@@ -830,7 +868,9 @@ def search(args: argparse.Namespace) -> dict[str, object]:
             std = args.cem_momentum * std + (1.0 - args.cem_momentum) * elite_std
 
             best_id = int(max_score.argmax().item())
-            parameter_bound_mask = _parameter_bound_mask(candidates)
+            parameter_bound_mask = _parameter_bound_mask(
+                candidates, arm_bounds=arm_bounds
+            )
 
             # This helper is consumed synchronously before the next CEM round.
             def candidate_record(
@@ -911,7 +951,7 @@ def search(args: argparse.Namespace) -> dict[str, object]:
                     [_candidate_parameters(item) for item in successful_records]
                 )
                 widths = torch.tensor(
-                    [high - low for low, high in (*ARM_BOUNDS, *APERTURE_BOUNDS)]
+                    [high - low for low, high in (*arm_bounds, *APERTURE_BOUNDS)]
                 )
                 center = successful_parameters.median(dim=0).values
                 for item, distance in zip(
@@ -973,6 +1013,7 @@ def search(args: argparse.Namespace) -> dict[str, object]:
     result = {
         "schema_version": 1,
         "asset": str(args.asset.resolve()),
+        "reference_episode": args.reference_episode,
         "seed": args.seed,
         "num_envs": args.num_envs,
         "rounds_requested": args.rounds,
@@ -987,6 +1028,17 @@ def search(args: argparse.Namespace) -> dict[str, object]:
             "arm_release_end": args.arm_release_end,
         },
         "geometry_mode": args.geometry_mode,
+        "arm_bounds": [list(bounds) for bounds in arm_bounds],
+        "environment_adaptation": {
+            "target_position_offset_center_xy": list(
+                args.target_position_offset_center_xy
+            ),
+            "reference_target_x_arm_gains": list(args.reference_target_x_arm_gains),
+            "reference_target_y_arm_gains": list(args.reference_target_y_arm_gains),
+            "reference_target_positive_y_arm_gains": list(
+                args.reference_target_positive_y_arm_gains
+            ),
+        },
         "global_best": global_best,
         "rounds": rounds,
     }
@@ -998,10 +1050,16 @@ def search(args: argparse.Namespace) -> dict[str, object]:
     return result
 
 
-def main() -> None:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--asset", type=Path, required=True)
     parser.add_argument("--reference", type=Path, required=True)
+    parser.add_argument(
+        "--reference-episode",
+        type=int,
+        default=82,
+        help="Strict reference episode to load and preserve on export",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--export-reference", type=Path)
     parser.add_argument("--export-replay-envs", type=int)
@@ -1042,6 +1100,16 @@ def main() -> None:
     parser.add_argument("--reference-target-positive-y-arm-gains", type=float, nargs=2, default=(22.0, 0.0))
     parser.add_argument("--base-arm", type=float, nargs=7, required=True)
     parser.add_argument(
+        "--arm-bounds",
+        type=float,
+        nargs=14,
+        default=tuple(value for bounds in ARM_BOUNDS for value in bounds),
+        help=(
+            "Optional per-joint residual low/high pairs; defaults preserve the "
+            "audited episode-82 search domain"
+        ),
+    )
+    parser.add_argument(
         "--arm-std",
         type=float,
         nargs=7,
@@ -1053,7 +1121,11 @@ def main() -> None:
     parser.add_argument(
         "--aperture-std", type=float, nargs=4, default=(0.15, 0.15, 0.16, 0.16)
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = _parser().parse_args()
     result = search(args)
     print(json.dumps({key: value for key, value in result.items() if key != "rounds"}, indent=2))
 

@@ -232,6 +232,12 @@ def test_record_cli_diagnostic_fallback_is_explicit() -> None:
         == "grasp_closeup"
     )
     assert _parser().parse_args([*common, "--stochastic-policy"]).stochastic_policy
+    reference_only = [item for item in common if item not in ("--checkpoint", "model.pt")]
+    reference_args = _parser().parse_args([*reference_only, "--reference-only"])
+    assert reference_args.reference_only
+    assert reference_args.checkpoint is None
+    with pytest.raises(SystemExit):
+        _parser().parse_args([*common, "--reference-only"])
 
     evaluate = [
         "evaluate",
@@ -302,6 +308,50 @@ def test_record_marks_explicit_staged_dr_as_randomized(monkeypatch, tmp_path) ->
 
     assert captured["strength"] == pytest.approx(0.2)
     assert captured["domain_randomization"] is True
+
+
+def test_record_reference_only_does_not_construct_ppo_runner(
+    monkeypatch, tmp_path
+) -> None:
+    args = _parser().parse_args(
+        [
+            "record",
+            "--asset-bundle",
+            str(tmp_path / "assets"),
+            "--reference-processed",
+            str(tmp_path / "reference"),
+            "--reference-only",
+            "--output-dir",
+            str(tmp_path / "videos"),
+        ]
+    )
+    env = SimpleNamespace(common_step_counter=0, device="cuda:0")
+    captured = {}
+
+    monkeypatch.setattr(
+        "simple.grasp_rl.mjlab_gpu.cli._config",
+        lambda _args: SimpleNamespace(seed=42),
+    )
+    monkeypatch.setattr(
+        "simple.grasp_rl.mjlab_gpu.cli.GpuGraspVecEnv", lambda *args, **kwargs: env
+    )
+    monkeypatch.setattr(
+        "simple.grasp_rl.mjlab_gpu.cli.GpuPpoRunner",
+        lambda *args, **kwargs: pytest.fail("reference-only constructed PPO runner"),
+    )
+    monkeypatch.setattr(
+        "simple.grasp_rl.mjlab_gpu.cli.record_success_videos",
+        lambda *args, **kwargs: (
+            captured.update(actor=args[1], checkpoint=args[2], **kwargs)
+            or {"videos": []}
+        ),
+    )
+
+    _record(args)
+
+    assert captured["actor"] is None
+    assert captured["checkpoint"] is None
+    assert captured["reference_only"] is True
 
     reference_only = _parser().parse_args(
         [

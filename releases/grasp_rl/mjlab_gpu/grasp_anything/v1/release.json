@@ -8,6 +8,90 @@
     "hold_steps": 13,
     "requires_grasp": true
   },
+  "reference_variants": [
+    {
+      "object_id": "Apple_1",
+      "reference_task": "xmove_bend_pick",
+      "reference_episode": 11,
+      "policy": "reference_only",
+      "ppo_trained": false,
+      "ppo_not_trained_reason": "exported reference reached 512/512; training would add regression risk without an established gain",
+      "release_reference_path": "references/apple_1_xmove_bend_ep11_staged_native_v1",
+      "local_asset_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/assets/mjlab_assets/grasp_anything/Apple_1_object_reward_v4_xmove_bend_ep11",
+      "local_strict_reference_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Apple_1_xmove_bend_ep11_strict_v1",
+      "local_staged_reference_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Apple_1_xmove_bend_ep11_staged_native_v1",
+      "source_reference_sha256": "7d10a9060a0690f3a58c9983964c4d9f0fb29ad75c3d8fffb896f68b9166eec3",
+      "action_transform_sha256": "0b0ac2e1f69c2e304f2cc720fadbdc7fab5d678f0f492ad24815d5ae4e9002be",
+      "staged_reference_sha256": "f377e28458badee178b7c15641196c3de9202911c61b6380966378470510c823",
+      "runtime": {
+        "num_envs": 512,
+        "strict_reference_episode": 11,
+        "target_position_jitter_xy": [0.0, 0.0],
+        "target_position_offset_center_xy": [0.0, -0.09],
+        "target_yaw_jitter": 0.0,
+        "robot_base_position_jitter_xy": [0.0, 0.0],
+        "robot_base_yaw_jitter": 0.0,
+        "target_mass_scale": [1.0, 1.0],
+        "friction_scale": [1.0, 1.0],
+        "joint_damping_scale": [1.0, 1.0],
+        "actuator_strength_scale": [1.0, 1.0],
+        "action_delay_max_steps": 0,
+        "reference_noise": false,
+        "reference_target_x_arm_gains": [0.0, 0.0],
+        "reference_target_y_arm_gains": [0.0, 0.0],
+        "reference_target_positive_y_arm_gains": [0.0, 0.0],
+        "reference_target_yaw_arm_gains": [0.0, 0.0],
+        "evaluation_dr_strength": 1.0
+      },
+      "search": {
+        "seed": 20260901,
+        "num_envs": 4096,
+        "round": 7,
+        "successes": 3839,
+        "success_rate": 0.937255859375,
+        "result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/diagnostics/staged_surface_yminus09_seed20260901_4096.json"
+      },
+      "evaluation": {
+        "seed": 20260903,
+        "episodes": 512,
+        "successes": 512,
+        "success_rate": 1.0,
+        "mean_max_lift_m": 0.26416248292662203,
+        "max_lift_m": 0.26888567209243774,
+        "initial_world_sha256": "ef62fe1e12f53ce2e1a13820d1a309dcd70ee0abd078a826f8bfddf7855d0705",
+        "result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/reference_fixed_seed20260903_512.json"
+      },
+      "known_batch_size_failure": {
+        "num_envs": 32,
+        "episodes": 32,
+        "successes": 0,
+        "success_rate": 0.0
+      },
+      "videos": [
+        {
+          "camera": "full_robot",
+          "path": "videos/apple_1_xmove_bend_ep11_reference/full_robot/gpu_reference_success_full_dr_01.mp4",
+          "sha256": "12b7ade56eefbf24d709a7c5f52d3e57f42d93fedddba9c5ca9cf19d2dd61a12",
+          "bytes": 1171947,
+          "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos_fixed_reference/full_robot/gpu_reference_success_full_dr_01.mp4"
+        },
+        {
+          "camera": "grasp_closeup",
+          "path": "videos/apple_1_xmove_bend_ep11_reference/grasp_closeup/gpu_reference_success_full_dr_01.mp4",
+          "sha256": "35c0003c6ff7958699c5c256263ed4b5c8b7f8154717265db4d2257163a90d12",
+          "bytes": 2483817,
+          "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos_fixed_reference/grasp_closeup/gpu_reference_success_full_dr_01.mp4"
+        }
+      ]
+    }
+  ],
+  "compatibility": {
+    "default_reference_task": "xmove_pick",
+    "supported_v2_reference_tasks": ["xmove_pick", "xmove_bend_pick"],
+    "rejected_legacy_reference_task": "bend_pick",
+    "rejection_reason": "legacy 192D schema is incompatible with the reviewed V2 331D/842D/36D contract",
+    "existing_checkpoints_replaced": false
+  },
   "checkpoints": [
     {
       "object_id": "Soap_Bottle_1",

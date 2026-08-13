@@ -9,6 +9,7 @@ import pytest
 import torch
 from tensordict import TensorDict
 
+from simple.grasp_rl.cli import _parser as grasp_rl_parser
 from simple.grasp_rl.collect import _filter_replay_gated_rows
 from simple.grasp_rl.data_v2 import (
     _successful_replay_transform,
@@ -77,6 +78,23 @@ def test_schema_dimensions_are_frozen() -> None:
     assert MAX_EPISODE_STEPS == 192
 
 
+def test_strict_reference_cli_defaults_to_legacy_and_allows_explicit_task() -> None:
+    common = [
+        "derive-strict-reference",
+        "--processed",
+        "processed",
+        "--output",
+        "strict",
+        "--episode",
+        "11",
+    ]
+    assert grasp_rl_parser().parse_args(common).task == "xmove_pick"
+    assert (
+        grasp_rl_parser().parse_args([*common, "--task", "xmove_bend_pick"]).task
+        == "xmove_bend_pick"
+    )
+
+
 @pytest.mark.parametrize("base_dim", [ACTOR_OBS_DIM, ACTOR_OBS_V2_DIM])
 def test_reference_override_reads_action_after_active_base_schema(base_dim: int) -> None:
     policy_observation = np.zeros(base_dim + ACTION_DIM + 7, dtype=np.float32)
@@ -111,7 +129,7 @@ def test_v2_schema_and_catalog_cover_merged_tasks() -> None:
     assert (
         get_task_spec("g1_wholebody_xmove_pick_teleop").name == "xmove_pick"
     )
-    assert list(V2_SLICES.values())[0].start == 0
+    assert next(iter(V2_SLICES.values())).start == 0
     assert list(V2_SLICES.values())[-1].stop == ACTOR_OBS_V2_DIM
 
 

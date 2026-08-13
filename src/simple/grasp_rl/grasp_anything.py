@@ -25,6 +25,7 @@ from simple.grasp_rl.task_spec import get_task_spec
 
 GRASP_ANYTHING_TASK = "grasp_anything"
 OBJECT_CONTRACT_VERSION = 1
+SUPPORTED_REFERENCE_TASKS = frozenset(("xmove_pick", "xmove_bend_pick"))
 _OBJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
 
 
@@ -545,8 +546,11 @@ class GraspAnythingObjectContract:
             raise ValueError("source MJCF SHA256 is malformed")
         if re.fullmatch(r"[0-9a-f]{64}", self.base_manifest_hash) is None:
             raise ValueError("base manifest hash is malformed")
-        if not self.reference_task:
-            raise ValueError("reference_task must be non-empty")
+        if self.reference_task not in SUPPORTED_REFERENCE_TASKS:
+            raise ValueError(
+                "reference_task must be one of the reviewed V2 tasks: "
+                f"{sorted(SUPPORTED_REFERENCE_TASKS)}"
+            )
         extents = np.asarray(self.half_extents_m, dtype=np.float64)
         if extents.shape != (3,) or not np.isfinite(extents).all() or np.any(extents <= 0):
             raise ValueError("object half extents must be positive and finite")
@@ -730,7 +734,7 @@ def derive_grasp_anything_bundle(
     maximum_grip_force_newtons: float = 80.0,
     table_clearance_m: float = 0.002,
 ) -> dict[str, object]:
-    """Derive a portable, immutable one-object bundle from an xmove bundle."""
+    """Derive a portable, immutable one-object bundle from a reviewed V2 base."""
 
     if not _OBJECT_ID.fullmatch(object_id):
         raise ValueError("object_id must be a portable filesystem identifier")
@@ -743,16 +747,28 @@ def derive_grasp_anything_bundle(
         raise FileNotFoundError(source)
     base = Path(base_bundle).resolve()
     base_manifest = json.loads((base / "manifest.json").read_text())
-    if base_manifest.get("task") != "xmove_pick":
-        raise ValueError("V1 requires an audited xmove_pick base bundle")
+    reference_task = base_manifest.get("task")
+    if reference_task not in SUPPORTED_REFERENCE_TASKS:
+        raise ValueError(
+            "V1 requires an audited V2 xmove base bundle; got "
+            f"{reference_task!r}"
+        )
+    output = Path(output_dir).resolve()
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError(f"Refusing to overwrite non-empty output {output}")
+    base_task_metadata = base_manifest.get("task_metadata", {})
+    if (
+        base_task_metadata.get("task_schema_version") != 2
+        or base_task_metadata.get("action_dim") != 36
+        or base_task_metadata.get("actor_observation_dim") != 331
+        or base_task_metadata.get("reference_actor_observation_dim") != 842
+    ):
+        raise ValueError("V1 requires the reviewed V2 331D/842D/36D schema")
     unhashed = deepcopy(base_manifest)
     expected_base_hash = unhashed.pop("manifest_hash", None)
     if expected_base_hash is None or _json_hash(unhashed) != expected_base_hash:
         raise ValueError("Base bundle manifest hash mismatch")
 
-    output = Path(output_dir).resolve()
-    if output.exists() and any(output.iterdir()):
-        raise FileExistsError(f"Refusing to overwrite non-empty output {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
     if not output.exists():
         shutil.copytree(base, output)
@@ -814,7 +830,7 @@ def derive_grasp_anything_bundle(
     contract = GraspAnythingObjectContract(
         object_id=object_id,
         source_mjcf_sha256=_sha256(source),
-        reference_task=str(base_manifest["task"]),
+        reference_task=str(reference_task),
         half_extents_m=tuple(float(value) for value in extents),
         grip_width_m=float(grip_width_m),
         mass_kg=float(mass_kg),

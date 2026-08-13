@@ -563,7 +563,13 @@ def _parser() -> argparse.ArgumentParser:
     record = commands.add_parser("record")
     _common(record, num_envs=32)
     record.set_defaults(smoke=True)
-    record.add_argument("--checkpoint", type=Path, required=True)
+    record_policy = record.add_mutually_exclusive_group(required=True)
+    record_policy.add_argument("--checkpoint", type=Path)
+    record_policy.add_argument(
+        "--reference-only",
+        action="store_true",
+        help="Record the clean replay reference without loading a PPO checkpoint",
+    )
     record.add_argument("--output-dir", type=Path, required=True)
     record.add_argument("--videos", type=int, default=3)
     record.add_argument("--max-attempts", type=int, default=100)
@@ -1881,6 +1887,8 @@ def _record(args: argparse.Namespace) -> dict[str, object]:
     for name in ("videos", "max_attempts", "width", "height", "fps"):
         if getattr(args, name) < 1:
             raise ValueError(f"{name.replace('_', '-')} must be positive")
+    if args.reference_only and args.stochastic_policy:
+        raise ValueError("stochastic-policy is only valid for a PPO checkpoint")
     config = _config(args)
     _seed_torch(config.seed)
     dr_strength = _evaluation_dr_strength(args)
@@ -1892,16 +1900,22 @@ def _record(args: argparse.Namespace) -> dict[str, object]:
     )
     if dr_strength > 0.0:
         _set_evaluation_dr_strength(env, dr_strength)
-    train_config = ppo_train_config(
-        smoke=True,
-        plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(args.checkpoint),
-    )
-    runner = GpuPpoRunner(env, train_config, log_dir=None)
-    runner.load_actor_warm_start(args.checkpoint.resolve())
+    actor = None
+    checkpoint = None
+    if not args.reference_only:
+        assert args.checkpoint is not None
+        checkpoint = args.checkpoint.resolve()
+        train_config = ppo_train_config(
+            smoke=True,
+            plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(checkpoint),
+        )
+        runner = GpuPpoRunner(env, train_config, log_dir=None)
+        runner.load_actor_warm_start(checkpoint)
+        actor = runner.alg.get_policy().eval()
     return record_success_videos(
         env,
-        runner.alg.get_policy().eval(),
-        args.checkpoint.resolve(),
+        actor,
+        checkpoint,
         args.output_dir.resolve(),
         videos=args.videos,
         max_attempts=args.max_attempts,
@@ -1912,6 +1926,7 @@ def _record(args: argparse.Namespace) -> dict[str, object]:
         allow_diagnostic_fallback=args.allow_diagnostic_fallback,
         camera_view=args.camera_view,
         stochastic_policy=args.stochastic_policy,
+        reference_only=args.reference_only,
     )
 
 

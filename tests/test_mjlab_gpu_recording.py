@@ -9,6 +9,7 @@ from simple.grasp_rl.mjlab_gpu.recording import (
     _diagnostic_rank,
     _episode_randomization,
     _finger_grasp_truth,
+    _reference_provenance,
     _target_physics_audit,
 )
 
@@ -95,6 +96,29 @@ def test_checkpoint_provenance_cleanly_rejects_zero_update_checkpoint(
 
     with pytest.raises(ValueError, match="audited on-policy PPO"):
         _checkpoint_provenance(checkpoint.resolve())
+
+
+def test_reference_provenance_has_absolute_auditable_source(tmp_path) -> None:
+    root = tmp_path / "reference"
+    root.mkdir()
+    (root / "manifest.json").write_text('{"schema_version": 1}')
+    reference = SimpleNamespace(
+        root=root,
+        metadata=lambda: {
+            "data_sha256": "data-hash",
+            "action_transform_sha256": "transform-hash",
+            "episodes": [11],
+            "strict_episode": 11,
+        },
+    )
+
+    result = _reference_provenance(SimpleNamespace(reference=reference))
+
+    assert result["checkpoint"] is None
+    assert result["ppo_integrity"] is None
+    assert result["reference"]["directory_absolute"] == str(root.resolve())
+    assert result["reference"]["episodes"] == [11]
+    assert len(result["reference"]["manifest_sha256"]) == 64
 
 
 def test_diagnostic_rank_prioritizes_task_stage() -> None:

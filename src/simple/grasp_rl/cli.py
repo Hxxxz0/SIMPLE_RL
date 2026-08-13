@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
+from simple.grasp_rl.audit_v2 import audit_v2_reward
 from simple.grasp_rl.bc import (
     BcTrainConfig,
     collect_dagger_dataset,
@@ -13,39 +14,38 @@ from simple.grasp_rl.bc import (
     train_bc_actor,
 )
 from simple.grasp_rl.collect import collect_policy_dataset
+from simple.grasp_rl.data_v2 import prepare_v2_dataset, write_repaired_actions
 from simple.grasp_rl.diffusion import DiffusionTrainConfig, train_diffusion
 from simple.grasp_rl.evaluate import evaluate_policy
-from simple.grasp_rl.hard_targets import mine_hard_targets
 from simple.grasp_rl.grasp_anything import (
     derive_grasp_anything_bundle,
     validate_grasp_anything_bundle,
 )
+from simple.grasp_rl.hard_targets import mine_hard_targets
 from simple.grasp_rl.mjlab_assets import (
     export_mjlab_render_scene,
     export_mjlab_scene,
     validate_asset_bundle,
 )
 from simple.grasp_rl.mjlab_gpu.reference import derive_strict_reference_subset
-from simple.grasp_rl.policy import build_knn_actor_checkpoint
 from simple.grasp_rl.paired import compare_paired_evaluations
+from simple.grasp_rl.policy import build_knn_actor_checkpoint
+from simple.grasp_rl.prepare import prepare_dataset
+from simple.grasp_rl.render import render_saved_trajectory
+from simple.grasp_rl.reward_audit import AUDIT_SCENARIOS, audit_reward
 from simple.grasp_rl.rewards import (
     DEFAULT_TASK_REWARD_PROFILE,
     REWARD_VARIANTS,
     TASK_REWARD_PROFILES,
 )
-from simple.grasp_rl.render import render_saved_trajectory
-from simple.grasp_rl.prepare import prepare_dataset
-from simple.grasp_rl.data_v2 import prepare_v2_dataset, write_repaired_actions
-from simple.grasp_rl.audit_v2 import audit_v2_reward
-from simple.grasp_rl.reward_audit import AUDIT_SCENARIOS, audit_reward
-from simple.grasp_rl.train import PpoTrainConfig, train_ppo
 from simple.grasp_rl.task_spec import (
     DEFAULT_TASK,
+    TaskSpecV2,
     get_task_spec,
     task_from_manifest,
     task_names,
-    TaskSpecV2,
 )
+from simple.grasp_rl.train import PpoTrainConfig, train_ppo
 
 DEFAULT_DATASET = Path("data/simple/G1WholebodyTabletopGraspMP-v0")
 DEFAULT_PROCESSED = Path("data/grasp_rl/G1WholebodyTabletopGraspMP-v0")
@@ -128,7 +128,7 @@ def _parser() -> argparse.ArgumentParser:
     derive_object.add_argument("--table-clearance-m", type=float, default=0.002)
 
     strict_reference = commands.add_parser("derive-strict-reference")
-    strict_reference.set_defaults(task="xmove_pick")
+    strict_reference.add_argument("--task", default="xmove_pick")
     strict_reference.add_argument("--processed", type=Path, required=True)
     strict_reference.add_argument("--output", type=Path, required=True)
     strict_reference.add_argument("--episode", type=int, required=True)
