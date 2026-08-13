@@ -383,6 +383,20 @@ interior_frontier_y_gains=(
   "${SIMPLE_PPO_FRONTIER_Y_SHOULDER_GAIN:-0}"
   "${SIMPLE_PPO_FRONTIER_Y_WRIST_GAIN:-0}"
 )
+interior_frontier_positive_y_args=()
+if [[ -n "${SIMPLE_PPO_FRONTIER_POSITIVE_Y_SHOULDER_GAIN:-}" ]] || \
+   [[ -n "${SIMPLE_PPO_FRONTIER_POSITIVE_Y_WRIST_GAIN:-}" ]]; then
+  if [[ -z "${SIMPLE_PPO_FRONTIER_POSITIVE_Y_SHOULDER_GAIN:-}" ]] || \
+     [[ -z "${SIMPLE_PPO_FRONTIER_POSITIVE_Y_WRIST_GAIN:-}" ]]; then
+    echo "positive-Y shoulder and wrist gains must be set together" >&2
+    exit 2
+  fi
+  interior_frontier_positive_y_args=(
+    --reference-target-positive-y-arm-gains
+    "${SIMPLE_PPO_FRONTIER_POSITIVE_Y_SHOULDER_GAIN}"
+    "${SIMPLE_PPO_FRONTIER_POSITIVE_Y_WRIST_GAIN}"
+  )
+fi
 
 train_fixed_interior_stage() {
   local output="$1"
@@ -845,6 +859,7 @@ case "${stage}" in
     "${gpu_cli[@]}" train "${interior_common[@]}" \
       --reference-target-x-arm-gains "${interior_frontier_x_gains[@]}" \
       --reference-target-y-arm-gains "${interior_frontier_y_gains[@]}" \
+      "${interior_frontier_positive_y_args[@]}" \
       "${interior_frontier_s017x_pose[@]}" \
       "${train_interior_frontier[@]}" \
       --output "${run_interior_frontier}" \
@@ -898,6 +913,7 @@ case "${stage}" in
     interior_common+=(
       --reference-target-x-arm-gains "${interior_frontier_x_gains[@]}"
       --reference-target-y-arm-gains "${interior_frontier_y_gains[@]}"
+      "${interior_frontier_positive_y_args[@]}"
     )
     evaluate_fixed_interior_stage "${checkpoint_interior_frontier}" \
       "${run_interior_frontier}/acceptance/seed20260824_frontier_512.json" \

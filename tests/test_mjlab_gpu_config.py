@@ -280,6 +280,9 @@ def test_train_cli_accepts_reference_target_pose_retarget_gains() -> None:
             "--reference-target-y-arm-gains",
             "5",
             "-3.5",
+            "--reference-target-positive-y-arm-gains",
+            "8",
+            "-1.5",
             "--reference-target-yaw-arm-gains",
             "1",
             "-2",
@@ -287,6 +290,7 @@ def test_train_cli_accepts_reference_target_pose_retarget_gains() -> None:
     )
     assert args.reference_target_x_arm_gains == [-10.0, 2.0]
     assert args.reference_target_y_arm_gains == [5.0, -3.5]
+    assert args.reference_target_positive_y_arm_gains == [8.0, -1.5]
     assert args.reference_target_yaw_arm_gains == [1.0, -2.0]
 
 
@@ -553,6 +557,7 @@ def test_zero_retarget_accepts_legacy_checkpoint_metadata(tmp_path) -> None:
     legacy_resolved = dict(metadata["resolved"])
     legacy_resolved.pop("reference_target_x_arm_gains")
     legacy_resolved.pop("reference_target_y_arm_gains")
+    legacy_resolved.pop("reference_target_positive_y_arm_gains")
     legacy_resolved.pop("reference_target_yaw_arm_gains")
     legacy_resolved.pop("strict_reference_episode")
     legacy_resolved.pop("reference_selection")
@@ -576,6 +581,10 @@ def test_zero_retarget_accepts_legacy_checkpoint_metadata(tmp_path) -> None:
     with pytest.raises(ValueError, match="hash mismatch"):
         replace(
             config, reference_target_y_arm_gains=(5.0, -3.5)
+        ).assert_resume_compatible(metadata)
+    with pytest.raises(ValueError, match="hash mismatch"):
+        replace(
+            config, reference_target_positive_y_arm_gains=(8.0, -1.5)
         ).assert_resume_compatible(metadata)
     with pytest.raises(ValueError, match="hash mismatch"):
         replace(

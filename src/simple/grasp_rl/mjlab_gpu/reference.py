@@ -173,6 +173,7 @@ class GpuReferenceLibrary:
         splits: tuple[str, ...] = ("train", "val", "test"),
         target_x_arm_gains: tuple[float, float] = (0.0, 0.0),
         target_y_arm_gains: tuple[float, float] = (0.0, 0.0),
+        target_positive_y_arm_gains: tuple[float, float] | None = None,
         target_yaw_arm_gains: tuple[float, float] = (0.0, 0.0),
         strict_episode: int | None = None,
     ):
@@ -182,6 +183,11 @@ class GpuReferenceLibrary:
         self.source = source
         self.target_x_arm_gains = tuple(float(value) for value in target_x_arm_gains)
         self.target_y_arm_gains = tuple(float(value) for value in target_y_arm_gains)
+        self.target_positive_y_arm_gains = (
+            None
+            if target_positive_y_arm_gains is None
+            else tuple(float(value) for value in target_positive_y_arm_gains)
+        )
         self.target_yaw_arm_gains = tuple(
             float(value) for value in target_yaw_arm_gains
         )
@@ -227,6 +233,10 @@ class GpuReferenceLibrary:
         if (
             any(self.target_x_arm_gains)
             or any(self.target_y_arm_gains)
+            or (
+                self.target_positive_y_arm_gains is not None
+                and any(self.target_positive_y_arm_gains)
+            )
             or any(self.target_yaw_arm_gains)
         ) and observation_dim != ACTOR_OBS_V2_DIM:
             raise ValueError(
@@ -298,13 +308,18 @@ class GpuReferenceLibrary:
             "observation_dim": self.observation_dim,
             "target_x_arm_gains": list(self.target_x_arm_gains),
             "target_y_arm_gains": list(self.target_y_arm_gains),
+            "target_positive_y_arm_gains": (
+                None
+                if self.target_positive_y_arm_gains is None
+                else list(self.target_positive_y_arm_gains)
+            ),
             "target_yaw_arm_gains": list(self.target_yaw_arm_gains),
             "strict_episode": self.strict_episode,
             "action_transform_sha256": self.action_transform_sha256,
         }
 
     def _retarget_actions(self, actions: torch.Tensor) -> torch.Tensor:
-        """Shift the proposal using the observed scene/reference X offset."""
+        """Shift the proposal using observed scene/reference pose offsets."""
 
         if actions.shape[0] != self.num_envs or actions.shape[-1] != ACTION_DIM:
             raise ValueError("Retarget actions have an incompatible shape")
@@ -317,6 +332,11 @@ class GpuReferenceLibrary:
             (
                 *self.target_x_arm_gains,
                 *self.target_y_arm_gains,
+                *(
+                    ()
+                    if self.target_positive_y_arm_gains is None
+                    else self.target_positive_y_arm_gains
+                ),
                 *self.target_yaw_arm_gains,
             )
         ):
@@ -330,8 +350,29 @@ class GpuReferenceLibrary:
         result = actions.clone()
         result[..., 21].add_(offset_x, alpha=shoulder_gain)
         result[..., 24].add_(offset_x, alpha=elbow_gain)
-        result[..., 23].add_(offset_y, alpha=shoulder_yaw_gain)
-        result[..., 27].add_(offset_y, alpha=wrist_yaw_gain)
+        if self.target_positive_y_arm_gains is None:
+            result[..., 23].add_(offset_y, alpha=shoulder_yaw_gain)
+            result[..., 27].add_(offset_y, alpha=wrist_yaw_gain)
+        else:
+            positive_shoulder_gain, positive_wrist_gain = (
+                self.target_positive_y_arm_gains
+            )
+            result[..., 23].add_(
+                offset_y
+                * torch.where(
+                    offset_y > 0,
+                    positive_shoulder_gain,
+                    shoulder_yaw_gain,
+                )
+            )
+            result[..., 27].add_(
+                offset_y
+                * torch.where(
+                    offset_y > 0,
+                    positive_wrist_gain,
+                    wrist_yaw_gain,
+                )
+            )
         result[..., 23].add_(offset_yaw, alpha=shoulder_target_yaw_gain)
         result[..., 27].add_(offset_yaw, alpha=wrist_target_yaw_gain)
         return result.clamp(-1.0, 1.0)

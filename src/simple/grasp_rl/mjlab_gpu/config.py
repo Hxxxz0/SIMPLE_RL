@@ -280,6 +280,7 @@ class MjlabPpoConfig:
     reference_reward_weight: float = 0.05
     reference_target_x_arm_gains: tuple[float, float] = (0.0, 0.0)
     reference_target_y_arm_gains: tuple[float, float] = (0.0, 0.0)
+    reference_target_positive_y_arm_gains: tuple[float, float] | None = None
     reference_target_yaw_arm_gains: tuple[float, float] = (0.0, 0.0)
     max_reference_action_deviation: float = 0.35
     full_dr_reference_reward_scale: float = 0.2
@@ -346,6 +347,16 @@ class MjlabPpoConfig:
             raise ValueError(
                 "reference_target_y_arm_gains must contain two finite values"
             )
+        if self.reference_target_positive_y_arm_gains is not None and (
+            len(self.reference_target_positive_y_arm_gains) != 2
+            or not all(
+                math.isfinite(float(value))
+                for value in self.reference_target_positive_y_arm_gains
+            )
+        ):
+            raise ValueError(
+                "reference_target_positive_y_arm_gains must contain two finite values"
+            )
         if len(self.reference_target_yaw_arm_gains) != 2 or not all(
             math.isfinite(float(value)) for value in self.reference_target_yaw_arm_gains
         ):
@@ -401,12 +412,19 @@ class MjlabPpoConfig:
                 ("reference_target_x_arm_gains", self.reference_target_x_arm_gains),
                 ("reference_target_y_arm_gains", self.reference_target_y_arm_gains),
                 (
+                    "reference_target_positive_y_arm_gains",
+                    self.reference_target_positive_y_arm_gains,
+                ),
+                (
                     "reference_target_yaw_arm_gains",
                     self.reference_target_yaw_arm_gains,
                 ),
             ):
-                if name not in normalized and gains == (0.0, 0.0):
-                    normalized[name] = [0.0, 0.0]
+                if name not in normalized:
+                    if gains == (0.0, 0.0):
+                        normalized[name] = [0.0, 0.0]
+                    elif gains is None:
+                        normalized[name] = None
             if (
                 "strict_reference_episode" not in normalized
                 and self.strict_reference_episode is None

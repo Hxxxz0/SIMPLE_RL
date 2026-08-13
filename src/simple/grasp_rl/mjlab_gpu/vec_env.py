@@ -113,6 +113,9 @@ class GpuGraspVecEnv(VecEnv):
             splits=("train", "val", "test"),
             target_x_arm_gains=config.reference_target_x_arm_gains,
             target_y_arm_gains=config.reference_target_y_arm_gains,
+            target_positive_y_arm_gains=(
+                config.reference_target_positive_y_arm_gains
+            ),
             target_yaw_arm_gains=config.reference_target_yaw_arm_gains,
             strict_episode=config.strict_reference_episode,
         )

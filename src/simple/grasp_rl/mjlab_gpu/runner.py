@@ -158,10 +158,14 @@ def _reference_metadata_matches(actual: object, expected: dict[str, object]) -> 
     for name in (
         "target_x_arm_gains",
         "target_y_arm_gains",
+        "target_positive_y_arm_gains",
         "target_yaw_arm_gains",
     ):
-        if name not in normalized and expected.get(name) == [0.0, 0.0]:
-            normalized[name] = [0.0, 0.0]
+        if name not in normalized:
+            if expected.get(name) == [0.0, 0.0]:
+                normalized[name] = [0.0, 0.0]
+            elif expected.get(name) is None:
+                normalized[name] = None
     if "strict_episode" not in normalized and expected.get("strict_episode") is None:
         normalized["strict_episode"] = None
     if "action_transform_sha256" not in normalized:

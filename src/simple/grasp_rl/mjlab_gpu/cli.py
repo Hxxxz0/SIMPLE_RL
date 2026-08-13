@@ -109,6 +109,16 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
         ),
     )
     parser.add_argument(
+        "--reference-target-positive-y-arm-gains",
+        type=float,
+        nargs=2,
+        metavar=("SHOULDER_YAW", "WRIST_YAW"),
+        help=(
+            "Opt-in gains used only for positive observed target-Y offsets; "
+            "omitted preserves the symmetric legacy Y retargeting path"
+        ),
+    )
+    parser.add_argument(
         "--reference-target-yaw-arm-gains",
         type=float,
         nargs=2,
@@ -653,6 +663,11 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         max_reference_action_deviation=args.max_reference_action_deviation,
         reference_target_x_arm_gains=tuple(args.reference_target_x_arm_gains),
         reference_target_y_arm_gains=tuple(args.reference_target_y_arm_gains),
+        reference_target_positive_y_arm_gains=(
+            None
+            if args.reference_target_positive_y_arm_gains is None
+            else tuple(args.reference_target_positive_y_arm_gains)
+        ),
         reference_target_yaw_arm_gains=tuple(args.reference_target_yaw_arm_gains),
     )
     dr_overrides = {
