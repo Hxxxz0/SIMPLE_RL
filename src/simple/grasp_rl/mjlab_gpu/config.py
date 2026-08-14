@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 MJLAB_PPO_CONFIG_VERSION = 1
-MIN_LONG_TRAIN_ENVS = 2048
+MIN_LONG_TRAIN_ENVS = 1024
 GPU_SENSOR_SCHEMA_VERSION = 1
 
 
@@ -287,6 +287,9 @@ class MjlabPpoConfig:
     grasp_anything_lift_arm_residual_min_scale: float = 1.0
     grasp_anything_lift_arm_residual_decay_steps: int = 0
     grasp_anything_lift_arm_residual_grasp_steps: int = 3
+    grasp_anything_goal_potential_scale: float = 5.0
+    grasp_anything_goal_potential_negative_clip: float = 0.25
+    grasp_anything_success_bonus: float = 40.0
     sensor_schema_version: int = GPU_SENSOR_SCHEMA_VERSION
     domain_randomization: DomainRandomizationConfig = field(
         default_factory=DomainRandomizationConfig
@@ -382,6 +385,34 @@ class MjlabPpoConfig:
             raise ValueError(
                 "grasp_anything_lift_arm_residual_grasp_steps must be positive"
             )
+        if (
+            not math.isfinite(self.grasp_anything_goal_potential_scale)
+            or self.grasp_anything_goal_potential_scale <= 0.0
+        ):
+            raise ValueError(
+                "grasp_anything_goal_potential_scale must be positive and finite"
+            )
+        if not (
+            math.isfinite(self.grasp_anything_goal_potential_negative_clip)
+            and 0.0 < self.grasp_anything_goal_potential_negative_clip <= 1.0
+        ):
+            raise ValueError(
+                "grasp_anything_goal_potential_negative_clip must be in (0, 1]"
+            )
+        if (
+            not math.isfinite(self.grasp_anything_success_bonus)
+            or self.grasp_anything_success_bonus <= 0.0
+        ):
+            raise ValueError("grasp_anything_success_bonus must be positive and finite")
+        object_reward_changed = (
+            self.grasp_anything_goal_potential_scale != 5.0
+            or self.grasp_anything_goal_potential_negative_clip != 0.25
+            or self.grasp_anything_success_bonus != 40.0
+        )
+        if object_reward_changed and self.task != "grasp_anything":
+            raise ValueError(
+                "grasp_anything reward shaping overrides require grasp_anything"
+            )
         lift_arm_decay_enabled = (
             self.grasp_anything_lift_arm_residual_min_scale < 1.0
             or self.grasp_anything_lift_arm_residual_decay_steps > 0
@@ -472,6 +503,9 @@ class MjlabPpoConfig:
                 ("grasp_anything_lift_arm_residual_min_scale", 1.0),
                 ("grasp_anything_lift_arm_residual_decay_steps", 0),
                 ("grasp_anything_lift_arm_residual_grasp_steps", 3),
+                ("grasp_anything_goal_potential_scale", 5.0),
+                ("grasp_anything_goal_potential_negative_clip", 0.25),
+                ("grasp_anything_success_bonus", 40.0),
             ):
                 if name not in normalized and getattr(self, name) == default:
                     normalized[name] = default

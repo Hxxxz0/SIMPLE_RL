@@ -28,8 +28,8 @@ Contributors: [Songlin Wei](https://songlin.github.io/)\*, [Zhenhao Ni](https://
 
 ## grasp_anything 物体抓取发布（2026-08-14）
 
-`grasp_anything` 当前保留 5 个独立 RL checkpoint：`Soap_Bottle_1`、
-`Bottle_1`、`Apple_1`、`Bowl_1` 和 `Cup_6`。另外，低矮物体的 opt-in
+`grasp_anything` 当前保留 6 个独立 RL checkpoint：`Soap_Bottle_1`、
+`Bottle_1`、两个互不替换的 `Apple_1` 路线、`Bowl_1` 和 `Cup_6`。另外，低矮物体的 opt-in
 `xmove_bend_pick` episode-11 路线实证支持 `Apple_1`、`Bowl_1`、`Potato_1`
 和 `Tomato_1`，因此共有 7 种不重复物体通过了物理抓取验收。选定权重、reference、
 SHA256、验收数据、适用边界和本机视频绝对路径已归档到
@@ -43,10 +43,11 @@ pose DR，但需要 lift-arm-decay 运行时变体。新 bend reference 在目�
 为 270/512；所有 bend 支持物体都有全身和近景成功视频。
 
 Apple 的固定 bend reference 在精确 512-world Warp 合同下为 512/512，但位置
-DR 揭示其泛化不足。新位置 DR reference 在配对 seed 上从旧 reference 的 81/512
-提高到 95/512，仍只有 18.55%，不能称为稳健。两次 PPO 训练也未超过 reference，
-所以只作为 rejected 实验备份，不替换原 episode-82 Apple 权重。完整分析、DR
-profiles、失败边界和全部绝对路径见 release 中的 `DR_BEND_FOLLOWUP.md`。
+DR 揭示其泛化不足。新 reward-aligned PPO 使用 1024 env、400 updates 可用训练、
+`std=0.03` 和位置 DR；选中的 `model_300` 在两个独立 seed 合计 185/1024，
+配对 reference 为 166/1024，相对提高 11.4%。绝对成功率仍只有 18.07%，不能称为
+稳健，也不替换原 episode-82 Apple 权重。完整分析、DR profiles、失败边界和全部
+绝对路径见 release 中的 `DR_BEND_FOLLOWUP.md`。
 
 ## mjlab CUDA PPO 可复现发布（2026-08-03）
 

@@ -90,7 +90,7 @@ def test_reference_override_is_explicit_and_does_not_change_default() -> None:
     )
 
 
-def test_train_cli_has_no_legacy_checkpoint_warm_start() -> None:
+def test_train_cli_defaults_to_scratch_without_resume() -> None:
     args = RUNNER._parser().parse_args(
         ["train", "Apple_1", "--run-name", "isolated_test"]
     )
@@ -100,3 +100,57 @@ def test_train_cli_has_no_legacy_checkpoint_warm_start() -> None:
     assert args.iterations == 40
     assert not hasattr(args, "checkpoint")
     assert args.reference_processed is None
+    assert args.dr_initial_strength == pytest.approx(0.1)
+    assert args.dr_ramp_steps == 480
+    assert args.resume is None
+    assert args.warm_start is None
+    assert args.goal_potential_scale == pytest.approx(5.0)
+    assert args.goal_potential_negative_clip == pytest.approx(0.25)
+    assert args.success_bonus == pytest.approx(40.0)
+
+
+def test_train_cli_exact_resume_is_explicit() -> None:
+    args = RUNNER._parser().parse_args(
+        [
+            "train",
+            "Apple_1",
+            "--run-name",
+            "resume_test",
+            "--resume",
+            "/tmp/model_399.pt",
+        ]
+    )
+
+    assert args.resume == Path("/tmp/model_399.pt")
+
+
+def test_train_cli_reward_aligned_warm_start_is_explicit() -> None:
+    args = RUNNER._parser().parse_args(
+        [
+            "train",
+            "Apple_1",
+            "--run-name",
+            "aligned_test",
+            "--warm-start",
+            "/tmp/model_399.pt",
+            "--goal-potential-scale",
+            "20",
+            "--goal-potential-negative-clip",
+            "1",
+            "--success-bonus",
+            "80",
+        ]
+    )
+
+    assert args.warm_start == Path("/tmp/model_399.pt")
+    assert args.goal_potential_scale == pytest.approx(20.0)
+    assert args.goal_potential_negative_clip == pytest.approx(1.0)
+    assert args.success_bonus == pytest.approx(80.0)
+
+
+def test_latest_checkpoint_handles_resumed_iteration_numbers(tmp_path: Path) -> None:
+    for iteration in (400, 405, 799):
+        (tmp_path / f"model_{iteration}.pt").touch()
+    (tmp_path / "model_initial.pt").touch()
+
+    assert RUNNER._latest_checkpoint(tmp_path) == tmp_path / "model_799.pt"

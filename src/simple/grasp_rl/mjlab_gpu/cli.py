@@ -110,6 +110,27 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
         help="Consecutive physical grasp steps required before arm decay starts",
     )
     parser.add_argument(
+        "--grasp-anything-goal-potential-scale",
+        type=float,
+        default=5.0,
+        help="Opt-in grasp_anything goal-progress scale; five preserves behavior",
+    )
+    parser.add_argument(
+        "--grasp-anything-goal-potential-negative-clip",
+        type=float,
+        default=0.25,
+        help=(
+            "Opt-in negative potential-delta clip; 0.25 preserves behavior and "
+            "one makes progress gains and losses symmetric"
+        ),
+    )
+    parser.add_argument(
+        "--grasp-anything-success-bonus",
+        type=float,
+        default=40.0,
+        help="Opt-in terminal success bonus; forty preserves existing behavior",
+    )
+    parser.add_argument(
         "--reference-target-x-arm-gains",
         type=float,
         nargs=2,
@@ -700,6 +721,13 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         grasp_anything_lift_arm_residual_grasp_steps=(
             args.grasp_anything_lift_arm_residual_grasp_steps
         ),
+        grasp_anything_goal_potential_scale=(
+            args.grasp_anything_goal_potential_scale
+        ),
+        grasp_anything_goal_potential_negative_clip=(
+            args.grasp_anything_goal_potential_negative_clip
+        ),
+        grasp_anything_success_bonus=args.grasp_anything_success_bonus,
         reference_target_x_arm_gains=tuple(args.reference_target_x_arm_gains),
         reference_target_y_arm_gains=tuple(args.reference_target_y_arm_gains),
         reference_target_positive_y_arm_gains=(

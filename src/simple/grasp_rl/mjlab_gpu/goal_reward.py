@@ -16,6 +16,9 @@ from simple.grasp_rl.schema import JOINT_NAMES
 from simple.grasp_rl.task_spec import GoalStageSpec, TaskSpecV2
 
 GPU_GOAL_REWARD_SCHEMA_VERSION = 9
+DEFAULT_GOAL_POTENTIAL_SCALE = 5.0
+DEFAULT_GOAL_POTENTIAL_NEGATIVE_CLIP = 0.25
+DEFAULT_GOAL_SUCCESS_BONUS = 40.0
 
 
 def _json_hash(payload: object) -> str:
@@ -27,13 +30,15 @@ def _terminal_adjustment(
     success: torch.Tensor,
     failure: torch.Tensor,
     timeout: torch.Tensor,
+    *,
+    success_bonus: float = DEFAULT_GOAL_SUCCESS_BONUS,
 ) -> torch.Tensor:
     """Keep terminal incentives identical across goal-graph task families."""
 
     zeros = torch.zeros_like(success, dtype=torch.float32)
     return torch.where(
         success,
-        torch.full_like(zeros, 40.0),
+        torch.full_like(zeros, success_bonus),
         torch.where(
             failure,
             torch.full_like(zeros, -10.0),
@@ -104,6 +109,9 @@ class GpuGoalGraphReward:
         state_reader: GpuTaskStateExtractorV2,
         *,
         frozen_reward_hash: str | None = None,
+        potential_scale: float = DEFAULT_GOAL_POTENTIAL_SCALE,
+        potential_negative_clip: float = DEFAULT_GOAL_POTENTIAL_NEGATIVE_CLIP,
+        success_bonus: float = DEFAULT_GOAL_SUCCESS_BONUS,
     ):
         self.state_reader = state_reader
         self.sim = state_reader.sim
@@ -112,6 +120,15 @@ class GpuGoalGraphReward:
         self.num_envs = state_reader.num_envs
         self.max_episode_steps = int(self.spec.max_episode_steps)
         self.frozen_reward_hash = _json_hash(self.spec.metadata()["spec"])
+        self.potential_scale = float(potential_scale)
+        self.potential_negative_clip = float(potential_negative_clip)
+        self.success_bonus = float(success_bonus)
+        if self.potential_scale <= 0.0:
+            raise ValueError("goal potential scale must be positive")
+        if not 0.0 < self.potential_negative_clip <= 1.0:
+            raise ValueError("goal potential negative clip must be in (0, 1]")
+        if self.success_bonus <= 0.0:
+            raise ValueError("goal success bonus must be positive")
         if (
             frozen_reward_hash is not None
             and frozen_reward_hash != self.frozen_reward_hash
@@ -157,11 +174,14 @@ class GpuGoalGraphReward:
 
     @classmethod
     def from_frozen_bundle(
-        cls, state_reader: GpuTaskStateExtractorV2
-    ) -> "GpuGoalGraphReward":
+        cls,
+        state_reader: GpuTaskStateExtractorV2,
+        **reward_options: float,
+    ) -> GpuGoalGraphReward:
         return cls(
             state_reader,
             frozen_reward_hash=state_reader.gpu.bundle.manifest["reward_hash"],
+            **reward_options,
         )
 
     def metadata(self) -> dict[str, object]:
@@ -172,6 +192,12 @@ class GpuGoalGraphReward:
             "task": self.spec.name,
             "frozen_reward_hash": self.frozen_reward_hash,
         }
+        if self.potential_scale != DEFAULT_GOAL_POTENTIAL_SCALE:
+            resolved["potential_scale"] = self.potential_scale
+        if self.potential_negative_clip != DEFAULT_GOAL_POTENTIAL_NEGATIVE_CLIP:
+            resolved["potential_negative_clip"] = self.potential_negative_clip
+        if self.success_bonus != DEFAULT_GOAL_SUCCESS_BONUS:
+            resolved["success_bonus"] = self.success_bonus
         return {**resolved, "resolved_sha256": _json_hash(resolved)}
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
@@ -472,7 +498,9 @@ class GpuGoalGraphReward:
         # second time charges a negative reward for every unchanged valid hold,
         # which is especially harmful for long transport/place trajectories.
         potential_delta = potential - self.previous_potential
-        graph_target = 5.0 * potential_delta.clamp(-0.25, 1.0)
+        graph_target = self.potential_scale * potential_delta.clamp(
+            -self.potential_negative_clip, 1.0
+        )
         graph_target = graph_target + 2.0 * completed.float()
         self.previous_potential.copy_(potential)
 
@@ -560,7 +588,12 @@ class GpuGoalGraphReward:
                 + 0.5 * dangerous.float()
                 + joint_limit
             )
-        terminal = _terminal_adjustment(success, failure, timeout)
+        terminal = _terminal_adjustment(
+            success,
+            failure,
+            timeout,
+            success_bonus=self.success_bonus,
+        )
         self.stage_progress.copy_(progress)
         self.state_reader.set_stage(self.stage_index, self.stage_progress)
         quality = torch.maximum(left_quality, right_quality)

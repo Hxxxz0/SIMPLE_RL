@@ -34,8 +34,10 @@ from simple.grasp_rl.schema import REFERENCE_CONTEXT_DIM, REFERENCE_FRAME_DIM
 def test_gpu_ppo_config_rejects_cpu_and_small_long_runs(tmp_path) -> None:
     with pytest.raises(ValueError, match="cuda"):
         MjlabPpoConfig("tabletop_grasp", str(tmp_path), device="cpu")
-    with pytest.raises(ValueError, match="2048"):
-        MjlabPpoConfig("tabletop_grasp", str(tmp_path), num_envs=1024)
+    with pytest.raises(ValueError, match="1024"):
+        MjlabPpoConfig("tabletop_grasp", str(tmp_path), num_envs=512)
+    long_run = MjlabPpoConfig("tabletop_grasp", str(tmp_path), num_envs=1024)
+    assert long_run.num_envs == 1024
     smoke = MjlabPpoConfig(
         "tabletop_grasp", str(tmp_path), num_envs=16, smoke_mode=True
     )
@@ -55,6 +57,29 @@ def test_lift_arm_residual_decay_is_opt_in_and_grasp_anything_only(tmp_path) -> 
         )
     with pytest.raises(ValueError, match="requires grasp_anything"):
         replace(default, grasp_anything_lift_arm_residual_min_scale=0.2)
+
+
+def test_goal_reward_alignment_is_opt_in_and_grasp_anything_only(tmp_path) -> None:
+    default = MjlabPpoConfig("tabletop_grasp", str(tmp_path))
+    assert default.grasp_anything_goal_potential_scale == pytest.approx(5.0)
+    assert default.grasp_anything_goal_potential_negative_clip == pytest.approx(0.25)
+    assert default.grasp_anything_success_bonus == pytest.approx(40.0)
+
+    aligned = MjlabPpoConfig(
+        "grasp_anything",
+        str(tmp_path),
+        grasp_anything_goal_potential_scale=20.0,
+        grasp_anything_goal_potential_negative_clip=1.0,
+        grasp_anything_success_bonus=80.0,
+    )
+    assert aligned.grasp_anything_goal_potential_scale == pytest.approx(20.0)
+
+    with pytest.raises(ValueError, match="reward shaping overrides"):
+        MjlabPpoConfig(
+            "tabletop_grasp",
+            str(tmp_path),
+            grasp_anything_goal_potential_scale=20.0,
+        )
 
 
 def test_lift_arm_residual_scale_decays_linearly_to_floor() -> None:
@@ -683,6 +708,9 @@ def test_zero_retarget_accepts_legacy_checkpoint_metadata(tmp_path) -> None:
     legacy_resolved.pop("grasp_anything_lift_arm_residual_min_scale")
     legacy_resolved.pop("grasp_anything_lift_arm_residual_decay_steps")
     legacy_resolved.pop("grasp_anything_lift_arm_residual_grasp_steps")
+    legacy_resolved.pop("grasp_anything_goal_potential_scale")
+    legacy_resolved.pop("grasp_anything_goal_potential_negative_clip")
+    legacy_resolved.pop("grasp_anything_success_bonus")
     legacy_resolved["domain_randomization"] = dict(
         legacy_resolved["domain_randomization"]
     )

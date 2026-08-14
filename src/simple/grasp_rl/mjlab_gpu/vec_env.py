@@ -97,7 +97,12 @@ class GpuGraspVecEnv(VecEnv):
                 and self.gpu.bundle.manifest.get("object_contract") is not None
             ):
                 self.reward = GpuObjectGraspReward.from_frozen_bundle(
-                    self.state_reader
+                    self.state_reader,
+                    potential_scale=config.grasp_anything_goal_potential_scale,
+                    potential_negative_clip=(
+                        config.grasp_anything_goal_potential_negative_clip
+                    ),
+                    success_bonus=config.grasp_anything_success_bonus,
                 )
             else:
                 self.reward = GpuGoalGraphReward.from_frozen_bundle(

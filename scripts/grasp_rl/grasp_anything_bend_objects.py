@@ -143,6 +143,20 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _latest_checkpoint(output: Path) -> Path:
+    checkpoints = [
+        path
+        for path in output.glob("model_*.pt")
+        if path.stem.removeprefix("model_").isdigit()
+    ]
+    if not checkpoints:
+        raise FileNotFoundError(f"training produced no checkpoint in {output}")
+    return max(
+        checkpoints,
+        key=lambda path: int(path.stem.removeprefix("model_")),
+    )
+
+
 def derive(spec: BendObjectSpec, molmo_root: Path) -> dict[str, object]:
     source = molmo_root / spec.source_relative
     output = asset_path(spec.object_id)
@@ -204,6 +218,9 @@ def environment_args(
     reference_processed: Path | None = None,
     dr_initial_strength: float = 1.0,
     dr_ramp_steps: int = 1,
+    goal_potential_scale: float = 5.0,
+    goal_potential_negative_clip: float = 0.25,
+    success_bonus: float = 40.0,
 ) -> list[str]:
     pose = PROFILES[profile]
     reference = reference_processed or staged_reference_path(spec.object_id)
@@ -226,6 +243,12 @@ def environment_args(
         "0.005",
         "--max-reference-action-deviation",
         "0.7",
+        "--grasp-anything-goal-potential-scale",
+        str(goal_potential_scale),
+        "--grasp-anything-goal-potential-negative-clip",
+        str(goal_potential_negative_clip),
+        "--grasp-anything-success-bonus",
+        str(success_bonus),
         "--reference-target-x-arm-gains",
         "-10",
         "4",
@@ -383,6 +406,15 @@ def train(
     exploration_std: float,
     run_name: str,
     reference_processed: Path | None = None,
+    dr_initial_strength: float = 0.1,
+    dr_ramp_steps: int = 480,
+    resume: Path | None = None,
+    warm_start: Path | None = None,
+    actor_anchor_checkpoint: Path | None = None,
+    actor_anchor_weight: float = 0.0,
+    goal_potential_scale: float = 5.0,
+    goal_potential_negative_clip: float = 0.25,
+    success_bonus: float = 40.0,
 ) -> Path:
     output = run_root(spec.object_id) / run_name
     if output.exists() and any(output.iterdir()):
@@ -390,6 +422,39 @@ def train(
     reference = reference_processed or staged_reference_path(spec.object_id)
     if not reference.is_dir():
         raise FileNotFoundError(reference)
+    if resume is not None and warm_start is not None:
+        raise ValueError("resume and warm_start are mutually exclusive")
+    for checkpoint in (resume, warm_start, actor_anchor_checkpoint):
+        if checkpoint is not None and not checkpoint.is_file():
+            raise FileNotFoundError(checkpoint)
+    if (actor_anchor_checkpoint is None) != (actor_anchor_weight == 0.0):
+        raise ValueError(
+            "actor anchor checkpoint and positive weight are required together"
+        )
+    if resume is not None:
+        initialization = ["--resume", str(resume)]
+    elif warm_start is not None:
+        initialization = ["--warm-start", str(warm_start)]
+    else:
+        initialization = [
+            "--plan-conditioned-actor",
+            "--scratch-actor-output-scale",
+            "0.000001",
+            "--scratch-right-hand-correction",
+            *("0" for _ in range(7)),
+            "--scratch-right-arm-correction",
+            *("0" for _ in range(7)),
+        ]
+    anchor = (
+        []
+        if actor_anchor_checkpoint is None
+        else [
+            "--actor-anchor-checkpoint",
+            str(actor_anchor_checkpoint),
+            "--actor-anchor-weight",
+            str(actor_anchor_weight),
+        ]
+    )
     _run_gpu(
         [
             "train",
@@ -398,8 +463,11 @@ def train(
                 profile,
                 seed,
                 reference_processed=reference,
-                dr_initial_strength=0.1,
-                dr_ramp_steps=480,
+                dr_initial_strength=dr_initial_strength,
+                dr_ramp_steps=dr_ramp_steps,
+                goal_potential_scale=goal_potential_scale,
+                goal_potential_negative_clip=goal_potential_negative_clip,
+                success_bonus=success_bonus,
             ),
             "--num-envs",
             str(num_envs),
@@ -407,13 +475,8 @@ def train(
             str(iterations),
             "--output",
             str(output),
-            "--plan-conditioned-actor",
-            "--scratch-actor-output-scale",
-            "0.000001",
-            "--scratch-right-hand-correction",
-            *("0" for _ in range(7)),
-            "--scratch-right-arm-correction",
-            *("0" for _ in range(7)),
+            *initialization,
+            *anchor,
             "--exploration-std",
             str(exploration_std),
             "--learning-rate",
@@ -427,7 +490,7 @@ def train(
         ],
         gpu=gpu,
     )
-    return output / f"model_{iterations - 1}.pt"
+    return _latest_checkpoint(output)
 
 
 def record(
@@ -503,6 +566,15 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--exploration-std", type=float, default=0.01)
     child.add_argument("--run-name", required=True)
     child.add_argument("--reference-processed", type=Path)
+    child.add_argument("--dr-initial-strength", type=float, default=0.1)
+    child.add_argument("--dr-ramp-steps", type=int, default=480)
+    child.add_argument("--resume", type=Path)
+    child.add_argument("--warm-start", type=Path)
+    child.add_argument("--actor-anchor-checkpoint", type=Path)
+    child.add_argument("--actor-anchor-weight", type=float, default=0.0)
+    child.add_argument("--goal-potential-scale", type=float, default=5.0)
+    child.add_argument("--goal-potential-negative-clip", type=float, default=0.25)
+    child.add_argument("--success-bonus", type=float, default=40.0)
     child = commands.add_parser("record")
     child.add_argument("object", choices=OBJECTS)
     child.add_argument("--profile", choices=PROFILES, default="target_xy_2p5mm")
@@ -565,6 +637,15 @@ def main(argv: list[str] | None = None) -> int:
                     exploration_std=args.exploration_std,
                     run_name=args.run_name,
                     reference_processed=args.reference_processed,
+                    dr_initial_strength=args.dr_initial_strength,
+                    dr_ramp_steps=args.dr_ramp_steps,
+                    resume=args.resume,
+                    warm_start=args.warm_start,
+                    actor_anchor_checkpoint=args.actor_anchor_checkpoint,
+                    actor_anchor_weight=args.actor_anchor_weight,
+                    goal_potential_scale=args.goal_potential_scale,
+                    goal_potential_negative_clip=args.goal_potential_negative_clip,
+                    success_bonus=args.success_bonus,
                 )
             )
         }

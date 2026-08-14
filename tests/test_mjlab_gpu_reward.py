@@ -126,6 +126,17 @@ def test_goal_graph_timeout_penalty_applies_to_grasp_tasks() -> None:
     torch.testing.assert_close(terminal, torch.tensor([40.0, -10.0, -5.0, 0.0]))
 
 
+def test_goal_graph_success_bonus_is_explicitly_overridable() -> None:
+    terminal = _terminal_adjustment(
+        torch.tensor([True, False]),
+        torch.tensor([False, False]),
+        torch.tensor([False, True]),
+        success_bonus=80.0,
+    )
+
+    torch.testing.assert_close(terminal, torch.tensor([80.0, -5.0]))
+
+
 def test_grasp_progress_rewards_supported_multi_finger_reach() -> None:
     distances = torch.tensor([[0.02, 0.03, 0.04]]).repeat(3, 1)
     lift = torch.tensor([0.0, -0.03, 0.0])

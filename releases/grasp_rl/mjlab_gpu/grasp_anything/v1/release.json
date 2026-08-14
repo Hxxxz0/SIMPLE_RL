@@ -14,8 +14,8 @@
     "reference_episode": 11,
     "opt_in": true,
     "existing_defaults_changed": false,
-    "accepted_rl_checkpoint_count": 5,
-    "accepted_rl_checkpoints_changed": false,
+    "accepted_rl_checkpoint_count": 6,
+    "accepted_rl_checkpoints_changed": true,
     "unique_physically_supported_objects": [
       "Soap_Bottle_1",
       "Bottle_1",
@@ -78,14 +78,14 @@
     "object_results": [
       {
         "object_id": "Apple_1",
-        "policy": "reference_only",
-        "position_dr_status": "low",
+        "policy": "ppo_reward_aligned_v1",
+        "position_dr_status": "measured_improvement_but_not_robust",
         "release_reference_path": "references/apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2",
         "local_reference_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2",
         "action_transform_sha256": "0b0ac2e1f69c2e304f2cc720fadbdc7fab5d678f0f492ad24815d5ae4e9002be",
         "episode_sha256": "1bdb7340b6a36887f540a9fc1f4478448a580d6837f804721661b6533fb4faad",
         "manifest_sha256": "90e7f5f48987b1e0c2bb2a9175c97cf27e91e00ec35ec20741978194872a2de8",
-        "target_xy_2p5mm_evaluations": [
+        "target_xy_2p5mm_reference_evaluations": [
           {
             "seed": 20260934,
             "episodes": 512,
@@ -101,7 +101,76 @@
             "paired_old_reference_successes": 81,
             "result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/reference_reference-Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2_target_xy_2p5mm_seed20260938_512.log"
           }
-        ]
+        ],
+        "accepted_ppo_checkpoint": {
+          "path": "checkpoints/apple_1_xmove_bend_rewardalign_model_300.pt",
+          "sha256": "6be17f3812a3b8fea285153eaccb6495522159695f8c750b0f14f5fb3d37a4fa",
+          "bytes": 14906059,
+          "local_checkpoint_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/apple_1_xmove_bend_rewardalign_model_300.pt",
+          "source_checkpoint_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/ppo_rewardalign_v1_scale20_clip1_bonus80_warm_model399_seed20260968_env1024_std030_400/model_300.pt",
+          "fresh_on_policy_transitions": 7397376,
+          "warm_start_actor_source_transitions": 9830400,
+          "training": {
+            "num_envs": 1024,
+            "updates_available": 400,
+            "selected_update": 300,
+            "steps_per_env_per_update": 24,
+            "exploration_std": 0.03,
+            "learning_rate": 0.00005,
+            "dr_initial_strength": 0.1,
+            "dr_ramp_steps": 4800,
+            "goal_potential_scale": 20.0,
+            "goal_potential_negative_clip": 1.0,
+            "success_bonus": 80.0
+          },
+          "paired_evaluations": [
+            {
+              "seed": 20260974,
+              "episodes": 512,
+              "checkpoint_successes": 93,
+              "reference_successes": 77,
+              "checkpoint_success_rate": 0.181640625,
+              "reference_success_rate": 0.150390625,
+              "checkpoint_result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/ppo_rewardalign_v1_scale20_model300_reference-v2_target_xy_2p5mm_seed20260974_512.log",
+              "reference_result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/reference_reference-Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2_target_xy_2p5mm_seed20260974_512.log"
+            },
+            {
+              "seed": 20260975,
+              "episodes": 512,
+              "checkpoint_successes": 92,
+              "reference_successes": 89,
+              "checkpoint_success_rate": 0.1796875,
+              "reference_success_rate": 0.173828125,
+              "checkpoint_result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/ppo_rewardalign_v1_scale20_model300_reference-v2_target_xy_2p5mm_seed20260975_512.log",
+              "reference_result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/reference_reference-Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2_target_xy_2p5mm_seed20260975_512.log"
+            }
+          ],
+          "aggregate": {
+            "episodes": 1024,
+            "checkpoint_successes": 185,
+            "reference_successes": 166,
+            "checkpoint_success_rate": 0.1806640625,
+            "reference_success_rate": 0.162109375,
+            "absolute_rate_gain": 0.0185546875,
+            "relative_success_gain": 0.1144578313253012
+          },
+          "videos": [
+            {
+              "camera": "full_robot",
+              "path": "videos/apple_1_xmove_bend_rewardalign_model_300/full_robot/gpu_ppo_success_full_dr_01.mp4",
+              "sha256": "53bec57251c8450b829407adc383482d261d310b133e0a5a2a93cf69fd209a84",
+              "bytes": 674580,
+              "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos/ppo_reference-Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2_target_xy_2p5mm_full_robot_seed20260977/gpu_ppo_success_full_dr_01.mp4"
+            },
+            {
+              "camera": "grasp_closeup",
+              "path": "videos/apple_1_xmove_bend_rewardalign_model_300/grasp_closeup/gpu_ppo_success_full_dr_01.mp4",
+              "sha256": "ccc9b49acc6b52254f5f8bdb80bd1ba56d7a53840b1908b7b3998727dea017a1",
+              "bytes": 1587137,
+              "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos/ppo_reference-Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2_target_xy_2p5mm_grasp_closeup_seed20260977/gpu_ppo_success_full_dr_01.mp4"
+            }
+          ]
+        }
       },
       {
         "object_id": "Bowl_1",
@@ -208,6 +277,49 @@
         "checkpoint_successes": 45,
         "episodes": 512,
         "accepted": false
+      },
+      {
+        "path": "experiments/rejected_checkpoints/apple_1_position_dr_v2_std030_ramp4800_model_799.pt",
+        "sha256": "8a9cf4fc13fb5a8dad05130462108a4fccb00f12abbd85c3143dd4d70b4f799f",
+        "fresh_transitions": 19660800,
+        "paired_evaluations": [
+          {
+            "seed": 20260963,
+            "episodes": 512,
+            "reference_successes": 84,
+            "checkpoint_successes": 80
+          },
+          {
+            "seed": 20260966,
+            "episodes": 512,
+            "reference_successes": 82,
+            "checkpoint_successes": 81
+          }
+        ],
+        "accepted": false,
+        "reason": "800 updates did not exceed the reference on either 512-world seed"
+      },
+      {
+        "path": "experiments/rejected_checkpoints/apple_1_rewardalign_scale20_model_399.pt",
+        "sha256": "b44574c4d13e717c6a4339843fd03ace3d5a67b328b70326293b77f642f48c5f",
+        "fresh_transitions": 9830400,
+        "paired_seed": 20260976,
+        "episodes": 512,
+        "reference_successes": 73,
+        "checkpoint_successes": 75,
+        "accepted": false,
+        "reason": "superseded by model_300, which had the stronger two-seed aggregate"
+      },
+      {
+        "path": "experiments/rejected_checkpoints/apple_1_rewardalign_scale50_model_399.pt",
+        "sha256": "15eb5f3b422c370f64c1568a43f2a8e8b094e40077157c75397ccd9b6e889f38",
+        "fresh_transitions": 9830400,
+        "paired_seed": 20260976,
+        "episodes": 128,
+        "reference_successes": 22,
+        "checkpoint_successes": 22,
+        "accepted": false,
+        "reason": "higher potential scale increased shaped return without improving lift success"
       }
     ],
     "documentation": "DR_BEND_FOLLOWUP.md"
@@ -219,7 +331,7 @@
       "reference_episode": 11,
       "policy": "reference_only",
       "ppo_trained": false,
-      "ppo_not_trained_reason": "no PPO was attached to this fixed reference; later separate position-DR trials are recorded as rejected under dr_bend_followup",
+      "ppo_not_trained_reason": "this fixed reference record has no attached PPO; a separate accepted position-DR PPO is recorded under dr_bend_followup",
       "release_reference_path": "references/apple_1_xmove_bend_ep11_staged_native_v1",
       "local_asset_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/assets/mjlab_assets/grasp_anything/Apple_1_object_reward_v4_xmove_bend_ep11",
       "local_strict_reference_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Apple_1_xmove_bend_ep11_strict_v1",
@@ -365,6 +477,32 @@
         "success_rate": 0.005859375
       },
       "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/single_ref_ep82_small_v4_multireplay/videos_fixed_dr1_model_0"
+    },
+    {
+      "object_id": "Apple_1",
+      "path": "checkpoints/apple_1_xmove_bend_rewardalign_model_300.pt",
+      "sha256": "6be17f3812a3b8fea285153eaccb6495522159695f8c750b0f14f5fb3d37a4fa",
+      "bytes": 14906059,
+      "fresh_on_policy_transitions": 7397376,
+      "warm_start_actor_source_transitions": 9830400,
+      "scope": "xmove_bend_ep11_target_xy_2p5mm_reward_aligned_v1",
+      "runtime": {
+        "target_position_jitter_xy": [0.0025, 0.0025],
+        "target_position_offset_center_xy": [0.0, -0.09],
+        "grasp_anything_goal_potential_scale": 20.0,
+        "grasp_anything_goal_potential_negative_clip": 1.0,
+        "grasp_anything_success_bonus": 80.0
+      },
+      "aggregate_evaluation": {
+        "seeds": [20260974, 20260975],
+        "episodes": 1024,
+        "successes": 185,
+        "success_rate": 0.1806640625,
+        "paired_reference_successes": 166,
+        "paired_reference_success_rate": 0.162109375,
+        "relative_success_gain": 0.1144578313253012
+      },
+      "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos"
     },
     {
       "object_id": "Bowl_1",
