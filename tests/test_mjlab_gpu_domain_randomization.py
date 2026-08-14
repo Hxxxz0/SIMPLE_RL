@@ -1,10 +1,12 @@
 import math
 
+import pytest
 import torch
 
 from simple.grasp_rl.mjlab_gpu.domain_randomization import (
     _apply_free_joint_pose,
     _apply_position_focus_mixture,
+    _apply_position_focus_regions,
 )
 from simple.grasp_rl.mjlab_gpu.vec_env import _nonfinite_output_rows
 
@@ -78,3 +80,44 @@ def test_position_focus_probability_one_samples_scaled_region() -> None:
 
     assert torch.all((mixed[:, 0] >= 0.006) & (mixed[:, 0] <= 0.01))
     assert torch.all((mixed[:, 1] >= 0.002) & (mixed[:, 1] <= 0.01))
+
+
+def test_empty_position_focus_regions_preserve_values_and_rng_state() -> None:
+    generator = torch.Generator().manual_seed(456)
+    before = generator.get_state().clone()
+    translation = torch.tensor([[0.01, -0.02], [0.03, 0.04]])
+
+    mixed = _apply_position_focus_regions(
+        translation,
+        regions=(),
+        scale=1.0,
+        generator=generator,
+    )
+
+    assert mixed is translation
+    assert torch.equal(generator.get_state(), before)
+
+
+def test_position_focus_regions_sample_each_rectangle_and_base_remainder() -> None:
+    generator = torch.Generator().manual_seed(789)
+    translation = torch.full((20_000, 2), 0.9)
+
+    mixed = _apply_position_focus_regions(
+        translation,
+        regions=(
+            (-0.06, -0.06, 0.01, 0.02, 0.3),
+            (0.03, -0.03, 0.01, 0.01, 0.2),
+        ),
+        scale=1.0,
+        generator=generator,
+    )
+
+    left = (mixed[:, 0] >= -0.07) & (mixed[:, 0] <= -0.05)
+    left &= (mixed[:, 1] >= -0.08) & (mixed[:, 1] <= -0.04)
+    right = (mixed[:, 0] >= 0.02) & (mixed[:, 0] <= 0.04)
+    right &= (mixed[:, 1] >= -0.04) & (mixed[:, 1] <= -0.02)
+    base = torch.all(mixed == 0.9, dim=1)
+
+    assert left.float().mean().item() == pytest.approx(0.3, abs=0.015)
+    assert right.float().mean().item() == pytest.approx(0.2, abs=0.015)
+    assert base.float().mean().item() == pytest.approx(0.5, abs=0.015)

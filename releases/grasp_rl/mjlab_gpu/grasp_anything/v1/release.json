@@ -201,6 +201,126 @@
       }
     ]
   },
+  "apple_frontier_regions_v11": {
+    "status": "accepted_frontier_improvement_not_uniform_200mm",
+    "documentation": "FRONTIER_REGIONS_V11.md",
+    "route": "xmove_bend_ep11_v1",
+    "existing_defaults_changed": false,
+    "checkpoint": {
+      "path": "checkpoints/apple_1_xmove_bend_frontier_v11_model_5.pt",
+      "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/apple_1_xmove_bend_frontier_v11_model_5.pt",
+      "source_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/ppo_workspace_v11_weakregions_goal20_right45_left30_back20_longrollout_warmcritic_freezenorm_anchor30_warm_v9m5_seed20261409_env1024_steps240_std080_hold4_6/model_5.pt",
+      "sha256": "d2e8dcf6c5ae6250b1bda34a16ad43551ef22db6b58e44f8a23bae78360e2170",
+      "bytes": 14906227,
+      "selected_update": 5
+    },
+    "training": {
+      "num_envs": 1024,
+      "steps_per_env_per_update": 240,
+      "transitions_per_update": 245760,
+      "v11_updates": 6,
+      "v11_fresh_on_policy_transitions": 1474560,
+      "selected_lineage_transitions_after_v5": 4423680,
+      "all_four_experiment_runs_transitions": 10321920,
+      "exploration_std": 0.08,
+      "exploration_hold_steps": 4,
+      "dr_initial_strength": 1.0,
+      "reference_reward_weight": 0.0,
+      "max_reference_action_deviation": 2.0,
+      "warm_start_critic": true,
+      "freeze_actor_normalizer": true,
+      "goal_potential_scale": 20.0,
+      "goal_potential_negative_clip": 1.0,
+      "selection_rule": "maximum_aggregate_worst_region_with_core_regression_protection"
+    },
+    "regions": [
+      {
+        "name": "core",
+        "center_xy_m": [-0.02, -0.065],
+        "jitter_xy_m": [0.04, 0.055],
+        "training_probability": 0.025,
+        "evaluations": [
+          {"seed": 20261420, "episodes": 512, "successes": 402, "success_rate": 0.78515625, "initial_world_sha256": "120d1495ae65b1ad59de813a2dab826a6e73f586c3896d4971c224aabf2a2f10"},
+          {"seed": 20261520, "episodes": 512, "successes": 398, "success_rate": 0.77734375, "initial_world_sha256": "7ed5df6b4335f5ec3aa5090d8353fc100849919c417d2d3d6d00b4210cb03b32"}
+        ],
+        "aggregate": {"episodes": 1024, "successes": 800, "success_rate": 0.78125}
+      },
+      {
+        "name": "left",
+        "center_xy_m": [-0.06, -0.065],
+        "jitter_xy_m": [0.025, 0.055],
+        "training_probability": 0.3,
+        "evaluations": [
+          {"seed": 20261421, "episodes": 512, "successes": 185, "success_rate": 0.361328125, "initial_world_sha256": "83ed759ed7cb9fbcce4765ae8c185861a91c74d6a0f862e1385b3c819f0b4413"},
+          {"seed": 20261521, "episodes": 512, "successes": 175, "success_rate": 0.341796875, "initial_world_sha256": "4ae6600eada793889305966f5bce019a15e8c0b0c592e4df3daa72d2ed39142a"}
+        ],
+        "aggregate": {"episodes": 1024, "successes": 360, "success_rate": 0.3515625}
+      },
+      {
+        "name": "right",
+        "center_xy_m": [0.025, -0.065],
+        "jitter_xy_m": [0.025, 0.055],
+        "training_probability": 0.45,
+        "evaluations": [
+          {"seed": 20261422, "episodes": 512, "successes": 170, "success_rate": 0.33203125, "initial_world_sha256": "6468e84aef6e2dbec58ecea547d14d16f19c3d2dab18cc3bb85208e912e955a7"},
+          {"seed": 20261522, "episodes": 512, "successes": 187, "success_rate": 0.365234375, "initial_world_sha256": "c1b24d8d28ddbb39de4dfacee455f19a1719be8a0d797a5b08732485763ea25e"}
+        ],
+        "aggregate": {"episodes": 1024, "successes": 357, "success_rate": 0.3486328125}
+      },
+      {
+        "name": "back",
+        "center_xy_m": [-0.02, -0.115],
+        "jitter_xy_m": [0.04, 0.025],
+        "training_probability": 0.2,
+        "evaluations": [
+          {"seed": 20261423, "episodes": 512, "successes": 190, "success_rate": 0.37109375, "initial_world_sha256": "26df866f59f76b0edfffadd6ec7bf938abd0d69ceb5c0d22b46b5ea82ef82517"},
+          {"seed": 20261523, "episodes": 512, "successes": 221, "success_rate": 0.431640625, "initial_world_sha256": "0ab2976e8bcea7e9358cb648ee1e0dc0608b8a64aadd524e420cb760b0a55e9c"}
+        ],
+        "aggregate": {"episodes": 1024, "successes": 411, "success_rate": 0.4013671875}
+      },
+      {
+        "name": "front",
+        "center_xy_m": [-0.02, -0.025],
+        "jitter_xy_m": [0.04, 0.025],
+        "training_probability": 0.025,
+        "evaluations": [
+          {"seed": 20261424, "episodes": 512, "successes": 359, "success_rate": 0.701171875, "initial_world_sha256": "7e7ba69aa745938b37866266e72f243a3918a223cc5d737cb5e3af832b7d2f41"},
+          {"seed": 20261524, "episodes": 512, "successes": 341, "success_rate": 0.666015625, "initial_world_sha256": "393af8e0e4619e58369b947974cb77b863c6601277ce0adcfeb49864484d9468"}
+        ],
+        "aggregate": {"episodes": 1024, "successes": 700, "success_rate": 0.68359375}
+      }
+    ],
+    "cross_seed_conclusion": {
+      "claim": "repeatable_frontier_improvement_not_stable_full_workspace",
+      "aggregate_worst_region_success_rate": 0.3486328125,
+      "old_v5_repeated_right_successes": 264,
+      "old_v5_repeated_right_episodes": 1024,
+      "new_v11_repeated_right_successes": 357,
+      "new_v11_repeated_right_episodes": 1024
+    },
+    "strict_uniform_xy_200mm": {
+      "claim": "not_robust",
+      "seed": 20261531,
+      "episodes": 1024,
+      "successes": 44,
+      "success_rate": 0.04296875,
+      "initial_world_sha256": "1471813531fdc7f7f55b576ec56ba97ccc4bdcc7282be8ad7ccff434b973461d",
+      "log_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/frontier_v11_evaluations/model_5_strict_xy200mm_seed20261531_1024.log"
+    },
+    "evaluation_directories_absolute": [
+      "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/frontier_v11_evaluations/model_5",
+      "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/frontier_v11_evaluations/model_5_replication"
+    ],
+    "videos": [
+      {"region": "core", "target_xy_m": [-0.022912146523594856, -0.07285398244857788], "max_lift_m": 0.17721471190452576, "path": "videos/apple_1_xmove_bend_frontier_v11_model_5/core/gpu_ppo_success_full_dr_01.mp4", "sha256": "33ff5ccee57f316efbff169c0fd2208bfa76aef7f182850837f368e85201de11", "bytes": 650939, "precontact_target_motion_m": 0.0, "first_hand_contact_step": 222, "audit_passed": true},
+      {"region": "left", "target_xy_m": [-0.049621790647506714, -0.047744330018758774], "max_lift_m": 0.12174555659294128, "path": "videos/apple_1_xmove_bend_frontier_v11_model_5/left/gpu_ppo_success_full_dr_01.mp4", "sha256": "f3360071e12987cf852f676db89e0272b0b467dab10076663991471b40ac7718", "bytes": 672434, "precontact_target_motion_m": 0.0, "first_hand_contact_step": 225, "audit_passed": true},
+      {"region": "right", "target_xy_m": [0.023592840880155563, -0.04171866923570633], "max_lift_m": 0.16434434056282043, "path": "videos/apple_1_xmove_bend_frontier_v11_model_5/right/gpu_ppo_success_full_dr_01.mp4", "sha256": "f2d35d0a8e937fc2630b6583b443364709381f9e0ab4c294a64d476f7e3a3045", "bytes": 660300, "precontact_target_motion_m": 0.0, "first_hand_contact_step": 211, "audit_passed": true},
+      {"region": "back", "target_xy_m": [-0.015965227037668228, -0.09005901217460632], "max_lift_m": 0.21435728669166565, "path": "videos/apple_1_xmove_bend_frontier_v11_model_5/back/gpu_ppo_success_full_dr_01.mp4", "sha256": "26b07e54fe76543ea1691df187f74aab1c92f30160f1a0fbecf508d1717057f5", "bytes": 654821, "precontact_target_motion_m": 0.0, "first_hand_contact_step": 224, "audit_passed": true},
+      {"region": "front", "target_xy_m": [-0.002235101768746972, -0.007055989000946283], "max_lift_m": 0.13408878445625305, "path": "videos/apple_1_xmove_bend_frontier_v11_model_5/front/gpu_ppo_success_full_dr_01.mp4", "sha256": "307b2efc1b992ca4e00fb93615603c3fad806cdf19b7d2509998069d0c39cbb2", "bytes": 662887, "precontact_target_motion_m": 0.0, "first_hand_contact_step": 224, "audit_passed": true}
+    ],
+    "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/videos/apple_1_xmove_bend_frontier_v11_model_5",
+    "review_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/video_review/apple_frontier_v11_regions"
+  },
   "multi_object_workspace_v5": {
     "status": "tomato_and_potato_accepted_bowl_rejected",
     "documentation": "MULTI_OBJECT_WORKSPACE_V5.md",
@@ -986,6 +1106,28 @@
         "paired_reference_success_rate": 0.67529296875
       },
       "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos"
+    },
+    {
+      "object_id": "Apple_1",
+      "path": "checkpoints/apple_1_xmove_bend_frontier_v11_model_5.pt",
+      "status": "accepted_frontier_improvement_not_uniform_200mm",
+      "sha256": "d2e8dcf6c5ae6250b1bda34a16ad43551ef22db6b58e44f8a23bae78360e2170",
+      "bytes": 14906227,
+      "fresh_on_policy_transitions_after_v5": 4423680,
+      "scope": "xmove_bend_ep11_five_position_regions_cross_seed",
+      "evaluation": {
+        "regions": 5,
+        "seeds_per_region": 2,
+        "episodes_per_region": 1024,
+        "worst_region": "right",
+        "worst_region_successes": 357,
+        "worst_region_success_rate": 0.3486328125,
+        "strict_uniform_xy_200mm_successes": 44,
+        "strict_uniform_xy_200mm_episodes": 1024,
+        "strict_uniform_xy_200mm_success_rate": 0.04296875
+      },
+      "documentation": "FRONTIER_REGIONS_V11.md",
+      "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/videos/apple_1_xmove_bend_frontier_v11_model_5"
     },
     {
       "object_id": "Potato_1",

@@ -84,9 +84,7 @@ def test_goal_reward_alignment_is_opt_in_and_grasp_anything_only(tmp_path) -> No
 
 def test_lift_arm_residual_scale_decays_linearly_to_floor() -> None:
     steps = torch.tensor([0, 5, 10, 20])
-    scale = _lift_arm_residual_scale(
-        steps, minimum_scale=0.2, decay_steps=10
-    )
+    scale = _lift_arm_residual_scale(steps, minimum_scale=0.2, decay_steps=10)
     assert scale.tolist() == pytest.approx([1.0, 0.6, 0.2, 0.2])
 
 
@@ -257,7 +255,9 @@ def test_record_cli_diagnostic_fallback_is_explicit() -> None:
         == "grasp_closeup"
     )
     assert _parser().parse_args([*common, "--stochastic-policy"]).stochastic_policy
-    reference_only = [item for item in common if item not in ("--checkpoint", "model.pt")]
+    reference_only = [
+        item for item in common if item not in ("--checkpoint", "model.pt")
+    ]
     reference_args = _parser().parse_args([*reference_only, "--reference-only"])
     assert reference_args.reference_only
     assert reference_args.checkpoint is None
@@ -574,6 +574,41 @@ def test_cli_accepts_task_specific_dr_envelope(monkeypatch, tmp_path) -> None:
     assert config.domain_randomization.robot_base_yaw_jitter == 0.03
 
 
+def test_cli_accepts_repeatable_target_position_focus_regions(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    args = _parser().parse_args(
+        [
+            "evaluate",
+            "--task",
+            "bend_pick",
+            "--asset-bundle",
+            str(tmp_path / "assets"),
+            "--reference-processed",
+            str(tmp_path / "reference"),
+            "--reference-only",
+            "--target-position-focus-region",
+            "-0.06",
+            "-0.065",
+            "0.025",
+            "0.055",
+            "0.2",
+            "--target-position-focus-region",
+            "0.025",
+            "-0.065",
+            "0.025",
+            "0.055",
+            "0.2",
+        ]
+    )
+
+    assert _config(args).domain_randomization.target_position_focus_regions == (
+        (-0.06, -0.065, 0.025, 0.055, 0.2),
+        (0.025, -0.065, 0.025, 0.055, 0.2),
+    )
+
+
 def test_cli_accepts_strict_reference_and_wide_physics_noise_dr(
     monkeypatch, tmp_path
 ) -> None:
@@ -714,9 +749,13 @@ def test_zero_retarget_accepts_legacy_checkpoint_metadata(tmp_path) -> None:
     legacy_resolved["domain_randomization"] = dict(
         legacy_resolved["domain_randomization"]
     )
+    legacy_resolved["domain_randomization"].pop("target_position_offset_center_xy")
+    legacy_resolved["domain_randomization"].pop("target_position_focus_probability")
+    legacy_resolved["domain_randomization"].pop("target_position_focus_jitter_xy")
     legacy_resolved["domain_randomization"].pop(
-        "target_position_offset_center_xy"
+        "target_position_focus_offset_center_xy"
     )
+    legacy_resolved["domain_randomization"].pop("target_position_focus_regions")
     metadata["resolved"] = legacy_resolved
     metadata["resolved_sha256"] = hashlib.sha256(
         json.dumps(legacy_resolved, sort_keys=True, separators=(",", ":")).encode()
@@ -819,6 +858,37 @@ def test_domain_randomization_curriculum_reaches_full_strength() -> None:
     assert config.reference_noise.action_std == pytest.approx(0.002)
 
 
+def test_target_position_focus_regions_validate_and_isolate_axes() -> None:
+    regions = (
+        (-0.06, -0.065, 0.025, 0.055, 0.2),
+        (0.025, -0.025, 0.025, 0.025, 0.3),
+    )
+    config = DomainRandomizationConfig(target_position_focus_regions=regions)
+
+    assert config.target_x_only().target_position_focus_regions == (
+        (-0.06, 0.0, 0.025, 0.0, 0.2),
+        (0.025, 0.0, 0.025, 0.0, 0.3),
+    )
+    assert config.target_y_only().target_position_focus_regions == (
+        (0.0, -0.065, 0.0, 0.055, 0.2),
+        (0.0, -0.025, 0.0, 0.025, 0.3),
+    )
+    assert config.target_yaw_only().target_position_focus_regions == ()
+    with pytest.raises(ValueError, match="sum to <= 1"):
+        DomainRandomizationConfig(
+            target_position_focus_regions=((0.0, 0.0, 0.01, 0.01, 1.01),)
+        )
+    with pytest.raises(ValueError, match="jitters"):
+        DomainRandomizationConfig(
+            target_position_focus_regions=((0.0, 0.0, -0.01, 0.01, 0.5),)
+        )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        DomainRandomizationConfig(
+            target_position_focus_probability=0.5,
+            target_position_focus_regions=((0.0, 0.0, 0.01, 0.01, 0.5),),
+        )
+
+
 def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
     full = DomainRandomizationConfig(
         curriculum_initial_strength=0.25,
@@ -841,8 +911,7 @@ def test_pose_only_dr_stages_dynamics_and_reference_noise() -> None:
 
     assert pose.target_position_jitter_xy == full.target_position_jitter_xy
     assert (
-        pose.target_position_offset_center_xy
-        == full.target_position_offset_center_xy
+        pose.target_position_offset_center_xy == full.target_position_offset_center_xy
     )
     assert pose.target_position_focus_probability == 0.5
     assert pose.target_position_focus_jitter_xy == (0.03, 0.04)

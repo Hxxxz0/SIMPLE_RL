@@ -81,6 +81,49 @@ def _apply_position_focus_mixture(
     return torch.where(selected[..., None], focused, translation)
 
 
+def _apply_position_focus_regions(
+    translation: torch.Tensor,
+    *,
+    regions: tuple[tuple[float, float, float, float, float], ...],
+    scale: float,
+    generator: torch.Generator,
+) -> torch.Tensor:
+    """Replace base samples with weighted frontier rectangles."""
+
+    if not regions:
+        return translation
+    sample_shape = translation.shape[:-1]
+    device = str(translation.device)
+    selector = torch.rand(sample_shape, device=translation.device, generator=generator)
+    mixed = translation
+    lower_probability = 0.0
+    for center_x, center_y, jitter_x, jitter_y, probability in regions:
+        upper_probability = lower_probability + float(probability)
+        focused = torch.stack(
+            (
+                _uniform(
+                    scale * (center_x - jitter_x),
+                    scale * (center_x + jitter_x),
+                    sample_shape,
+                    device=device,
+                    generator=generator,
+                ),
+                _uniform(
+                    scale * (center_y - jitter_y),
+                    scale * (center_y + jitter_y),
+                    sample_shape,
+                    device=device,
+                    generator=generator,
+                ),
+            ),
+            dim=-1,
+        )
+        selected = (selector >= lower_probability) & (selector < upper_probability)
+        mixed = torch.where(selected[..., None], focused, mixed)
+        lower_probability = upper_probability
+    return mixed
+
+
 def _apply_free_joint_pose(
     qpos: torch.Tensor,
     env_ids: torch.Tensor,
@@ -335,9 +378,7 @@ class GpuDomainRandomizer:
             translation_shape = (count, 2) if slots == 1 else (count, slots, 2)
             yaw_shape = (count,) if slots == 1 else (count, slots)
             if not enabled or not (
-                any(position_jitter_xy)
-                or any(position_offset_center_xy)
-                or yaw_jitter
+                any(position_jitter_xy) or any(position_offset_center_xy) or yaw_jitter
             ):
                 return (
                     torch.zeros(translation_shape, device=self.device),
@@ -425,6 +466,12 @@ class GpuDomainRandomizer:
                 probability=cfg.target_position_focus_probability,
                 jitter_xy=cfg.target_position_focus_jitter_xy,
                 offset_center_xy=cfg.target_position_focus_offset_center_xy,
+                scale=scale,
+                generator=self.generator,
+            )
+            translation = _apply_position_focus_regions(
+                translation,
+                regions=cfg.target_position_focus_regions,
                 scale=scale,
                 generator=self.generator,
             )

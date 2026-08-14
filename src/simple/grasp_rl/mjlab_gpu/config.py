@@ -85,6 +85,9 @@ class DomainRandomizationConfig:
     target_position_focus_probability: float = 0.0
     target_position_focus_jitter_xy: tuple[float, float] = (0.0, 0.0)
     target_position_focus_offset_center_xy: tuple[float, float] = (0.0, 0.0)
+    target_position_focus_regions: tuple[
+        tuple[float, float, float, float, float], ...
+    ] = ()
     target_yaw_jitter: float = 0.15
     destination_position_jitter_xy: tuple[float, float] = (0.0, 0.0)
     destination_yaw_jitter: float = 0.0
@@ -128,12 +131,44 @@ class DomainRandomizationConfig:
             "target_position_focus_offset_center_xy",
         ):
             value = getattr(self, name)
-            if len(value) != 2 or not all(
-                math.isfinite(float(item)) for item in value
-            ):
+            if len(value) != 2 or not all(math.isfinite(float(item)) for item in value):
                 raise ValueError(f"{name} values must be finite")
         if not 0.0 <= self.target_position_focus_probability <= 1.0:
             raise ValueError("target_position_focus_probability must be in [0, 1]")
+        focus_probability = 0.0
+        for index, region in enumerate(self.target_position_focus_regions):
+            if len(region) != 5:
+                raise ValueError(
+                    f"target_position_focus_regions[{index}] must contain "
+                    "center X/Y, jitter X/Y and probability"
+                )
+            center_x, center_y, jitter_x, jitter_y, probability = (
+                float(item) for item in region
+            )
+            if not all(math.isfinite(item) for item in (center_x, center_y)):
+                raise ValueError("target position focus region centers must be finite")
+            if not all(
+                math.isfinite(item) and item >= 0.0 for item in (jitter_x, jitter_y)
+            ):
+                raise ValueError(
+                    "target position focus region jitters must be finite and "
+                    "non-negative"
+                )
+            if not math.isfinite(probability) or probability <= 0.0:
+                raise ValueError(
+                    "target position focus region probabilities must be positive"
+                )
+            focus_probability += probability
+        if focus_probability > 1.0 + 1e-9:
+            raise ValueError(
+                "target position focus region probabilities must sum to <= 1"
+            )
+        if self.target_position_focus_regions and (
+            self.target_position_focus_probability > 0.0
+        ):
+            raise ValueError(
+                "single and multi-region target position focus are mutually exclusive"
+            )
         for name in (
             "target_yaw_jitter",
             "destination_yaw_jitter",
@@ -205,6 +240,12 @@ class DomainRandomizationConfig:
                 pose.target_position_focus_offset_center_xy[0],
                 0.0,
             ),
+            target_position_focus_regions=tuple(
+                (center_x, 0.0, jitter_x, 0.0, probability)
+                for center_x, _center_y, jitter_x, _jitter_y, probability in (
+                    pose.target_position_focus_regions
+                )
+            ),
             target_yaw_jitter=0.0,
             destination_position_jitter_xy=(0.0, 0.0),
             destination_yaw_jitter=0.0,
@@ -233,6 +274,12 @@ class DomainRandomizationConfig:
                 0.0,
                 pose.target_position_focus_offset_center_xy[1],
             ),
+            target_position_focus_regions=tuple(
+                (0.0, center_y, 0.0, jitter_y, probability)
+                for _center_x, center_y, _jitter_x, jitter_y, probability in (
+                    pose.target_position_focus_regions
+                )
+            ),
             target_yaw_jitter=0.0,
             destination_position_jitter_xy=(0.0, 0.0),
             destination_yaw_jitter=0.0,
@@ -253,6 +300,7 @@ class DomainRandomizationConfig:
             target_position_focus_probability=0.0,
             target_position_focus_jitter_xy=(0.0, 0.0),
             target_position_focus_offset_center_xy=(0.0, 0.0),
+            target_position_focus_regions=(),
             destination_position_jitter_xy=(0.0, 0.0),
             destination_yaw_jitter=0.0,
             distractor_position_jitter_xy=(0.0, 0.0),
@@ -311,12 +359,13 @@ class MjlabPpoConfig:
             raise ValueError("asset_bundle must be non-empty")
         if not self.reference_source:
             raise ValueError("reference_source must be non-empty")
-        if self.strict_reference_episode is not None and self.strict_reference_episode < 0:
+        if (
+            self.strict_reference_episode is not None
+            and self.strict_reference_episode < 0
+        ):
             raise ValueError("strict_reference_episode must be non-negative")
         if self.reference_selection not in ("asset", "nearest", "balanced"):
-            raise ValueError(
-                "reference_selection must be asset, nearest, or balanced"
-            )
+            raise ValueError("reference_selection must be asset, nearest, or balanced")
         if (
             self.strict_reference_episode is not None
             and self.reference_selection != "asset"
@@ -513,18 +562,15 @@ class MjlabPpoConfig:
             legacy_dr = normalized.get("domain_randomization")
             if isinstance(legacy_dr, dict):
                 legacy_dr = dict(legacy_dr)
-                if (
-                    "target_position_offset_center_xy" not in legacy_dr
-                    and tuple(
-                        expected_dr.get("target_position_offset_center_xy", ())
-                    )
-                    == (0.0, 0.0)
-                ):
+                if "target_position_offset_center_xy" not in legacy_dr and tuple(
+                    expected_dr.get("target_position_offset_center_xy", ())
+                ) == (0.0, 0.0):
                     legacy_dr["target_position_offset_center_xy"] = [0.0, 0.0]
                 for name, default in (
                     ("target_position_focus_probability", 0.0),
-                    ("target_position_focus_jitter_xy", [0.0, 0.0]),
-                    ("target_position_focus_offset_center_xy", [0.0, 0.0]),
+                    ("target_position_focus_jitter_xy", (0.0, 0.0)),
+                    ("target_position_focus_offset_center_xy", (0.0, 0.0)),
+                    ("target_position_focus_regions", ()),
                 ):
                     if name not in legacy_dr and expected_dr.get(name) == default:
                         legacy_dr[name] = default

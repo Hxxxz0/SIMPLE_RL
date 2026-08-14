@@ -6,10 +6,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = (
-    Path(__file__).parents[1]
-    / "scripts/grasp_rl/grasp_anything_bend_objects.py"
-)
+SCRIPT = Path(__file__).parents[1] / "scripts/grasp_rl/grasp_anything_bend_objects.py"
 SPEC = importlib.util.spec_from_file_location("grasp_anything_bend_objects", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 RUNNER = importlib.util.module_from_spec(SPEC)
@@ -39,9 +36,7 @@ def test_bend_catalog_is_opt_in_and_low_object_only() -> None:
 def test_stable_physics_assets_are_explicit_for_legacy_bend_objects() -> None:
     legacy = RUNNER.asset_path("Tomato_1")
     stable = RUNNER.asset_path("Tomato_1", stable_physics=True)
-    legacy_arguments = RUNNER.environment_args(
-        RUNNER.OBJECTS["Tomato_1"], "fixed", 123
-    )
+    legacy_arguments = RUNNER.environment_args(RUNNER.OBJECTS["Tomato_1"], "fixed", 123)
     stable_arguments = RUNNER.environment_args(
         RUNNER.OBJECTS["Tomato_1"], "fixed", 123, stable_physics=True
     )
@@ -88,18 +83,18 @@ def test_environment_uses_bend_reference_and_explicit_pose_dr() -> None:
     )
 
     assert arguments[arguments.index("--strict-reference-episode") + 1] == "11"
-    assert arguments[arguments.index("--target-position-jitter-xy") + 1 :][
-        :2
-    ] == ["0.0025", "0.0025"]
-    assert arguments[arguments.index("--robot-base-position-jitter-xy") + 1 :][
-        :2
-    ] == ["0.0025", "0.0025"]
+    assert arguments[arguments.index("--target-position-jitter-xy") + 1 :][:2] == [
+        "0.0025",
+        "0.0025",
+    ]
+    assert arguments[arguments.index("--robot-base-position-jitter-xy") + 1 :][:2] == [
+        "0.0025",
+        "0.0025",
+    ]
     assert arguments[arguments.index("--target-position-offset-center-xy") + 1 :][
         :2
     ] == ["0.0", "-0.09"]
-    assert arguments[arguments.index("--target-mass-scale") + 1 :][
-        :2
-    ] == ["1", "1"]
+    assert arguments[arguments.index("--target-mass-scale") + 1 :][:2] == ["1", "1"]
 
 
 def test_reference_override_is_explicit_and_does_not_change_default() -> None:
@@ -135,12 +130,15 @@ def test_train_cli_defaults_to_scratch_without_resume() -> None:
     assert args.iterations == 40
     assert args.exploration_std == pytest.approx(0.01)
     assert args.exploration_hold_steps == 1
+    assert args.ppo_steps_per_env == 24
     assert not hasattr(args, "checkpoint")
     assert args.reference_processed is None
     assert args.dr_initial_strength == pytest.approx(0.1)
     assert args.dr_ramp_steps == 480
     assert args.resume is None
     assert args.warm_start is None
+    assert not args.warm_start_critic
+    assert not args.freeze_actor_normalizer
     assert args.goal_potential_scale == pytest.approx(5.0)
     assert args.goal_potential_negative_clip == pytest.approx(0.25)
     assert args.success_bonus == pytest.approx(40.0)
@@ -148,6 +146,7 @@ def test_train_cli_defaults_to_scratch_without_resume() -> None:
     assert args.max_reference_action_deviation == pytest.approx(0.7)
     assert args.target_focus_probability == pytest.approx(0.0)
     assert args.target_focus_jitter_xy_m == pytest.approx((0.0, 0.0))
+    assert args.target_focus_region == []
     assert not args.stable_physics
 
 
@@ -162,13 +161,53 @@ def test_train_cli_exposes_temporally_coherent_exploration() -> None:
             "0.08",
             "--exploration-hold-steps",
             "4",
+            "--ppo-steps-per-env",
+            "240",
             "--stable-physics",
+            "--freeze-actor-normalizer",
         ]
     )
 
     assert args.exploration_std == pytest.approx(0.08)
     assert args.exploration_hold_steps == 4
+    assert args.ppo_steps_per_env == 240
     assert args.stable_physics
+    assert args.freeze_actor_normalizer
+
+
+def test_train_forwards_long_rollout_and_legacy_default(monkeypatch, tmp_path) -> None:
+    spec = RUNNER.OBJECTS["Apple_1"]
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.touch()
+    calls = []
+
+    monkeypatch.setattr(RUNNER, "run_root", lambda _object_id: tmp_path)
+    monkeypatch.setattr(
+        RUNNER, "_run_gpu", lambda arguments, **kwargs: calls.append(arguments)
+    )
+    monkeypatch.setattr(
+        RUNNER, "_latest_checkpoint", lambda output: output / "model_19.pt"
+    )
+
+    RUNNER.train(
+        spec,
+        profile="fixed",
+        gpu=0,
+        seed=123,
+        num_envs=1024,
+        iterations=20,
+        exploration_std=0.08,
+        exploration_hold_steps=4,
+        ppo_steps_per_env=240,
+        run_name="long_rollout",
+        reference_processed=reference,
+        warm_start=checkpoint,
+    )
+
+    arguments = calls[0]
+    assert arguments[arguments.index("--ppo-steps-per-env") + 1] == "240"
 
 
 def test_training_focus_mixture_is_explicit_and_keeps_legacy_args_unchanged() -> None:
@@ -184,12 +223,82 @@ def test_training_focus_mixture_is_explicit_and_keeps_legacy_args_unchanged() ->
 
     assert "--target-position-focus-probability" not in legacy
     assert focused[focused.index("--target-position-focus-probability") + 1] == "0.25"
-    assert focused[focused.index("--target-position-focus-jitter-xy") + 1 :][
+    assert focused[focused.index("--target-position-focus-jitter-xy") + 1 :][:2] == [
+        "0.025",
+        "0.025",
+    ]
+    assert focused[focused.index("--target-position-focus-offset-center-xy") + 1 :][
         :2
-    ] == ["0.025", "0.025"]
-    assert focused[
-        focused.index("--target-position-focus-offset-center-xy") + 1 :
-    ][:2] == ["0.0", "-0.09"]
+    ] == ["0.0", "-0.09"]
+
+
+def test_multi_region_focus_is_repeatable_and_keeps_legacy_args_unchanged() -> None:
+    spec = RUNNER.OBJECTS["Apple_1"]
+    legacy = RUNNER.environment_args(spec, "target_xy_200mm", 123)
+    focused = RUNNER.environment_args(
+        spec,
+        "target_xy_200mm",
+        123,
+        target_focus_regions=(
+            (-0.06, -0.065, 0.025, 0.055, 0.2),
+            (0.025, -0.065, 0.025, 0.055, 0.2),
+        ),
+    )
+
+    assert "--target-position-focus-region" not in legacy
+    starts = [
+        index
+        for index, argument in enumerate(focused)
+        if argument == "--target-position-focus-region"
+    ]
+    assert len(starts) == 2
+    assert focused[starts[0] + 1 : starts[0] + 6] == [
+        "-0.06",
+        "-0.065",
+        "0.025",
+        "0.055",
+        "0.2",
+    ]
+    assert focused[starts[1] + 1 : starts[1] + 6] == [
+        "0.025",
+        "-0.065",
+        "0.025",
+        "0.055",
+        "0.2",
+    ]
+
+    parsed = RUNNER._parser().parse_args(
+        [
+            "train",
+            "Apple_1",
+            "--run-name",
+            "frontier",
+            "--target-focus-region",
+            "-0.06",
+            "-0.065",
+            "0.025",
+            "0.055",
+            "0.2",
+            "--target-focus-region",
+            "0.025",
+            "-0.065",
+            "0.025",
+            "0.055",
+            "0.2",
+        ]
+    )
+    assert parsed.target_focus_region == [
+        [-0.06, -0.065, 0.025, 0.055, 0.2],
+        [0.025, -0.065, 0.025, 0.055, 0.2],
+    ]
+    assert RUNNER._target_focus_output_suffix(()) == ""
+    assert RUNNER._target_focus_output_suffix(
+        ((-0.06, -0.065, 0.025, 0.055, 0.2),)
+    ).startswith("_focusregions-")
+    assert RUNNER._focus_checkpoint_output_suffix(Path("model.pt"), ()) == ""
+    assert RUNNER._focus_checkpoint_output_suffix(
+        Path("model.pt"), ((-0.06, -0.065, 0.025, 0.055, 0.2),)
+    ).startswith("_checkpoint-model-")
 
 
 def test_evaluate_cli_reward_alignment_is_explicit_and_defaults_stay_legacy() -> None:

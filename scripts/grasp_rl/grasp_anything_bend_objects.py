@@ -17,8 +17,7 @@ DEFAULT_MOLMO_ROOT = Path(
     "/mnt/workspace/Jensen/.cache/molmo-spaces-resources/objects/thor/20251117"
 )
 BASE_ASSET = (
-    REPO_ROOT
-    / "outputs/grasp_rl/other/assets/mjlab_assets/xmove_bend_pick/episode11"
+    REPO_ROOT / "outputs/grasp_rl/other/assets/mjlab_assets/xmove_bend_pick/episode11"
 )
 REFERENCE_EPISODE = 11
 ROUTE_VERSION = "xmove_bend_ep11_v1"
@@ -154,6 +153,25 @@ def _reference_output_suffix(reference_processed: Path | None) -> str:
     return f"_reference-{reference_processed.name}"
 
 
+def _target_focus_output_suffix(
+    regions: tuple[tuple[float, float, float, float, float], ...],
+) -> str:
+    if not regions:
+        return ""
+    encoded = json.dumps(regions, separators=(",", ":")).encode()
+    return f"_focusregions-{hashlib.sha256(encoded).hexdigest()[:10]}"
+
+
+def _focus_checkpoint_output_suffix(
+    checkpoint: Path | None,
+    regions: tuple[tuple[float, float, float, float, float], ...],
+) -> str:
+    if checkpoint is None or not regions:
+        return ""
+    digest = hashlib.sha256(str(checkpoint.resolve()).encode()).hexdigest()[:10]
+    return f"_checkpoint-{checkpoint.stem}-{digest}"
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -198,9 +216,7 @@ def derive(
         grasp_frame_position_m=spec.grasp_frame_position_m,
         maximum_grip_force_newtons=spec.maximum_grip_force_newtons,
         table_clearance_m=(
-            spec.stable_table_clearance_m
-            if stable_physics
-            else spec.table_clearance_m
+            spec.stable_table_clearance_m if stable_physics else spec.table_clearance_m
         ),
     )
 
@@ -254,6 +270,7 @@ def environment_args(
     target_focus_probability: float = 0.0,
     target_focus_jitter_xy_m: tuple[float, float] = (0.0, 0.0),
     target_focus_center_xy_m: tuple[float, float] = TARGET_CENTER_XY_M,
+    target_focus_regions: tuple[tuple[float, float, float, float, float], ...] = (),
 ) -> list[str]:
     pose = PROFILES[profile]
     reference = reference_processed or staged_reference_path(spec.object_id)
@@ -269,6 +286,14 @@ def environment_args(
             *(str(value) for value in target_focus_center_xy_m),
         ]
     )
+    focus_regions = [
+        argument
+        for region in target_focus_regions
+        for argument in (
+            "--target-position-focus-region",
+            *(str(value) for value in region),
+        )
+    ]
     return [
         "--task",
         "grasp_anything",
@@ -317,6 +342,7 @@ def environment_args(
         "--target-position-offset-center-xy",
         *(str(value) for value in TARGET_CENTER_XY_M),
         *focus,
+        *focus_regions,
         "--target-yaw-jitter",
         str(pose.target_yaw_jitter_rad),
         "--destination-position-jitter-xy",
@@ -417,13 +443,27 @@ def evaluate(
     reference_reward_weight: float = 0.005,
     max_reference_action_deviation: float = 0.7,
     stable_physics: bool = False,
+    target_focus_regions: tuple[tuple[float, float, float, float, float], ...] = (),
 ) -> Path:
     mode = "reference" if checkpoint is None else "ppo"
     reference_suffix = _reference_output_suffix(reference_processed)
-    output = run_root(spec.object_id) / "acceptance" / (
-        f"{mode}{reference_suffix}_{profile}_seed{seed}_{episodes}.log"
+    focus_suffix = _target_focus_output_suffix(target_focus_regions)
+    checkpoint_suffix = _focus_checkpoint_output_suffix(
+        checkpoint, target_focus_regions
     )
-    policy = ["--reference-only"] if checkpoint is None else ["--checkpoint", str(checkpoint)]
+    output = (
+        run_root(spec.object_id)
+        / "acceptance"
+        / (
+            f"{mode}{reference_suffix}_{profile}{focus_suffix}{checkpoint_suffix}"
+            f"_seed{seed}_{episodes}.log"
+        )
+    )
+    policy = (
+        ["--reference-only"]
+        if checkpoint is None
+        else ["--checkpoint", str(checkpoint)]
+    )
     _run_gpu(
         [
             "evaluate",
@@ -438,6 +478,7 @@ def evaluate(
                 reference_reward_weight=reference_reward_weight,
                 max_reference_action_deviation=max_reference_action_deviation,
                 stable_physics=stable_physics,
+                target_focus_regions=target_focus_regions,
             ),
             *policy,
             "--num-envs",
@@ -467,13 +508,16 @@ def train(
     exploration_std: float,
     run_name: str,
     exploration_hold_steps: int = 1,
+    ppo_steps_per_env: int = 24,
     reference_processed: Path | None = None,
     dr_initial_strength: float = 0.1,
     dr_ramp_steps: int = 480,
     resume: Path | None = None,
     warm_start: Path | None = None,
+    warm_start_critic: bool = False,
     actor_anchor_checkpoint: Path | None = None,
     actor_anchor_weight: float = 0.0,
+    freeze_actor_normalizer: bool = False,
     goal_potential_scale: float = 5.0,
     goal_potential_negative_clip: float = 0.25,
     success_bonus: float = 40.0,
@@ -482,6 +526,7 @@ def train(
     stable_physics: bool = False,
     target_focus_probability: float = 0.0,
     target_focus_jitter_xy_m: tuple[float, float] = (0.0, 0.0),
+    target_focus_regions: tuple[tuple[float, float, float, float, float], ...] = (),
 ) -> Path:
     output = run_root(spec.object_id) / run_name
     if output.exists() and any(output.iterdir()):
@@ -502,6 +547,8 @@ def train(
         initialization = ["--resume", str(resume)]
     elif warm_start is not None:
         initialization = ["--warm-start", str(warm_start)]
+        if warm_start_critic:
+            initialization.append("--warm-start-critic")
     else:
         initialization = [
             "--plan-conditioned-actor",
@@ -522,6 +569,7 @@ def train(
             str(actor_anchor_weight),
         ]
     )
+    normalizer = ["--freeze-actor-normalizer"] if freeze_actor_normalizer else []
     _run_gpu(
         [
             "train",
@@ -540,6 +588,7 @@ def train(
                 stable_physics=stable_physics,
                 target_focus_probability=target_focus_probability,
                 target_focus_jitter_xy_m=target_focus_jitter_xy_m,
+                target_focus_regions=target_focus_regions,
             ),
             "--num-envs",
             str(num_envs),
@@ -549,6 +598,7 @@ def train(
             str(output),
             *initialization,
             *anchor,
+            *normalizer,
             "--exploration-std",
             str(exploration_std),
             "--exploration-hold-steps",
@@ -558,7 +608,7 @@ def train(
             "--schedule",
             "fixed",
             "--ppo-steps-per-env",
-            "24",
+            str(ppo_steps_per_env),
             "--save-interval",
             "5",
         ],
@@ -583,13 +633,27 @@ def record(
     reference_reward_weight: float = 0.005,
     max_reference_action_deviation: float = 0.7,
     stable_physics: bool = False,
+    target_focus_regions: tuple[tuple[float, float, float, float, float], ...] = (),
 ) -> Path:
     mode = "reference" if checkpoint is None else "ppo"
     reference_suffix = _reference_output_suffix(reference_processed)
-    output = run_root(spec.object_id) / "videos" / (
-        f"{mode}{reference_suffix}_{profile}_{camera_view}_seed{seed}"
+    focus_suffix = _target_focus_output_suffix(target_focus_regions)
+    checkpoint_suffix = _focus_checkpoint_output_suffix(
+        checkpoint, target_focus_regions
     )
-    policy = ["--reference-only"] if checkpoint is None else ["--checkpoint", str(checkpoint)]
+    output = (
+        run_root(spec.object_id)
+        / "videos"
+        / (
+            f"{mode}{reference_suffix}_{profile}{focus_suffix}{checkpoint_suffix}"
+            f"_{camera_view}_seed{seed}"
+        )
+    )
+    policy = (
+        ["--reference-only"]
+        if checkpoint is None
+        else ["--checkpoint", str(checkpoint)]
+    )
     _run_gpu(
         [
             "record",
@@ -604,6 +668,7 @@ def record(
                 reference_reward_weight=reference_reward_weight,
                 max_reference_action_deviation=max_reference_action_deviation,
                 stable_physics=stable_physics,
+                target_focus_regions=target_focus_regions,
             ),
             *policy,
             "--output-dir",
@@ -651,6 +716,14 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--success-bonus", type=float, default=40.0)
     child.add_argument("--reference-reward-weight", type=float, default=0.005)
     child.add_argument("--max-reference-action-deviation", type=float, default=0.7)
+    child.add_argument(
+        "--target-focus-region",
+        type=float,
+        nargs=5,
+        action="append",
+        default=[],
+        metavar=("CENTER_X", "CENTER_Y", "JITTER_X", "JITTER_Y", "PROBABILITY"),
+    )
     child.add_argument("--stable-physics", action="store_true")
     child = commands.add_parser("train")
     child.add_argument("object", choices=OBJECTS)
@@ -661,14 +734,17 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--iterations", type=int, default=40)
     child.add_argument("--exploration-std", type=float, default=0.01)
     child.add_argument("--exploration-hold-steps", type=int, default=1)
+    child.add_argument("--ppo-steps-per-env", type=int, default=24)
     child.add_argument("--run-name", required=True)
     child.add_argument("--reference-processed", type=Path)
     child.add_argument("--dr-initial-strength", type=float, default=0.1)
     child.add_argument("--dr-ramp-steps", type=int, default=480)
     child.add_argument("--resume", type=Path)
     child.add_argument("--warm-start", type=Path)
+    child.add_argument("--warm-start-critic", action="store_true")
     child.add_argument("--actor-anchor-checkpoint", type=Path)
     child.add_argument("--actor-anchor-weight", type=float, default=0.0)
+    child.add_argument("--freeze-actor-normalizer", action="store_true")
     child.add_argument("--goal-potential-scale", type=float, default=5.0)
     child.add_argument("--goal-potential-negative-clip", type=float, default=0.25)
     child.add_argument("--success-bonus", type=float, default=40.0)
@@ -681,6 +757,14 @@ def _parser() -> argparse.ArgumentParser:
         nargs=2,
         metavar=("X", "Y"),
         default=(0.0, 0.0),
+    )
+    child.add_argument(
+        "--target-focus-region",
+        type=float,
+        nargs=5,
+        action="append",
+        default=[],
+        metavar=("CENTER_X", "CENTER_Y", "JITTER_X", "JITTER_Y", "PROBABILITY"),
     )
     child.add_argument("--stable-physics", action="store_true")
     child = commands.add_parser("record")
@@ -699,6 +783,14 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--success-bonus", type=float, default=40.0)
     child.add_argument("--reference-reward-weight", type=float, default=0.005)
     child.add_argument("--max-reference-action-deviation", type=float, default=0.7)
+    child.add_argument(
+        "--target-focus-region",
+        type=float,
+        nargs=5,
+        action="append",
+        default=[],
+        metavar=("CENTER_X", "CENTER_Y", "JITTER_X", "JITTER_Y", "PROBABILITY"),
+    )
     child.add_argument("--stable-physics", action="store_true")
     return parser
 
@@ -711,7 +803,9 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "route": ROUTE_VERSION,
                     "objects": {name: asdict(spec) for name, spec in OBJECTS.items()},
-                    "profiles": {name: asdict(profile) for name, profile in PROFILES.items()},
+                    "profiles": {
+                        name: asdict(profile) for name, profile in PROFILES.items()
+                    },
                 },
                 indent=2,
             )
@@ -742,6 +836,9 @@ def main(argv: list[str] | None = None) -> int:
                         args.max_reference_action_deviation
                     ),
                     stable_physics=args.stable_physics,
+                    target_focus_regions=tuple(
+                        tuple(region) for region in args.target_focus_region
+                    ),
                 )
             )
         }
@@ -758,14 +855,17 @@ def main(argv: list[str] | None = None) -> int:
                     iterations=args.iterations,
                     exploration_std=args.exploration_std,
                     exploration_hold_steps=args.exploration_hold_steps,
+                    ppo_steps_per_env=args.ppo_steps_per_env,
                     run_name=args.run_name,
                     reference_processed=args.reference_processed,
                     dr_initial_strength=args.dr_initial_strength,
                     dr_ramp_steps=args.dr_ramp_steps,
                     resume=args.resume,
                     warm_start=args.warm_start,
+                    warm_start_critic=args.warm_start_critic,
                     actor_anchor_checkpoint=args.actor_anchor_checkpoint,
                     actor_anchor_weight=args.actor_anchor_weight,
+                    freeze_actor_normalizer=args.freeze_actor_normalizer,
                     goal_potential_scale=args.goal_potential_scale,
                     goal_potential_negative_clip=args.goal_potential_negative_clip,
                     success_bonus=args.success_bonus,
@@ -776,6 +876,9 @@ def main(argv: list[str] | None = None) -> int:
                     stable_physics=args.stable_physics,
                     target_focus_probability=args.target_focus_probability,
                     target_focus_jitter_xy_m=tuple(args.target_focus_jitter_xy_m),
+                    target_focus_regions=tuple(
+                        tuple(region) for region in args.target_focus_region
+                    ),
                 )
             )
         }
@@ -800,6 +903,9 @@ def main(argv: list[str] | None = None) -> int:
                         args.max_reference_action_deviation
                     ),
                     stable_physics=args.stable_physics,
+                    target_focus_regions=tuple(
+                        tuple(region) for region in args.target_focus_region
+                    ),
                 )
             )
         }

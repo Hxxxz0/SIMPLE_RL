@@ -222,6 +222,17 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
         help="Center of the focused target-position distribution in metres",
     )
     parser.add_argument(
+        "--target-position-focus-region",
+        type=float,
+        nargs=5,
+        action="append",
+        metavar=("CENTER_X", "CENTER_Y", "JITTER_X", "JITTER_Y", "PROBABILITY"),
+        help=(
+            "Repeatable target-position sampling region in metres; the five "
+            "values are center X/Y, symmetric jitter X/Y and batch probability"
+        ),
+    )
+    parser.add_argument(
         "--target-yaw-jitter",
         type=float,
         help=(
@@ -721,9 +732,7 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         grasp_anything_lift_arm_residual_grasp_steps=(
             args.grasp_anything_lift_arm_residual_grasp_steps
         ),
-        grasp_anything_goal_potential_scale=(
-            args.grasp_anything_goal_potential_scale
-        ),
+        grasp_anything_goal_potential_scale=(args.grasp_anything_goal_potential_scale),
         grasp_anything_goal_potential_negative_clip=(
             args.grasp_anything_goal_potential_negative_clip
         ),
@@ -770,6 +779,14 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
                 None
                 if args.target_position_focus_offset_center_xy is None
                 else tuple(args.target_position_focus_offset_center_xy),
+            ),
+            (
+                "target_position_focus_regions",
+                None
+                if args.target_position_focus_region is None
+                else tuple(
+                    tuple(region) for region in args.target_position_focus_region
+                ),
             ),
             ("target_yaw_jitter", args.target_yaw_jitter),
             (
@@ -851,9 +868,7 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
     if args.disable_domain_randomization:
         config = replace(
             config,
-            domain_randomization=replace(
-                config.domain_randomization, enabled=False
-            ),
+            domain_randomization=replace(config.domain_randomization, enabled=False),
         )
     if args.dr_profile == "pose_only":
         config = replace(
@@ -894,9 +909,7 @@ def _initialize_scratch_correction_head(
     """Initialize only the final residual head of a scratch policy."""
 
     linear_layers = [
-        module
-        for module in policy.mlp.modules()
-        if isinstance(module, torch.nn.Linear)
+        module for module in policy.mlp.modules() if isinstance(module, torch.nn.Linear)
     ]
     if not linear_layers:
         raise RuntimeError("scratch actor has no linear correction head")
@@ -951,9 +964,7 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("actor-learning-rate-scale must be positive")
     if args.actor_anchor_weight < 0.0:
         raise ValueError("actor-anchor-weight must be non-negative")
-    if (args.actor_anchor_checkpoint is None) != (
-        args.actor_anchor_weight == 0.0
-    ):
+    if (args.actor_anchor_checkpoint is None) != (args.actor_anchor_weight == 0.0):
         raise ValueError(
             "actor-anchor-checkpoint and positive actor-anchor-weight "
             "must be set together"
@@ -1376,6 +1387,82 @@ def _pose_axis_diagnostics(
     return {"summaries": summaries, "bins": bins}
 
 
+def _pose_xy_diagnostics(
+    values: torch.Tensor,
+    outcome_codes: torch.Tensor,
+    *,
+    bin_count: int = 8,
+) -> dict[str, object]:
+    """Summarize spatial success coverage on an initial target XY grid."""
+
+    values = values.detach().to(dtype=torch.float64, device="cpu")
+    outcome_codes = outcome_codes.detach().flatten().to(device="cpu")
+    if tuple(values.shape) != (outcome_codes.numel(), 2) or not values.numel():
+        raise ValueError("pose XY values must be a non-empty Nx2 tensor")
+    if bin_count < 1:
+        raise ValueError("pose diagnostic bin count must be positive")
+    if not torch.isfinite(values).all():
+        raise ValueError("initial pose diagnostics require finite values")
+    if not torch.isin(outcome_codes, torch.tensor([0, 1, 2])).all():
+        raise ValueError("outcome codes must be 0=failure, 1=success or 2=timeout")
+
+    edges = []
+    bin_ids = []
+    for axis in range(2):
+        axis_values = values[:, axis].contiguous()
+        lower = float(axis_values.min().item())
+        upper = float(axis_values.max().item())
+        if lower == upper:
+            axis_edges = torch.tensor([lower, upper], dtype=torch.float64)
+            axis_bin_ids = torch.zeros_like(outcome_codes, dtype=torch.long)
+        else:
+            axis_edges = torch.linspace(
+                lower, upper, bin_count + 1, dtype=torch.float64
+            )
+            axis_bin_ids = torch.bucketize(axis_values, axis_edges[1:-1])
+        edges.append(axis_edges)
+        bin_ids.append(axis_bin_ids)
+
+    cells = []
+    sampled_cells = 0
+    successful_cells = 0
+    for y_index in range(len(edges[1]) - 1):
+        for x_index in range(len(edges[0]) - 1):
+            mask = (bin_ids[0] == x_index) & (bin_ids[1] == y_index)
+            samples = int(mask.sum().item())
+            successes = int(((outcome_codes == 1) & mask).sum().item())
+            physical_failures = int(((outcome_codes == 0) & mask).sum().item())
+            timeouts = int(((outcome_codes == 2) & mask).sum().item())
+            sampled_cells += int(samples > 0)
+            successful_cells += int(successes > 0)
+            cells.append(
+                {
+                    "x_index": x_index,
+                    "y_index": y_index,
+                    "x_lower": float(edges[0][x_index].item()),
+                    "x_upper": float(edges[0][x_index + 1].item()),
+                    "y_lower": float(edges[1][y_index].item()),
+                    "y_upper": float(edges[1][y_index + 1].item()),
+                    "samples": samples,
+                    "successes": successes,
+                    "physical_failures": physical_failures,
+                    "timeouts": timeouts,
+                    "success_rate": successes / samples if samples else None,
+                }
+            )
+    return {
+        "shape_yx": [len(edges[1]) - 1, len(edges[0]) - 1],
+        "x_edges": [float(value.item()) for value in edges[0]],
+        "y_edges": [float(value.item()) for value in edges[1]],
+        "sampled_cells": sampled_cells,
+        "successful_cells": successful_cells,
+        "successful_cell_coverage": (
+            successful_cells / sampled_cells if sampled_cells else None
+        ),
+        "cells": cells,
+    }
+
+
 def _initial_pose_diagnostics(
     initial_poses: dict[str, torch.Tensor], outcome_codes: torch.Tensor
 ) -> dict[str, object]:
@@ -1414,6 +1501,9 @@ def _initial_pose_diagnostics(
             ),
             "y": _pose_axis_diagnostics(
                 values["target_translation_xy_y"], outcome_codes
+            ),
+            "grid": _pose_xy_diagnostics(
+                initial_poses["target_translation_xy"], outcome_codes
             ),
         },
         "target_yaw": _pose_axis_diagnostics(values["target_yaw"], outcome_codes),
@@ -1486,9 +1576,7 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         initial_proposal_context_sha256,
     ) = _evaluation_world_sha256(env, observations, args.episodes)
     initial_poses = {
-        "target_translation_xy": env.randomizer.target_translation_xy[
-            : args.episodes
-        ]
+        "target_translation_xy": env.randomizer.target_translation_xy[: args.episodes]
         .detach()
         .clone(),
         "target_yaw": env.randomizer.target_yaw[: args.episodes].detach().clone(),

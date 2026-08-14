@@ -1,6 +1,6 @@
 # grasp_anything mjlab GPU PPO v1
 
-This release backs up eight accepted object-specific RL checkpoints and the
+This release backs up nine accepted object-specific RL checkpoints and the
 corresponding evaluation record for the current `grasp_anything` work. It also
 contains opt-in episode-11 `xmove_bend_pick` references for Apple, Bowl, Potato
 and Tomato, plus audited fixed/position-DR videos. The derived object bundles
@@ -14,10 +14,13 @@ extension and rejected Bowl experiment are in
 position-DR history is retained in
 [`DR_BEND_FOLLOWUP.md`](DR_BEND_FOLLOWUP.md). The strict `+/-20 cm` profile,
 full training record, rejected long-run checkpoints, and audited sparse-success
-videos are in [`WORKSPACE_200MM_V6.md`](WORKSPACE_200MM_V6.md). In short, seven
+videos are in [`WORKSPACE_200MM_V6.md`](WORKSPACE_200MM_V6.md). The later
+multi-region long-rollout Apple experiment, including its partial improvement
+and strict limitations, is in
+[`FRONTIER_REGIONS_V11.md`](FRONTIER_REGIONS_V11.md). In short, seven
 unique objects now have measured physical successes: `Soap_Bottle_1`,
 `Bottle_1`, `Apple_1`, `Bowl_1`, `Cup_6`, `Potato_1` and `Tomato_1`. There are
-now eight accepted RL checkpoints. Apple, Potato, and Tomato have accepted
+now nine accepted RL checkpoints. Apple, Potato, and Tomato have accepted
 stable-physics episode-11 workspace PPOs. Bowl retains its earlier fixed-pose
 checkpoint and v4 reference-only bend evidence; its stable workspace PPO was
 rejected after all four screened checkpoints scored 0/512.
@@ -40,6 +43,7 @@ stable lift is not counted as success.
 | `Bottle_1` | `checkpoints/bottle_1_model_199.pt` | 492/512 (96.09%) | narrow pose DR; requires the runtime lift-arm-decay variant |
 | `Apple_1` | `checkpoints/apple_1_model_0.pt` | 112/512 (21.88%) | fixed-pose baseline only |
 | `Apple_1` bend v5 | `checkpoints/apple_1_xmove_bend_workspace_v5_model_100.pt` | 1969/2048 (96.14%) vs paired reference 1383/2048 | stable physics; target XY +/-1 cm per axis over two seeds |
+| `Apple_1` frontier v11 | `checkpoints/apple_1_xmove_bend_frontier_v11_model_5.pt` | worst region 357/1024 (34.86%); core 800/1024 | additional multi-region frontier policy; five overlapping reachable-region rectangles over two seeds; not a stable full-workspace claim |
 | `Potato_1` bend v5 | `checkpoints/potato_1_xmove_bend_workspace_v5_model_50.pt` | 1024/1024 (100.00%) vs paired reference 618/1024 | stable physics; trained target XY +/-1 cm; measured +/-2.5 cm generalization 429/512 |
 | `Tomato_1` bend v5 | `checkpoints/tomato_1_xmove_bend_workspace_v5_model_150.pt` | 739/1024 (72.17%) vs paired reference 310/1024 | stable physics; trained target XY +/-1 cm; measured +/-2.5 cm generalization 199/512 |
 | `Bowl_1` | `checkpoints/bowl_1_model_0.pt` | 194/512 (37.89%) | fixed-pose rim-grasp baseline only |
@@ -50,7 +54,10 @@ The opt-in `target_xy_200mm` profile samples X and Y independently over
 success there: Apple 39/1024 (3.81%), Potato 40/1024 (3.91%), and Tomato
 31/1024 (3.03%). Complete 800-update, 19.66M-transition Apple/Potato expansion
 runs collapsed to 0/512 at their final checkpoints, so no new weight is
-released and robust `+/-20 cm` support is not claimed.
+released from those runs and robust `+/-20 cm` support is not claimed. The
+later Apple frontier v11 checkpoint also remains sparse on the strict uniform
+profile at 44/1024 (4.30%); its accepted scope is the explicitly evaluated
+five-region frontier, not the full square.
 
 The original five checkpoints are unchanged. The new Potato and Tomato v5
 checkpoints are additional opt-in bend policies and do not replace older
@@ -218,6 +225,7 @@ in their retained local output directories. The absolute directories are:
 | `Bottle_1` | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Bottle_1/single_ref_ep82_per_object_v1/videos_narrow_dr1_lift_arm_decay_v1` | 3 grasp close-ups |
 | `Apple_1` | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/single_ref_ep82_small_v4_multireplay/videos_fixed_dr1_model_0` | 3 full-robot + 3 close-ups |
 | `Bowl_1` | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Bowl_1/single_ref_ep82_rim_v4_staged/videos_fixed_dr1_model_0` | 3 full-robot + 3 close-ups |
+| `Apple_1` frontier v11 | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/videos/apple_1_xmove_bend_frontier_v11_model_5` | 5 audited full-robot videos at separated target positions |
 | `Cup_6` | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Cup_6/release_single_ref_ep82_dr02_xonly_s12p5_e4/videos_dr02_final` | 3 full-robot + 3 close-ups |
 | `Apple_1` bend v5 reference | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos/reference_reference-Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2_target_xy_2p5mm_full_robot_seed20261020` | 1 full-robot success with 0 m audited pre-contact motion |
 | `Apple_1` bend v5 PPO full robot | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos/ppo_target_xy_100mm_full_robot_seed20261060` | 1 audited `+/-10 cm` success |
