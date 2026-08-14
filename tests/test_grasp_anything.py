@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import xml.etree.ElementTree as ET
 from dataclasses import replace
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from simple.grasp_rl.grasp_anything import (
     SUPPORTED_REFERENCE_TASKS,
     GraspAnythingObjectContract,
+    _source_free_joint_damping,
     derive_grasp_anything_bundle,
 )
 
@@ -92,3 +94,12 @@ def test_reference_task_allowlist_preserves_legacy_and_adds_bend_variant() -> No
     assert replace(_contract(), reference_task="xmove_bend_pick").metadata()[
         "reference_task"
     ] == "xmove_bend_pick"
+
+
+def test_source_free_joint_damping_is_preserved_and_validated() -> None:
+    body = ET.fromstring('<body><joint type="free" damping="0.1"/></body>')
+    assert _source_free_joint_damping(body) == pytest.approx(0.1)
+
+    invalid = ET.fromstring('<body><joint type="free" damping="-0.1"/></body>')
+    with pytest.raises(ValueError, match="damping"):
+        _source_free_joint_damping(invalid)

@@ -9,9 +9,20 @@ from simple.grasp_rl.mjlab_gpu.recording import (
     _diagnostic_rank,
     _episode_randomization,
     _finger_grasp_truth,
+    _precontact_motion_audit,
     _reference_provenance,
     _target_physics_audit,
 )
+
+
+def test_precontact_target_motion_audit_rejects_self_moving_object() -> None:
+    stable = _precontact_motion_audit(0.002, 80)
+    moving = _precontact_motion_audit(0.01, 80)
+
+    assert stable["passed"]
+    assert stable["first_hand_contact_step"] == 80
+    assert not moving["passed"]
+    assert moving["maximum_allowed_displacement_m"] == pytest.approx(0.003)
 
 
 def test_episode_randomization_records_pose_and_dynamics() -> None:

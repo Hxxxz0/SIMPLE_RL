@@ -299,6 +299,23 @@ def _materialize_object_subtree(
     return children
 
 
+def _source_free_joint_damping(source_body: ET.Element) -> float | None:
+    free_joints = [
+        child
+        for child in source_body
+        if child.tag == "joint" and child.get("type", "hinge") == "free"
+    ]
+    if len(free_joints) != 1:
+        raise ValueError("Object MJCF root must contain exactly one free joint")
+    value = free_joints[0].get("damping")
+    if value is None:
+        return None
+    damping = float(value)
+    if not math.isfinite(damping) or damping < 0.0:
+        raise ValueError("Object free-joint damping must be non-negative and finite")
+    return damping
+
+
 def _replace_primary_object(
     scene_path: Path,
     source_root: ET.Element,
@@ -329,6 +346,9 @@ def _replace_primary_object(
     target_joints = [child for child in target_body if child.tag == "joint"]
     if len(target_joints) != 1 or target_joints[0].get("type") != "free":
         raise ValueError("Base primary body must contain one free joint")
+    source_damping = _source_free_joint_damping(source_body)
+    if source_damping is not None:
+        target_joints[0].set("damping", f"{source_damping:.10g}")
     for child in list(target_body):
         if child is not target_joints[0]:
             target_body.remove(child)

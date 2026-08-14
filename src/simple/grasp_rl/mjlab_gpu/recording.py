@@ -26,6 +26,7 @@ from simple.grasp_rl.schema import (
 FINGER_AUDIT_SCHEMA_VERSION = 1
 FINGER_CONTACT_FORCE = 2.0
 FINGER_CONTACT_HOLD_STEPS = 5
+MAX_PRECONTACT_TARGET_DISPLACEMENT_M = 0.003
 
 
 def _sha256(path: Path) -> str:
@@ -285,6 +286,20 @@ def _diagnostic_rank(episode: dict[str, Any]) -> tuple[int, float, float]:
     )
 
 
+def _precontact_motion_audit(
+    max_displacement_m: float, first_hand_contact_step: int
+) -> dict[str, Any]:
+    passed = max_displacement_m <= MAX_PRECONTACT_TARGET_DISPLACEMENT_M
+    return {
+        "max_target_displacement_m": max_displacement_m,
+        "maximum_allowed_displacement_m": MAX_PRECONTACT_TARGET_DISPLACEMENT_M,
+        "first_hand_contact_step": (
+            None if first_hand_contact_step < 0 else first_hand_contact_step
+        ),
+        "passed": passed,
+    }
+
+
 def _finger_grasp_truth(
     hand_qpos: torch.Tensor,
     initial_hand_qpos: torch.Tensor,
@@ -393,6 +408,13 @@ def record_success_videos(
     max_quality = torch.zeros(env.num_envs, device=env.device)
     max_stage = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
     model = env.gpu.sim.mj_model
+    target_body_id = model.body(env.gpu.bundle.manifest["roles"]["primary"]).id
+    initial_target_position = env.gpu.sim.data.xpos[:, target_body_id].clone()
+    max_precontact_displacement = torch.zeros(env.num_envs, device=env.device)
+    first_hand_contact_step = torch.full(
+        (env.num_envs,), -1, dtype=torch.long, device=env.device
+    )
+    episode_step = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
     hand_qpos_indices = torch.tensor(
         [int(model.jnt_qposadr[model.joint(name).id]) for name in JOINT_NAMES[29:43]],
         dtype=torch.long,
@@ -422,8 +444,27 @@ def record_success_videos(
         if stage_index is not None:
             max_stage.copy_(torch.maximum(max_stage, stage_index))
         current_hand_qpos = env.gpu.sim.data.qpos[:, hand_qpos_indices]
-        audit = _finger_grasp_truth(
-            current_hand_qpos, initial_hand_qpos, _contact_forces(env)
+        contact_forces = _contact_forces(env)
+        audit = _finger_grasp_truth(current_hand_qpos, initial_hand_qpos, contact_forces)
+        hand_contact = contact_forces.norm(dim=-1).amax(dim=(1, 2)) > 1e-6
+        not_contacted = first_hand_contact_step < 0
+        displacement = (
+            env.gpu.sim.data.xpos[:, target_body_id, :2]
+            - initial_target_position[:, :2]
+        ).norm(dim=-1)
+        max_precontact_displacement.copy_(
+            torch.where(
+                not_contacted & ~hand_contact,
+                torch.maximum(max_precontact_displacement, displacement),
+                max_precontact_displacement,
+            )
+        )
+        first_hand_contact_step.copy_(
+            torch.where(
+                not_contacted & hand_contact,
+                episode_step,
+                first_hand_contact_step,
+            )
         )
         max_hand_closure.copy_(torch.maximum(max_hand_closure, audit["closure_delta"]))
         max_hand_contact.copy_(
@@ -437,6 +478,7 @@ def record_success_videos(
             else actor(observations, stochastic_output=stochastic_policy)
         )
         observations, _, dones, extras = env.step(actions)
+        episode_step.add_(1)
         assert env.last_terms is not None
         terms = env.last_terms
         max_lift.copy_(torch.maximum(max_lift, terms.lift_height))
@@ -475,7 +517,11 @@ def record_success_videos(
             finger_audit_passed = all(
                 hand_audits[hand_names[hand_id]]["passed"] for hand_id in required_hands
             )
-            success = simulator_success and finger_audit_passed
+            motion_audit = _precontact_motion_audit(
+                float(max_precontact_displacement[env_id]),
+                int(first_hand_contact_step[env_id]),
+            )
+            success = simulator_success and finger_audit_passed and motion_audit["passed"]
             stage = int(max_stage[env_id])
             episode = {
                 "attempt": attempts,
@@ -503,10 +549,15 @@ def record_success_videos(
                     "hands": hand_audits,
                     "passed": finger_audit_passed,
                 },
+                "precontact_target_motion_audit": motion_audit,
                 "success_rejection_reason": (
                     None
                     if success or not simulator_success
-                    else "insufficient_finger_closure_or_diverse_contact"
+                    else (
+                        "target_moved_before_hand_contact"
+                        if not motion_audit["passed"]
+                        else "insufficient_finger_closure_or_diverse_contact"
+                    )
                 ),
             }
             candidate = (np.stack(traces[env_id]), episode)
@@ -526,10 +577,16 @@ def record_success_videos(
             max_hand_contact[env_id] = 0.0
             grasp_hold[env_id] = 0
             max_grasp_hold[env_id] = 0
+            max_precontact_displacement[env_id] = 0.0
+            first_hand_contact_step[env_id] = -1
+            episode_step[env_id] = 0
         reset_dr = _episode_randomization(env)
         for env_id in finished.detach().cpu().tolist():
             episode_dr[env_id] = reset_dr[env_id]
             initial_hand_qpos[env_id] = env.gpu.sim.data.qpos[env_id, hand_qpos_indices]
+            initial_target_position[env_id] = env.gpu.sim.data.xpos[
+                env_id, target_body_id
+            ]
     if len(records) < videos and not allow_diagnostic_fallback:
         raise RuntimeError(
             f"Only found {len(records)} successful episodes in {attempts} attempts"
@@ -568,7 +625,7 @@ def record_success_videos(
             "task": env.config.task,
             "diagnostic": not episode["success"],
             "selection": (
-                "simulator_truth_and_finger_audit_success"
+                "simulator_truth_finger_and_precontact_motion_audit_success"
                 if episode["success"]
                 else "best_available_failed_episode"
             ),

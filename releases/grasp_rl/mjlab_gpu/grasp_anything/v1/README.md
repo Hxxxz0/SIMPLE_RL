@@ -6,13 +6,15 @@ contains opt-in episode-11 `xmove_bend_pick` references for Apple, Bowl, Potato
 and Tomato, plus audited fixed/position-DR videos. The derived object bundles
 and full experiment logs remain under the local `outputs/` and `data/` trees.
 
-The position-DR follow-up, including absolute artifact paths and known failure
-boundaries, is in [`DR_BEND_FOLLOWUP.md`](DR_BEND_FOLLOWUP.md). In short, seven
+The accepted stable-physics Apple workspace result, including absolute
+artifact and video paths, is in
+[`APPLE_WORKSPACE_V5.md`](APPLE_WORKSPACE_V5.md). The older position-DR history
+is retained in [`DR_BEND_FOLLOWUP.md`](DR_BEND_FOLLOWUP.md). In short, seven
 unique objects now have measured physical successes: `Soap_Bottle_1`,
 `Bottle_1`, `Apple_1`, `Bowl_1`, `Cup_6`, `Potato_1` and `Tomato_1`. There are
-now six accepted RL checkpoints: Apple has a separate accepted
-episode-11 position-DR PPO, while the Bowl, Potato and Tomato bend routes
-remain reference-only policies.
+now six accepted RL checkpoints. Apple has a stable-physics episode-11
+workspace PPO, while the Bowl, Potato and Tomato bend routes remain
+reference-only policies.
 
 Git LFS is required to download the `.pt`, `.npz`, and `.mp4` files:
 
@@ -31,21 +33,32 @@ stable lift is not counted as success.
 | `Soap_Bottle_1` | `checkpoints/soap_bottle_1_model_199.pt` | 512/512 (100.00%) | narrow pose DR; requires the runtime lift-arm-decay variant |
 | `Bottle_1` | `checkpoints/bottle_1_model_199.pt` | 492/512 (96.09%) | narrow pose DR; requires the runtime lift-arm-decay variant |
 | `Apple_1` | `checkpoints/apple_1_model_0.pt` | 112/512 (21.88%) | fixed-pose baseline only |
-| `Apple_1` bend | `checkpoints/apple_1_xmove_bend_rewardalign_model_300.pt` | 185/1024 vs paired reference 166/1024 | target XY +/-2.5 mm; measured 11.4% relative gain, absolute success remains 18.07% |
+| `Apple_1` bend v5 | `checkpoints/apple_1_xmove_bend_workspace_v5_model_100.pt` | 1969/2048 (96.14%) vs paired reference 1383/2048 | stable physics; target XY +/-1 cm per axis over two seeds |
 | `Bowl_1` | `checkpoints/bowl_1_model_0.pt` | 194/512 (37.89%) | fixed-pose rim-grasp baseline only |
 | `Cup_6` | `checkpoints/cup_6_model_39.pt` | 1523/1536 (99.15%) over three seeds | full DR profile evaluated at strength 0.2 with the Cup X-conditioned proposal |
 
 The original five checkpoints are unchanged. The Apple episode-82 checkpoint
 remains the 112/512 fixed-pose baseline; it was not replaced or used to drive
-the episode-11 result because the action-transform hashes do not match. The new
-Apple bend checkpoint is an additional sixth policy.
+the episode-11 result because the action-transform hashes do not match. The v5
+Apple bend checkpoint replaces the accepted status of the old v4 bend policy.
+The old checkpoint remains for provenance, but its video showed target motion
+before hand contact and is rejected.
+
+The Apple v5 follow-up did not stop at the selected early checkpoint. Four
+1024-environment lines were run through update 799/800 for 78,667,776 fresh
+transitions in total, including stronger temporally persistent noise and
+5 x 5 cm / 20 x 20 cm expansion from `model_100`. All four final checkpoints
+scored 0/512. This is why the release selects the physically evaluated
+`model_100`, not the last checkpoint. The actor has full right-hand/right-arm
+normalized residual range during placement and no reference imitation reward;
+the decline is not caused by a tight reference-action clamp.
 
 The separate bend route has these reference-only position results. These rows
 do not add RL checkpoints:
 
 | Object | Released bend reference | Target XY +/-2.5 mm | Measured scope |
 | :--- | :--- | ---: | :--- |
-| `Apple_1` | `references/apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2` | reference 95/512 on its earlier audit; accepted PPO 185/1024 vs paired reference 166/1024 | measured PPO gain, still not robust position DR |
+| `Apple_1` | `references/apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2` | legacy v4 PPO 185/1024 vs paired reference 166/1024 | historical result rejected after pre-contact target motion was found |
 | `Bowl_1` | `references/bowl_1_xmove_bend_ep11_staged_native_v1` | 270/512 (52.73%) | moderate position tolerance |
 | `Potato_1` | `references/potato_1_xmove_bend_ep11_staged_native_v1` | 490/512 (95.70%) | strong within measured +/-2.5 mm scope |
 | `Tomato_1` | `references/tomato_1_xmove_bend_ep11_staged_native_v1` | 496/512 (96.88%) | strong within measured +/-2.5 mm scope |
@@ -72,11 +85,13 @@ claim and must not be quoted without the 512-world runtime contract. The later
 position-DR audit showed that the fixed score does not generalize: the improved
 Apple reference reached 95/512 under target X/Y jitter of +/-2.5 mm. Early
 40-update PPO and later 800-update high-exploration/legacy-reward trials did not
-beat their references. The accepted reward-aligned `model_300` used 1024
+beat their references. The historical reward-aligned v4 `model_300` used 1024
 environments, `std=0.03`, 24 steps per environment per update, and 7,397,376
 fresh transitions after actor warm start. It scored 93/512 vs 77/512 and
 92/512 vs 89/512 on two independent seeds. The aggregate gain is 19 successes
-or 11.4% relative, but the 18.07% absolute rate remains low.
+or 11.4% relative, but the result is now rejected because the Apple moved
+before hand contact. The accepted v5 replacement is documented in
+[`APPLE_WORKSPACE_V5.md`](APPLE_WORKSPACE_V5.md).
 
 Compatibility is opt-in:
 
@@ -105,8 +120,9 @@ also depends on these runtime options:
 ```
 
 The Apple episode-82 result does not establish narrow DR support (its recorded
-narrow result is 3/512). The Apple bend PPO establishes only the measured
-+/-2.5 mm target-position scope, not robot-base or wider workspace DR. The Bowl
+narrow result is 3/512). The accepted v5 Apple bend PPO establishes a 96.14%
+`+/-1 cm` core target-position scope. Its measured `+/-10 cm` result is only
+16.60%, so the outer 20 x 20 cm plane is not a robust-workspace claim. The Bowl
 result also does not establish narrow or workspace DR support. Every checkpoint
 is tied to its own object contract and reference; cross-object checkpoint
 compatibility is not supported.
@@ -131,9 +147,11 @@ scripts/grasp_rl/grasp_anything_objects.sh evaluate Apple_1 \
   --seed 20260884 --episodes 512
 
 .venv/bin/python scripts/grasp_rl/grasp_anything_bend_objects.py evaluate Apple_1 \
-  --profile target_xy_2p5mm --seed 20260974 --episodes 512 \
-  --checkpoint releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/apple_1_xmove_bend_rewardalign_model_300.pt \
-  --reference-processed outputs/grasp_rl/other/references/grasp_anything/Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2
+  --profile target_xy_10mm --seed 20261055 --episodes 1024 \
+  --checkpoint releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/apple_1_xmove_bend_workspace_v5_model_100.pt \
+  --goal-potential-scale 20 --goal-potential-negative-clip 1 \
+  --success-bonus 80 --reference-reward-weight 0 \
+  --max-reference-action-deviation 2
 ```
 
 Use the same pattern for `Bottle_1` and `Bowl_1`, preserving the stage and
@@ -156,14 +174,14 @@ are intentionally outside Git:
 
 | Artifact | Absolute path |
 | :--- | :--- |
-| Derived asset | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/assets/mjlab_assets/grasp_anything/Apple_1_object_reward_v4_xmove_bend_ep11` |
+| Derived stable asset | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/assets/mjlab_assets/grasp_anything/Apple_1_object_reward_v5_stable_xmove_bend_ep11` |
 | Strict source reference | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Apple_1_xmove_bend_ep11_strict_v1` |
 | Successful staged reference | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Apple_1_xmove_bend_ep11_staged_native_v1` |
 | 4096-world search result | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/diagnostics/staged_surface_yminus09_seed20260901_4096.json` |
 | Independent export replay | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/diagnostics/staged_export_seed20260902_512.json` |
 | Formal acceptance | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/reference_fixed_seed20260903_512.json` |
-| Accepted bend PPO checkpoint | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/apple_1_xmove_bend_rewardalign_model_300.pt` |
-| Accepted bend PPO source run | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/ppo_rewardalign_v1_scale20_clip1_bonus80_warm_model399_seed20260968_env1024_std030_400` |
+| Accepted bend PPO checkpoint | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/apple_1_xmove_bend_workspace_v5_model_100.pt` |
+| Accepted bend PPO source run | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/ppo_workspace_v2_stable_stage10mm_free_seed20261040_env1024_std080_hold4_800` |
 
 ## Video evidence on this machine
 
@@ -178,16 +196,18 @@ local output directories. The absolute directories are:
 | `Apple_1` | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/single_ref_ep82_small_v4_multireplay/videos_fixed_dr1_model_0` | 3 full-robot + 3 close-ups |
 | `Bowl_1` | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Bowl_1/single_ref_ep82_rim_v4_staged/videos_fixed_dr1_model_0` | 3 full-robot + 3 close-ups |
 | `Cup_6` | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Cup_6/release_single_ref_ep82_dr02_xonly_s12p5_e4/videos_dr02_final` | 3 full-robot + 3 close-ups |
-| `Apple_1` bend reference | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos_fixed_reference` | 1 audited full-robot + 1 audited close-up |
-| `Apple_1` bend PPO | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos` | 1 accepted full-robot + 1 accepted close-up under seed 20260977 |
+| `Apple_1` bend v5 reference | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos/reference_reference-Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2_target_xy_2p5mm_full_robot_seed20261020` | 1 full-robot success with 0 m audited pre-contact motion |
+| `Apple_1` bend v5 PPO full robot | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos/ppo_target_xy_100mm_full_robot_seed20261060` | 1 audited `+/-10 cm` success |
+| `Apple_1` bend v5 PPO close-up | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos/ppo_target_xy_100mm_grasp_closeup_seed20261061` | 1 audited `+/-10 cm` success |
 
-The original Apple fixed videos are backed up under
-`videos/apple_1_xmove_bend_ep11_reference`. The follow-up additionally backs
+The original v4 Apple fixed videos are retained under
+`videos/apple_1_xmove_bend_ep11_reference` as legacy evidence. The follow-up additionally backs
 up Apple target/base position-DR recordings, Bowl fixed and target-position
 recordings, and Potato/Tomato target-position recordings. Every MP4 has a JSON
 sidecar reporting native simulator success, lift and finger-contact audit.
 Exact release-relative and absolute local paths are listed in
-`DR_BEND_FOLLOWUP.md` and checksummed in `SHA256SUMS`.
+`APPLE_WORKSPACE_V5.md` and `DR_BEND_FOLLOWUP.md`, and checksummed in
+`SHA256SUMS`.
 
 ## Integrity
 

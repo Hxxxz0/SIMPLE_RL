@@ -28,11 +28,13 @@ ROUTE_VERSION = "xmove_bend_ep11_v1"
 class BendObjectSpec:
     object_id: str
     source_relative: str
+    asset_version: str
     scale: float
     grip_width_m: float
     mass_kg: float
     grasp_frame_position_m: tuple[float, float, float]
     maximum_grip_force_newtons: float
+    table_clearance_m: float = 0.002
 
 
 OBJECTS = {
@@ -41,15 +43,18 @@ OBJECTS = {
         BendObjectSpec(
             object_id="Apple_1",
             source_relative="Kitchen Objects/Apple/Prefabs/Apple_1/Apple_1.xml",
+            asset_version="object_reward_v5_stable",
             scale=0.6,
             grip_width_m=0.064,
             mass_kg=0.14,
             grasp_frame_position_m=(0.0, 0.0, 0.0),
             maximum_grip_force_newtons=60.0,
+            table_clearance_m=0.0,
         ),
         BendObjectSpec(
             object_id="Bowl_1",
             source_relative="Kitchen Objects/Bowl/Prefabs/Bowl_1/Bowl_1.xml",
+            asset_version="object_reward_v4",
             scale=0.45,
             grip_width_m=0.085,
             mass_kg=0.18,
@@ -59,6 +64,7 @@ OBJECTS = {
         BendObjectSpec(
             object_id="Tomato_1",
             source_relative="Kitchen Objects/Tomato/Prefabs/Tomato_1/Tomato_1.xml",
+            asset_version="object_reward_v4",
             scale=0.7,
             grip_width_m=0.052,
             mass_kg=0.12,
@@ -68,6 +74,7 @@ OBJECTS = {
         BendObjectSpec(
             object_id="Potato_1",
             source_relative="Kitchen Objects/Potato/Prefabs/Potato_1/Potato_1.xml",
+            asset_version="object_reward_v4",
             scale=0.8,
             grip_width_m=0.053,
             mass_kg=0.15,
@@ -91,16 +98,20 @@ PROFILES = {
     "target_xy_2p5mm": PoseProfile((0.0025, 0.0025)),
     "target_xy_5mm": PoseProfile((0.005, 0.005)),
     "target_xy_10mm": PoseProfile((0.010, 0.010)),
+    "target_xy_25mm": PoseProfile((0.025, 0.025)),
+    "target_xy_50mm": PoseProfile((0.050, 0.050)),
+    "target_xy_100mm": PoseProfile((0.100, 0.100)),
     "target_base_xy_2p5mm": PoseProfile((0.0025, 0.0025), (0.0025, 0.0025)),
 }
 TARGET_CENTER_XY_M = (0.0, -0.09)
 
 
 def asset_path(object_id: str) -> Path:
+    spec = OBJECTS[object_id]
     return (
         REPO_ROOT
         / "outputs/grasp_rl/other/assets/mjlab_assets/grasp_anything"
-        / f"{object_id}_object_reward_v4_xmove_bend_ep11"
+        / f"{object_id}_{spec.asset_version}_xmove_bend_ep11"
     )
 
 
@@ -176,7 +187,7 @@ def derive(spec: BendObjectSpec, molmo_root: Path) -> dict[str, object]:
         upright_quaternion_wxyz=(2**-0.5, 2**-0.5, 0.0, 0.0),
         grasp_frame_position_m=spec.grasp_frame_position_m,
         maximum_grip_force_newtons=spec.maximum_grip_force_newtons,
-        table_clearance_m=0.002,
+        table_clearance_m=spec.table_clearance_m,
     )
 
 
@@ -221,6 +232,8 @@ def environment_args(
     goal_potential_scale: float = 5.0,
     goal_potential_negative_clip: float = 0.25,
     success_bonus: float = 40.0,
+    reference_reward_weight: float = 0.005,
+    max_reference_action_deviation: float = 0.7,
 ) -> list[str]:
     pose = PROFILES[profile]
     reference = reference_processed or staged_reference_path(spec.object_id)
@@ -240,9 +253,9 @@ def environment_args(
         "--max-reference-initial-position-offset",
         "0.12",
         "--reference-reward-weight",
-        "0.005",
+        str(reference_reward_weight),
         "--max-reference-action-deviation",
-        "0.7",
+        str(max_reference_action_deviation),
         "--grasp-anything-goal-potential-scale",
         str(goal_potential_scale),
         "--grasp-anything-goal-potential-negative-clip",
@@ -365,6 +378,11 @@ def evaluate(
     episodes: int,
     checkpoint: Path | None,
     reference_processed: Path | None = None,
+    goal_potential_scale: float = 5.0,
+    goal_potential_negative_clip: float = 0.25,
+    success_bonus: float = 40.0,
+    reference_reward_weight: float = 0.005,
+    max_reference_action_deviation: float = 0.7,
 ) -> Path:
     mode = "reference" if checkpoint is None else "ppo"
     reference_suffix = _reference_output_suffix(reference_processed)
@@ -376,7 +394,15 @@ def evaluate(
         [
             "evaluate",
             *environment_args(
-                spec, profile, seed, reference_processed=reference_processed
+                spec,
+                profile,
+                seed,
+                reference_processed=reference_processed,
+                goal_potential_scale=goal_potential_scale,
+                goal_potential_negative_clip=goal_potential_negative_clip,
+                success_bonus=success_bonus,
+                reference_reward_weight=reference_reward_weight,
+                max_reference_action_deviation=max_reference_action_deviation,
             ),
             *policy,
             "--num-envs",
@@ -405,6 +431,7 @@ def train(
     iterations: int,
     exploration_std: float,
     run_name: str,
+    exploration_hold_steps: int = 1,
     reference_processed: Path | None = None,
     dr_initial_strength: float = 0.1,
     dr_ramp_steps: int = 480,
@@ -415,6 +442,8 @@ def train(
     goal_potential_scale: float = 5.0,
     goal_potential_negative_clip: float = 0.25,
     success_bonus: float = 40.0,
+    reference_reward_weight: float = 0.005,
+    max_reference_action_deviation: float = 0.7,
 ) -> Path:
     output = run_root(spec.object_id) / run_name
     if output.exists() and any(output.iterdir()):
@@ -468,6 +497,8 @@ def train(
                 goal_potential_scale=goal_potential_scale,
                 goal_potential_negative_clip=goal_potential_negative_clip,
                 success_bonus=success_bonus,
+                reference_reward_weight=reference_reward_weight,
+                max_reference_action_deviation=max_reference_action_deviation,
             ),
             "--num-envs",
             str(num_envs),
@@ -479,6 +510,8 @@ def train(
             *anchor,
             "--exploration-std",
             str(exploration_std),
+            "--exploration-hold-steps",
+            str(exploration_hold_steps),
             "--learning-rate",
             "0.00005",
             "--schedule",
@@ -503,6 +536,11 @@ def record(
     camera_view: str,
     checkpoint: Path | None,
     reference_processed: Path | None = None,
+    goal_potential_scale: float = 5.0,
+    goal_potential_negative_clip: float = 0.25,
+    success_bonus: float = 40.0,
+    reference_reward_weight: float = 0.005,
+    max_reference_action_deviation: float = 0.7,
 ) -> Path:
     mode = "reference" if checkpoint is None else "ppo"
     reference_suffix = _reference_output_suffix(reference_processed)
@@ -514,7 +552,15 @@ def record(
         [
             "record",
             *environment_args(
-                spec, profile, seed, reference_processed=reference_processed
+                spec,
+                profile,
+                seed,
+                reference_processed=reference_processed,
+                goal_potential_scale=goal_potential_scale,
+                goal_potential_negative_clip=goal_potential_negative_clip,
+                success_bonus=success_bonus,
+                reference_reward_weight=reference_reward_weight,
+                max_reference_action_deviation=max_reference_action_deviation,
             ),
             *policy,
             "--output-dir",
@@ -556,6 +602,11 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--episodes", type=int, default=512)
     child.add_argument("--checkpoint", type=Path)
     child.add_argument("--reference-processed", type=Path)
+    child.add_argument("--goal-potential-scale", type=float, default=5.0)
+    child.add_argument("--goal-potential-negative-clip", type=float, default=0.25)
+    child.add_argument("--success-bonus", type=float, default=40.0)
+    child.add_argument("--reference-reward-weight", type=float, default=0.005)
+    child.add_argument("--max-reference-action-deviation", type=float, default=0.7)
     child = commands.add_parser("train")
     child.add_argument("object", choices=OBJECTS)
     child.add_argument("--profile", choices=PROFILES, default="target_xy_2p5mm")
@@ -564,6 +615,7 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--num-envs", type=int, default=8192)
     child.add_argument("--iterations", type=int, default=40)
     child.add_argument("--exploration-std", type=float, default=0.01)
+    child.add_argument("--exploration-hold-steps", type=int, default=1)
     child.add_argument("--run-name", required=True)
     child.add_argument("--reference-processed", type=Path)
     child.add_argument("--dr-initial-strength", type=float, default=0.1)
@@ -575,6 +627,8 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--goal-potential-scale", type=float, default=5.0)
     child.add_argument("--goal-potential-negative-clip", type=float, default=0.25)
     child.add_argument("--success-bonus", type=float, default=40.0)
+    child.add_argument("--reference-reward-weight", type=float, default=0.005)
+    child.add_argument("--max-reference-action-deviation", type=float, default=0.7)
     child = commands.add_parser("record")
     child.add_argument("object", choices=OBJECTS)
     child.add_argument("--profile", choices=PROFILES, default="target_xy_2p5mm")
@@ -586,6 +640,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     child.add_argument("--checkpoint", type=Path)
     child.add_argument("--reference-processed", type=Path)
+    child.add_argument("--goal-potential-scale", type=float, default=5.0)
+    child.add_argument("--goal-potential-negative-clip", type=float, default=0.25)
+    child.add_argument("--success-bonus", type=float, default=40.0)
+    child.add_argument("--reference-reward-weight", type=float, default=0.005)
+    child.add_argument("--max-reference-action-deviation", type=float, default=0.7)
     return parser
 
 
@@ -620,6 +679,13 @@ def main(argv: list[str] | None = None) -> int:
                     episodes=args.episodes,
                     checkpoint=args.checkpoint,
                     reference_processed=args.reference_processed,
+                    goal_potential_scale=args.goal_potential_scale,
+                    goal_potential_negative_clip=args.goal_potential_negative_clip,
+                    success_bonus=args.success_bonus,
+                    reference_reward_weight=args.reference_reward_weight,
+                    max_reference_action_deviation=(
+                        args.max_reference_action_deviation
+                    ),
                 )
             )
         }
@@ -635,6 +701,7 @@ def main(argv: list[str] | None = None) -> int:
                     num_envs=args.num_envs,
                     iterations=args.iterations,
                     exploration_std=args.exploration_std,
+                    exploration_hold_steps=args.exploration_hold_steps,
                     run_name=args.run_name,
                     reference_processed=args.reference_processed,
                     dr_initial_strength=args.dr_initial_strength,
@@ -646,6 +713,10 @@ def main(argv: list[str] | None = None) -> int:
                     goal_potential_scale=args.goal_potential_scale,
                     goal_potential_negative_clip=args.goal_potential_negative_clip,
                     success_bonus=args.success_bonus,
+                    reference_reward_weight=args.reference_reward_weight,
+                    max_reference_action_deviation=(
+                        args.max_reference_action_deviation
+                    ),
                 )
             )
         }
@@ -662,6 +733,13 @@ def main(argv: list[str] | None = None) -> int:
                     camera_view=args.camera_view,
                     checkpoint=args.checkpoint,
                     reference_processed=args.reference_processed,
+                    goal_potential_scale=args.goal_potential_scale,
+                    goal_potential_negative_clip=args.goal_potential_negative_clip,
+                    success_bonus=args.success_bonus,
+                    reference_reward_weight=args.reference_reward_weight,
+                    max_reference_action_deviation=(
+                        args.max_reference_action_deviation
+                    ),
                 )
             )
         }

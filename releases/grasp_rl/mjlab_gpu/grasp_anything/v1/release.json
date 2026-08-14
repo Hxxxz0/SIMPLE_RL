@@ -8,6 +8,199 @@
     "hold_steps": 13,
     "requires_grasp": true
   },
+  "apple_workspace_v5": {
+    "status": "accepted_stable_physics_replacement",
+    "supersedes": "checkpoints/apple_1_xmove_bend_rewardalign_model_300.pt",
+    "superseded_reason": "target_moved_before_hand_contact_in_v4_video",
+    "asset": {
+      "local_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/assets/mjlab_assets/grasp_anything/Apple_1_object_reward_v5_stable_xmove_bend_ep11",
+      "validated_bundle_hash": "5df87eaf4d27cae99cc66eb4dde0fb7bdecc464f3a8dd9f920b890c6bfb6a672",
+      "manifest_sha256": "2de333f6c3dd40be37830f6f778bb618a99845420bd5917f8c17779145b454b2",
+      "scene_sha256": "f33963736778ce3fab972230e0dd3427b2a4cb6f464c8d6ad0cc39490987c040",
+      "free_joint_damping": 0.1,
+      "table_clearance_m": 0.0
+    },
+    "checkpoint": {
+      "path": "checkpoints/apple_1_xmove_bend_workspace_v5_model_100.pt",
+      "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/apple_1_xmove_bend_workspace_v5_model_100.pt",
+      "source_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/ppo_workspace_v2_stable_stage10mm_free_seed20261040_env1024_std080_hold4_800/model_100.pt",
+      "sha256": "30caafb5eda609777dfdc6e13cd7085b7643d33959c8d48262a5cf68494f4d66",
+      "bytes": 14906059,
+      "fresh_on_policy_transitions": 2457600,
+      "selected_update": 100,
+      "num_envs": 1024,
+      "steps_per_env_per_update": 24,
+      "reference_reward_weight": 0.0,
+      "max_reference_action_deviation": 2.0,
+      "exploration_std": 0.08,
+      "exploration_hold_steps": 4
+    },
+    "action_exploration": {
+      "reference_reward_weight": 0.0,
+      "max_reference_action_deviation": 2.0,
+      "normalized_action_range": [-1.0, 1.0],
+      "right_hand_residual_slice_end_exclusive": [7, 14],
+      "right_arm_residual_slice_end_exclusive": [21, 28],
+      "active_through_placement": true,
+      "accepted_core_max_observed_action_delta": 0.32343238592147827,
+      "outer_100mm_max_observed_action_delta": 0.3391474187374115
+    },
+    "core_target_xy_10mm": {
+      "sampled_plane_m": [0.02, 0.02],
+      "paired_evaluations": [
+        {
+          "seed": 20261046,
+          "episodes": 1024,
+          "checkpoint_successes": 991,
+          "reference_successes": 696,
+          "checkpoint_success_rate": 0.9677734375,
+          "reference_success_rate": 0.6796875,
+          "initial_world_sha256": "56d1b191278aa4d8b62f929ec7a92884bc45b06b70642c3d21844e4dc50cf46f"
+        },
+        {
+          "seed": 20261055,
+          "episodes": 1024,
+          "checkpoint_successes": 978,
+          "reference_successes": 687,
+          "checkpoint_success_rate": 0.955078125,
+          "reference_success_rate": 0.6708984375,
+          "initial_world_sha256": "3f30bf6f391fb1a349bf00562379a9eb5940b08139b9d512715852909e0a025a"
+        }
+      ],
+      "aggregate": {
+        "episodes": 2048,
+        "checkpoint_successes": 1969,
+        "reference_successes": 1383,
+        "checkpoint_success_rate": 0.96142578125,
+        "reference_success_rate": 0.67529296875
+      }
+    },
+    "outer_target_xy_100mm": {
+      "sampled_plane_m": [0.2, 0.2],
+      "claim": "measured_repeated_improvement_not_robust",
+      "paired_evaluations": [
+        {
+          "seed": 20261045,
+          "episodes": 1024,
+          "checkpoint_successes": 169,
+          "reference_successes": 111,
+          "initial_world_sha256": "d8bb587c1e70ffe1be2338134af81cde07e3da53bef6deda803f1c515e702397"
+        },
+        {
+          "seed": 20261056,
+          "episodes": 1024,
+          "checkpoint_successes": 171,
+          "reference_successes": 120,
+          "initial_world_sha256": "02ae5e35174779d46c13d8128537454465ac02d05b7660369887394a2e6fdab8"
+        }
+      ],
+      "aggregate": {
+        "episodes": 2048,
+        "checkpoint_successes": 340,
+        "reference_successes": 231,
+        "checkpoint_success_rate": 0.166015625,
+        "reference_success_rate": 0.11279296875
+      }
+    },
+    "long_training_sweep": {
+      "selection_rule": "best_physical_evaluation_not_last_checkpoint",
+      "total_fresh_on_policy_transitions": 78667776,
+      "runs": [
+        {
+          "name": "core_scratch_exact_resume",
+          "target_position_jitter_xy_m": [0.01, 0.01],
+          "exploration_std": 0.08,
+          "exploration_hold_steps": 4,
+          "last_update": 800,
+          "fresh_on_policy_transitions": 19685376,
+          "last_checkpoint_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/ppo_workspace_v2_stable_stage10mm_free_seed20261040_env1024_std080_hold4_resume280_to800/model_800.pt",
+          "final_screen": {
+            "seed": 20261083,
+            "episodes": 512,
+            "successes": 0,
+            "success_rate": 0.0,
+            "initial_world_sha256": "88a65680b8bd6b8964e05bea0e83035281f4e347f3cd006846e7cf43a10b283c",
+            "max_absolute_effective_action_delta": 1.882408618927002,
+            "log_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/ppo_target_xy_10mm_seed20261083_512.log"
+          }
+        },
+        {
+          "name": "high_noise_scratch_control",
+          "target_position_jitter_xy_m": [0.01, 0.01],
+          "exploration_std": 0.12,
+          "exploration_hold_steps": 8,
+          "last_update": 799,
+          "fresh_on_policy_transitions": 19660800,
+          "last_checkpoint_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/ppo_workspace_v2_stable_stage10mm_free_seed20261041_env1024_std120_hold8_800/model_799.pt",
+          "final_screen": {
+            "seed": 20261080,
+            "episodes": 512,
+            "successes": 0,
+            "success_rate": 0.0,
+            "initial_world_sha256": "4c6e0abdcd038b9b28ec2b30dc69d4bf4eb7c510869263af08143043d10e987b",
+            "max_absolute_effective_action_delta": 2.0,
+            "log_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/ppo_target_xy_10mm_seed20261080_512.log"
+          }
+        },
+        {
+          "name": "warm_start_target_xy_25mm",
+          "target_position_jitter_xy_m": [0.025, 0.025],
+          "exploration_std": 0.08,
+          "exploration_hold_steps": 4,
+          "last_update": 799,
+          "fresh_on_policy_transitions": 19660800,
+          "last_checkpoint_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/ppo_workspace_v2_stable_stage25mm_warm10m100_seed20261050_env1024_std080_hold4_800/model_799.pt",
+          "final_screen": {
+            "seed": 20261081,
+            "episodes": 512,
+            "successes": 0,
+            "success_rate": 0.0,
+            "initial_world_sha256": "eccfb1009bc5efb944ff7db98f985462d0cd0d0b34faabe3fbc9b6ea0096058c",
+            "max_absolute_effective_action_delta": 2.0,
+            "log_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/ppo_target_xy_25mm_seed20261081_512.log"
+          }
+        },
+        {
+          "name": "warm_start_target_xy_100mm",
+          "target_position_jitter_xy_m": [0.1, 0.1],
+          "exploration_std": 0.08,
+          "exploration_hold_steps": 4,
+          "last_update": 799,
+          "fresh_on_policy_transitions": 19660800,
+          "last_checkpoint_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/ppo_workspace_v2_stable_stage100mm_warm10m100_seed20261051_env1024_std080_hold4_800/model_799.pt",
+          "final_screen": {
+            "seed": 20261082,
+            "episodes": 512,
+            "successes": 0,
+            "success_rate": 0.0,
+            "initial_world_sha256": "d92ce02f853157d362d193305097c42a67576f3312f0f50f529f926348af820e",
+            "max_absolute_effective_action_delta": 2.0,
+            "log_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/ppo_target_xy_100mm_seed20261082_512.log"
+          }
+        }
+      ]
+    },
+    "videos": [
+      {
+        "camera": "full_robot",
+        "path": "videos/apple_1_xmove_bend_workspace_v5_model_100/full_robot/gpu_ppo_success_full_dr_01.mp4",
+        "sha256": "72ae5bbe57fca66c80f6ea65e3f3097a3efef882466f3b7cbbf7d0c15633a1f5",
+        "bytes": 659407,
+        "precontact_target_motion_m": 0.0,
+        "first_hand_contact_step": 226,
+        "audit_passed": true
+      },
+      {
+        "camera": "grasp_closeup",
+        "path": "videos/apple_1_xmove_bend_workspace_v5_model_100/grasp_closeup/gpu_ppo_success_full_dr_01.mp4",
+        "sha256": "a5e02af6547ac8b5f50c79bea97cf21a0790355216e58587e81f10d518b2e3de",
+        "bytes": 1439387,
+        "precontact_target_motion_m": 0.0,
+        "first_hand_contact_step": 220,
+        "audit_passed": true
+      }
+    ]
+  },
   "dr_bend_followup": {
     "route": "xmove_bend_ep11_v1",
     "reference_task": "xmove_bend_pick",
@@ -102,7 +295,8 @@
             "result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/reference_reference-Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2_target_xy_2p5mm_seed20260938_512.log"
           }
         ],
-        "accepted_ppo_checkpoint": {
+        "superseded_ppo_checkpoint": {
+          "status": "rejected_target_moved_before_hand_contact",
           "path": "checkpoints/apple_1_xmove_bend_rewardalign_model_300.pt",
           "sha256": "6be17f3812a3b8fea285153eaccb6495522159695f8c750b0f14f5fb3d37a4fa",
           "bytes": 14906059,
@@ -481,6 +675,7 @@
     {
       "object_id": "Apple_1",
       "path": "checkpoints/apple_1_xmove_bend_rewardalign_model_300.pt",
+      "status": "rejected_target_moved_before_hand_contact",
       "sha256": "6be17f3812a3b8fea285153eaccb6495522159695f8c750b0f14f5fb3d37a4fa",
       "bytes": 14906059,
       "fresh_on_policy_transitions": 7397376,
@@ -501,6 +696,24 @@
         "paired_reference_successes": 166,
         "paired_reference_success_rate": 0.162109375,
         "relative_success_gain": 0.1144578313253012
+      },
+      "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos"
+    },
+    {
+      "object_id": "Apple_1",
+      "path": "checkpoints/apple_1_xmove_bend_workspace_v5_model_100.pt",
+      "status": "accepted_stable_physics_replacement",
+      "sha256": "30caafb5eda609777dfdc6e13cd7085b7643d33959c8d48262a5cf68494f4d66",
+      "bytes": 14906059,
+      "fresh_on_policy_transitions": 2457600,
+      "scope": "xmove_bend_ep11_target_xy_10mm_stable_physics_v5",
+      "aggregate_evaluation": {
+        "seeds": [20261046, 20261055],
+        "episodes": 2048,
+        "successes": 1969,
+        "success_rate": 0.96142578125,
+        "paired_reference_successes": 1383,
+        "paired_reference_success_rate": 0.67529296875
       },
       "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos"
     },
