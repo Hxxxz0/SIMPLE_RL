@@ -9,7 +9,7 @@ rejected and must not be used as accepted evidence.
 
 The selected policy is `model_100` from the v5 stable-physics scratch run. It
 uses 1024 environments, 24 steps per environment per update, 100 selected
-updates, and 2,457,600 fresh on-policy transitions. PPO was allowed to correct
+updates, and 2,482,176 fresh on-policy transitions. PPO was allowed to correct
 the complete normalized right-hand and right-arm range through placement:
 
 ```text
@@ -141,8 +141,10 @@ Final long-training screening logs:
 The combined release has measured physical successes for seven unique objects:
 `Soap_Bottle_1`, `Bottle_1`, `Apple_1`, `Bowl_1`, `Cup_6`, `Potato_1`, and
 `Tomato_1`. The opt-in low-object bend runner accepts `Apple_1`, `Bowl_1`,
-`Potato_1`, and `Tomato_1`. Only Apple has the new v5 workspace PPO result;
-Bowl, Potato, and Tomato retain their earlier measured reference-only scope.
+`Potato_1`, and `Tomato_1`. Apple, Potato, and Tomato now have accepted v5
+workspace PPO results; Bowl retains its earlier measured reference-only scope
+after its v5 PPO experiment was rejected. See
+[`MULTI_OBJECT_WORKSPACE_V5.md`](MULTI_OBJECT_WORKSPACE_V5.md).
 
 ## Reproduction
 

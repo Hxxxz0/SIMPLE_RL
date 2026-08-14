@@ -4,6 +4,10 @@
 > its video showed the Apple moving before hand contact. It remains documented
 > only for provenance. The accepted stable-physics replacement is recorded in
 > [`APPLE_WORKSPACE_V5.md`](APPLE_WORKSPACE_V5.md).
+>
+> The later stable-physics extension accepted Tomato and Potato PPOs and
+> rejected Bowl PPO. Those results are recorded in
+> [`MULTI_OBJECT_WORKSPACE_V5.md`](MULTI_OBJECT_WORKSPACE_V5.md).
 
 This document records the opt-in episode-11 `xmove_bend_pick` follow-up. It
 does not replace the episode-82 route, its five released RL checkpoints, or any
@@ -15,12 +19,23 @@ Success means a native physical grasp, at least 0.09 m of object lift, and 13
 consecutive control steps holding that lift. Contact or finger closure alone is
 not a success.
 
+The table below is the retained v4 reference-era result, not the current v5
+workspace support table.
+
 | Object | Policy | Fixed pose | Target XY jitter +/-2.5 mm | Position-DR status |
 | :--- | :--- | ---: | ---: | :--- |
 | `Apple_1` | legacy v4 reward-aligned PPO, now rejected | 512/512 reference only | PPO 185/1024 (18.07%) vs paired reference 166/1024 (16.21%) | superseded after pre-contact target motion was found |
 | `Bowl_1` | staged reference only | 389/512 (75.98%) | 270/512 (52.73%) | moderate |
 | `Potato_1` | staged reference only | 510/512 (99.61%) | 490/512 (95.70%) | strong within the measured +/-2.5 mm scope |
 | `Tomato_1` | staged reference only | 512/512 (100.00%) | 496/512 (96.88%) | strong within the measured +/-2.5 mm scope |
+
+The stable v5 follow-up then ran Tomato, Potato, and Bowl for 200 updates with
+1024 environments and 24 steps per environment per update. Tomato `model_150`
+reached 739/1024 (72.17%) against a paired 310/1024 reference in the trained
+`+/-1 cm` scope. Potato `model_50` reached 1024/1024 against a paired 618/1024
+reference. Bowl completed the same 4,915,200-transition budget, but
+`model_50/100/150/199` all scored 0/512 and were rejected. The release now has
+eight accepted RL checkpoints; Bowl bend workspace support remains unaccepted.
 
 The fixed Apple reference result remains batch sensitive. Position randomization exposes
 that the reference-only 512/512 number was a fixed-geometry result rather than
@@ -77,9 +92,9 @@ The accepted checkpoint passed two independent 512-world paired evaluations:
 
 The first seed improved substantially and the second only slightly. The result
 therefore establishes a repeated positive direction and an aggregate
-improvement, not a stable 20% gain and not robust position DR. The release now
-contains six accepted RL checkpoints. Bowl, Potato and Tomato bend support
-remains reference-only.
+improvement, not a stable 20% gain and not robust position DR. This historical
+v4 result preceded the accepted stable-physics Apple, Potato, and Tomato
+workspace policies documented in the two v5 reports.
 
 ## Supported objects
 
@@ -87,6 +102,10 @@ The combined release has measured successful physical grasps for seven unique
 objects: `Soap_Bottle_1`, `Bottle_1`, `Apple_1`, `Bowl_1`, `Cup_6`, `Potato_1`
 and `Tomato_1`. The opt-in bend runner supports `Apple_1`, `Bowl_1`, `Potato_1`
 and `Tomato_1`.
+
+Within that runner, accepted stable-physics workspace PPOs currently exist for
+Apple, Potato, and Tomato. Bowl is supported only by its earlier measured v4
+reference/fixed evidence, not by a stable `+/-1 cm` workspace PPO.
 
 `Egg_1` was screened with its original scale and an approximately 64 mm scaled
 variant, using both Apple-like and Bowl-like arm initializations. All searches

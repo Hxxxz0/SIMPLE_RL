@@ -36,6 +36,27 @@ def test_bend_catalog_is_opt_in_and_low_object_only() -> None:
         )
 
 
+def test_stable_physics_assets_are_explicit_for_legacy_bend_objects() -> None:
+    legacy = RUNNER.asset_path("Tomato_1")
+    stable = RUNNER.asset_path("Tomato_1", stable_physics=True)
+    legacy_arguments = RUNNER.environment_args(
+        RUNNER.OBJECTS["Tomato_1"], "fixed", 123
+    )
+    stable_arguments = RUNNER.environment_args(
+        RUNNER.OBJECTS["Tomato_1"], "fixed", 123, stable_physics=True
+    )
+
+    assert "object_reward_v4" in str(legacy)
+    assert "object_reward_v5_stable" in str(stable)
+    assert legacy != stable
+    assert legacy_arguments[legacy_arguments.index("--asset-bundle") + 1] == str(legacy)
+    assert stable_arguments[stable_arguments.index("--asset-bundle") + 1] == str(stable)
+    assert RUNNER.asset_path("Apple_1") == RUNNER.asset_path(
+        "Apple_1", stable_physics=True
+    )
+    assert RUNNER.OBJECTS["Tomato_1"].stable_table_clearance_m == pytest.approx(0.0)
+
+
 def test_pose_profiles_expand_target_then_robot_base_position_dr() -> None:
     assert RUNNER.PROFILES["fixed"].target_jitter_xy_m == (0.0, 0.0)
     assert RUNNER.PROFILES["target_xy_2p5mm"].target_jitter_xy_m == pytest.approx(
@@ -122,6 +143,7 @@ def test_train_cli_defaults_to_scratch_without_resume() -> None:
     assert args.success_bonus == pytest.approx(40.0)
     assert args.reference_reward_weight == pytest.approx(0.005)
     assert args.max_reference_action_deviation == pytest.approx(0.7)
+    assert not args.stable_physics
 
 
 def test_train_cli_exposes_temporally_coherent_exploration() -> None:
@@ -135,11 +157,13 @@ def test_train_cli_exposes_temporally_coherent_exploration() -> None:
             "0.08",
             "--exploration-hold-steps",
             "4",
+            "--stable-physics",
         ]
     )
 
     assert args.exploration_std == pytest.approx(0.08)
     assert args.exploration_hold_steps == 4
+    assert args.stable_physics
 
 
 def test_evaluate_cli_reward_alignment_is_explicit_and_defaults_stay_legacy() -> None:

@@ -1,6 +1,6 @@
 # grasp_anything mjlab GPU PPO v1
 
-This release backs up the six selected object-specific RL checkpoints and the
+This release backs up eight accepted object-specific RL checkpoints and the
 corresponding evaluation record for the current `grasp_anything` work. It also
 contains opt-in episode-11 `xmove_bend_pick` references for Apple, Bowl, Potato
 and Tomato, plus audited fixed/position-DR videos. The derived object bundles
@@ -8,13 +8,17 @@ and full experiment logs remain under the local `outputs/` and `data/` trees.
 
 The accepted stable-physics Apple workspace result, including absolute
 artifact and video paths, is in
-[`APPLE_WORKSPACE_V5.md`](APPLE_WORKSPACE_V5.md). The older position-DR history
-is retained in [`DR_BEND_FOLLOWUP.md`](DR_BEND_FOLLOWUP.md). In short, seven
+[`APPLE_WORKSPACE_V5.md`](APPLE_WORKSPACE_V5.md). The accepted Tomato/Potato
+extension and rejected Bowl experiment are in
+[`MULTI_OBJECT_WORKSPACE_V5.md`](MULTI_OBJECT_WORKSPACE_V5.md). The older
+position-DR history is retained in
+[`DR_BEND_FOLLOWUP.md`](DR_BEND_FOLLOWUP.md). In short, seven
 unique objects now have measured physical successes: `Soap_Bottle_1`,
 `Bottle_1`, `Apple_1`, `Bowl_1`, `Cup_6`, `Potato_1` and `Tomato_1`. There are
-now six accepted RL checkpoints. Apple has a stable-physics episode-11
-workspace PPO, while the Bowl, Potato and Tomato bend routes remain
-reference-only policies.
+now eight accepted RL checkpoints. Apple, Potato, and Tomato have accepted
+stable-physics episode-11 workspace PPOs. Bowl retains its earlier fixed-pose
+checkpoint and v4 reference-only bend evidence; its stable workspace PPO was
+rejected after all four screened checkpoints scored 0/512.
 
 Git LFS is required to download the `.pt`, `.npz`, and `.mp4` files:
 
@@ -34,10 +38,14 @@ stable lift is not counted as success.
 | `Bottle_1` | `checkpoints/bottle_1_model_199.pt` | 492/512 (96.09%) | narrow pose DR; requires the runtime lift-arm-decay variant |
 | `Apple_1` | `checkpoints/apple_1_model_0.pt` | 112/512 (21.88%) | fixed-pose baseline only |
 | `Apple_1` bend v5 | `checkpoints/apple_1_xmove_bend_workspace_v5_model_100.pt` | 1969/2048 (96.14%) vs paired reference 1383/2048 | stable physics; target XY +/-1 cm per axis over two seeds |
+| `Potato_1` bend v5 | `checkpoints/potato_1_xmove_bend_workspace_v5_model_50.pt` | 1024/1024 (100.00%) vs paired reference 618/1024 | stable physics; trained target XY +/-1 cm; measured +/-2.5 cm generalization 429/512 |
+| `Tomato_1` bend v5 | `checkpoints/tomato_1_xmove_bend_workspace_v5_model_150.pt` | 739/1024 (72.17%) vs paired reference 310/1024 | stable physics; trained target XY +/-1 cm; measured +/-2.5 cm generalization 199/512 |
 | `Bowl_1` | `checkpoints/bowl_1_model_0.pt` | 194/512 (37.89%) | fixed-pose rim-grasp baseline only |
 | `Cup_6` | `checkpoints/cup_6_model_39.pt` | 1523/1536 (99.15%) over three seeds | full DR profile evaluated at strength 0.2 with the Cup X-conditioned proposal |
 
-The original five checkpoints are unchanged. The Apple episode-82 checkpoint
+The original five checkpoints are unchanged. The new Potato and Tomato v5
+checkpoints are additional opt-in bend policies and do not replace older
+artifacts. The Apple episode-82 checkpoint
 remains the 112/512 fixed-pose baseline; it was not replaced or used to drive
 the episode-11 result because the action-transform hashes do not match. The v5
 Apple bend checkpoint replaces the accepted status of the old v4 bend policy.
@@ -53,8 +61,9 @@ scored 0/512. This is why the release selects the physically evaluated
 normalized residual range during placement and no reference imitation reward;
 the decline is not caused by a tight reference-action clamp.
 
-The separate bend route has these reference-only position results. These rows
-do not add RL checkpoints:
+The separate bend route previously had these v4 reference-only position
+results. These historical rows remain valid in their measured scope but do not
+describe the newer stable-physics PPOs:
 
 | Object | Released bend reference | Target XY +/-2.5 mm | Measured scope |
 | :--- | :--- | ---: | :--- |
@@ -101,6 +110,9 @@ Compatibility is opt-in:
 - Legacy `bend_pick` remains rejected because its 192D schema is incompatible.
 - `record --reference-only` is mutually exclusive with `--checkpoint`; the old
   PPO recording path and checkpoint provenance checks are unchanged.
+- Tomato, Potato, and Bowl keep resolving their v4 asset unless
+  `--stable-physics` is supplied to `derive`, `verify`, `evaluate`, `train`, or
+  `record`. Existing commands therefore keep their prior behavior.
 
 The staged reference is backed up at
 `references/apple_1_xmove_bend_ep11_staged_native_v1`. Its action-transform
@@ -122,10 +134,12 @@ also depends on these runtime options:
 The Apple episode-82 result does not establish narrow DR support (its recorded
 narrow result is 3/512). The accepted v5 Apple bend PPO establishes a 96.14%
 `+/-1 cm` core target-position scope. Its measured `+/-10 cm` result is only
-16.60%, so the outer 20 x 20 cm plane is not a robust-workspace claim. The Bowl
-result also does not establish narrow or workspace DR support. Every checkpoint
-is tied to its own object contract and reference; cross-object checkpoint
-compatibility is not supported.
+16.60%, so the outer 20 x 20 cm plane is not a robust-workspace claim. Potato
+and Tomato establish 100.00% and 72.17% respectively in independently confirmed
+`+/-1 cm` core evaluations. Their `+/-2.5 cm` results are measured
+generalization, not their robust core claim. The Bowl result does not establish
+narrow or workspace DR support. Every checkpoint is tied to its own object
+contract and reference; cross-object checkpoint compatibility is not supported.
 
 Exact evaluation seeds, world hashes, lift measurements, checkpoint hashes,
 and training transition counts are recorded in `release.json`.
@@ -185,9 +199,9 @@ are intentionally outside Git:
 
 ## Video evidence on this machine
 
-Every released object has recorded successful videos. The two new Apple bend
-videos are backed up in Git LFS; older videos remain only in their retained
-local output directories. The absolute directories are:
+Every released object has recorded successful videos. The accepted Apple,
+Tomato, and Potato v5 bend videos are backed up in Git LFS; older videos remain
+in their retained local output directories. The absolute directories are:
 
 | Object | Absolute video directory | Videos |
 | :--- | :--- | ---: |
@@ -199,6 +213,10 @@ local output directories. The absolute directories are:
 | `Apple_1` bend v5 reference | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos/reference_reference-Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2_target_xy_2p5mm_full_robot_seed20261020` | 1 full-robot success with 0 m audited pre-contact motion |
 | `Apple_1` bend v5 PPO full robot | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos/ppo_target_xy_100mm_full_robot_seed20261060` | 1 audited `+/-10 cm` success |
 | `Apple_1` bend v5 PPO close-up | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos/ppo_target_xy_100mm_grasp_closeup_seed20261061` | 1 audited `+/-10 cm` success |
+| `Potato_1` bend v5 PPO full robot | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Potato_1/xmove_bend_ep11_v1/videos/ppo_target_xy_10mm_full_robot_seed20261142` | 1 audited `+/-1 cm` success |
+| `Potato_1` bend v5 PPO close-up | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Potato_1/xmove_bend_ep11_v1/videos/ppo_target_xy_10mm_grasp_closeup_seed20261143` | 1 audited `+/-1 cm` success |
+| `Tomato_1` bend v5 PPO full robot | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Tomato_1/xmove_bend_ep11_v1/videos/ppo_target_xy_10mm_full_robot_seed20261140` | 1 audited `+/-1 cm` success |
+| `Tomato_1` bend v5 PPO close-up | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Tomato_1/xmove_bend_ep11_v1/videos/ppo_target_xy_10mm_grasp_closeup_seed20261141` | 1 audited `+/-1 cm` success |
 
 The original v4 Apple fixed videos are retained under
 `videos/apple_1_xmove_bend_ep11_reference` as legacy evidence. The follow-up additionally backs
@@ -206,8 +224,8 @@ up Apple target/base position-DR recordings, Bowl fixed and target-position
 recordings, and Potato/Tomato target-position recordings. Every MP4 has a JSON
 sidecar reporting native simulator success, lift and finger-contact audit.
 Exact release-relative and absolute local paths are listed in
-`APPLE_WORKSPACE_V5.md` and `DR_BEND_FOLLOWUP.md`, and checksummed in
-`SHA256SUMS`.
+`APPLE_WORKSPACE_V5.md`, `MULTI_OBJECT_WORKSPACE_V5.md`, and
+`DR_BEND_FOLLOWUP.md`, and checksummed in `SHA256SUMS`.
 
 ## Integrity
 

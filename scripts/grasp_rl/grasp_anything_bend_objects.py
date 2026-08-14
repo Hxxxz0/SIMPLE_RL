@@ -29,12 +29,14 @@ class BendObjectSpec:
     object_id: str
     source_relative: str
     asset_version: str
+    stable_asset_version: str
     scale: float
     grip_width_m: float
     mass_kg: float
     grasp_frame_position_m: tuple[float, float, float]
     maximum_grip_force_newtons: float
     table_clearance_m: float = 0.002
+    stable_table_clearance_m: float = 0.0
 
 
 OBJECTS = {
@@ -44,6 +46,7 @@ OBJECTS = {
             object_id="Apple_1",
             source_relative="Kitchen Objects/Apple/Prefabs/Apple_1/Apple_1.xml",
             asset_version="object_reward_v5_stable",
+            stable_asset_version="object_reward_v5_stable",
             scale=0.6,
             grip_width_m=0.064,
             mass_kg=0.14,
@@ -55,6 +58,7 @@ OBJECTS = {
             object_id="Bowl_1",
             source_relative="Kitchen Objects/Bowl/Prefabs/Bowl_1/Bowl_1.xml",
             asset_version="object_reward_v4",
+            stable_asset_version="object_reward_v5_stable",
             scale=0.45,
             grip_width_m=0.085,
             mass_kg=0.18,
@@ -65,6 +69,7 @@ OBJECTS = {
             object_id="Tomato_1",
             source_relative="Kitchen Objects/Tomato/Prefabs/Tomato_1/Tomato_1.xml",
             asset_version="object_reward_v4",
+            stable_asset_version="object_reward_v5_stable",
             scale=0.7,
             grip_width_m=0.052,
             mass_kg=0.12,
@@ -75,6 +80,7 @@ OBJECTS = {
             object_id="Potato_1",
             source_relative="Kitchen Objects/Potato/Prefabs/Potato_1/Potato_1.xml",
             asset_version="object_reward_v4",
+            stable_asset_version="object_reward_v5_stable",
             scale=0.8,
             grip_width_m=0.053,
             mass_kg=0.15,
@@ -106,12 +112,13 @@ PROFILES = {
 TARGET_CENTER_XY_M = (0.0, -0.09)
 
 
-def asset_path(object_id: str) -> Path:
+def asset_path(object_id: str, *, stable_physics: bool = False) -> Path:
     spec = OBJECTS[object_id]
+    version = spec.stable_asset_version if stable_physics else spec.asset_version
     return (
         REPO_ROOT
         / "outputs/grasp_rl/other/assets/mjlab_assets/grasp_anything"
-        / f"{object_id}_{spec.asset_version}_xmove_bend_ep11"
+        / f"{object_id}_{version}_xmove_bend_ep11"
     )
 
 
@@ -168,9 +175,11 @@ def _latest_checkpoint(output: Path) -> Path:
     )
 
 
-def derive(spec: BendObjectSpec, molmo_root: Path) -> dict[str, object]:
+def derive(
+    spec: BendObjectSpec, molmo_root: Path, *, stable_physics: bool = False
+) -> dict[str, object]:
     source = molmo_root / spec.source_relative
-    output = asset_path(spec.object_id)
+    output = asset_path(spec.object_id, stable_physics=stable_physics)
     if (output / "manifest.json").is_file():
         return json.loads((output / "manifest.json").read_text())
     sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -187,13 +196,19 @@ def derive(spec: BendObjectSpec, molmo_root: Path) -> dict[str, object]:
         upright_quaternion_wxyz=(2**-0.5, 2**-0.5, 0.0, 0.0),
         grasp_frame_position_m=spec.grasp_frame_position_m,
         maximum_grip_force_newtons=spec.maximum_grip_force_newtons,
-        table_clearance_m=spec.table_clearance_m,
+        table_clearance_m=(
+            spec.stable_table_clearance_m
+            if stable_physics
+            else spec.table_clearance_m
+        ),
     )
 
 
-def verify(spec: BendObjectSpec, molmo_root: Path) -> dict[str, object]:
+def verify(
+    spec: BendObjectSpec, molmo_root: Path, *, stable_physics: bool = False
+) -> dict[str, object]:
     source = molmo_root / spec.source_relative
-    bundle = asset_path(spec.object_id)
+    bundle = asset_path(spec.object_id, stable_physics=stable_physics)
     sys.path.insert(0, str(REPO_ROOT / "src"))
     from simple.grasp_rl.grasp_anything import validate_grasp_anything_bundle
     from simple.grasp_rl.mjlab_gpu.reference import validate_strict_reference_manifest
@@ -234,6 +249,7 @@ def environment_args(
     success_bonus: float = 40.0,
     reference_reward_weight: float = 0.005,
     max_reference_action_deviation: float = 0.7,
+    stable_physics: bool = False,
 ) -> list[str]:
     pose = PROFILES[profile]
     reference = reference_processed or staged_reference_path(spec.object_id)
@@ -241,7 +257,7 @@ def environment_args(
         "--task",
         "grasp_anything",
         "--asset-bundle",
-        str(asset_path(spec.object_id)),
+        str(asset_path(spec.object_id, stable_physics=stable_physics)),
         "--reference-processed",
         str(reference),
         "--strict-reference-episode",
@@ -383,6 +399,7 @@ def evaluate(
     success_bonus: float = 40.0,
     reference_reward_weight: float = 0.005,
     max_reference_action_deviation: float = 0.7,
+    stable_physics: bool = False,
 ) -> Path:
     mode = "reference" if checkpoint is None else "ppo"
     reference_suffix = _reference_output_suffix(reference_processed)
@@ -403,6 +420,7 @@ def evaluate(
                 success_bonus=success_bonus,
                 reference_reward_weight=reference_reward_weight,
                 max_reference_action_deviation=max_reference_action_deviation,
+                stable_physics=stable_physics,
             ),
             *policy,
             "--num-envs",
@@ -444,6 +462,7 @@ def train(
     success_bonus: float = 40.0,
     reference_reward_weight: float = 0.005,
     max_reference_action_deviation: float = 0.7,
+    stable_physics: bool = False,
 ) -> Path:
     output = run_root(spec.object_id) / run_name
     if output.exists() and any(output.iterdir()):
@@ -499,6 +518,7 @@ def train(
                 success_bonus=success_bonus,
                 reference_reward_weight=reference_reward_weight,
                 max_reference_action_deviation=max_reference_action_deviation,
+                stable_physics=stable_physics,
             ),
             "--num-envs",
             str(num_envs),
@@ -541,6 +561,7 @@ def record(
     success_bonus: float = 40.0,
     reference_reward_weight: float = 0.005,
     max_reference_action_deviation: float = 0.7,
+    stable_physics: bool = False,
 ) -> Path:
     mode = "reference" if checkpoint is None else "ppo"
     reference_suffix = _reference_output_suffix(reference_processed)
@@ -561,6 +582,7 @@ def record(
                 success_bonus=success_bonus,
                 reference_reward_weight=reference_reward_weight,
                 max_reference_action_deviation=max_reference_action_deviation,
+                stable_physics=stable_physics,
             ),
             *policy,
             "--output-dir",
@@ -594,6 +616,7 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("derive", "verify"):
         child = commands.add_parser(name)
         child.add_argument("object", choices=OBJECTS)
+        child.add_argument("--stable-physics", action="store_true")
     child = commands.add_parser("evaluate")
     child.add_argument("object", choices=OBJECTS)
     child.add_argument("--profile", choices=PROFILES, default="target_xy_2p5mm")
@@ -607,6 +630,7 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--success-bonus", type=float, default=40.0)
     child.add_argument("--reference-reward-weight", type=float, default=0.005)
     child.add_argument("--max-reference-action-deviation", type=float, default=0.7)
+    child.add_argument("--stable-physics", action="store_true")
     child = commands.add_parser("train")
     child.add_argument("object", choices=OBJECTS)
     child.add_argument("--profile", choices=PROFILES, default="target_xy_2p5mm")
@@ -629,6 +653,7 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--success-bonus", type=float, default=40.0)
     child.add_argument("--reference-reward-weight", type=float, default=0.005)
     child.add_argument("--max-reference-action-deviation", type=float, default=0.7)
+    child.add_argument("--stable-physics", action="store_true")
     child = commands.add_parser("record")
     child.add_argument("object", choices=OBJECTS)
     child.add_argument("--profile", choices=PROFILES, default="target_xy_2p5mm")
@@ -645,6 +670,7 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--success-bonus", type=float, default=40.0)
     child.add_argument("--reference-reward-weight", type=float, default=0.005)
     child.add_argument("--max-reference-action-deviation", type=float, default=0.7)
+    child.add_argument("--stable-physics", action="store_true")
     return parser
 
 
@@ -664,11 +690,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     spec = OBJECTS[args.object]
     if args.command == "derive":
-        result = derive(spec, args.molmo_root)
+        result = derive(spec, args.molmo_root, stable_physics=args.stable_physics)
     elif args.command == "verify":
-        result = verify(spec, args.molmo_root)
+        result = verify(spec, args.molmo_root, stable_physics=args.stable_physics)
     elif args.command == "evaluate":
-        verify(spec, args.molmo_root)
+        verify(spec, args.molmo_root, stable_physics=args.stable_physics)
         result = {
             "output": str(
                 evaluate(
@@ -686,11 +712,12 @@ def main(argv: list[str] | None = None) -> int:
                     max_reference_action_deviation=(
                         args.max_reference_action_deviation
                     ),
+                    stable_physics=args.stable_physics,
                 )
             )
         }
     elif args.command == "train":
-        verify(spec, args.molmo_root)
+        verify(spec, args.molmo_root, stable_physics=args.stable_physics)
         result = {
             "output": str(
                 train(
@@ -717,11 +744,12 @@ def main(argv: list[str] | None = None) -> int:
                     max_reference_action_deviation=(
                         args.max_reference_action_deviation
                     ),
+                    stable_physics=args.stable_physics,
                 )
             )
         }
     else:
-        verify(spec, args.molmo_root)
+        verify(spec, args.molmo_root, stable_physics=args.stable_physics)
         result = {
             "output": str(
                 record(
@@ -740,6 +768,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_reference_action_deviation=(
                         args.max_reference_action_deviation
                     ),
+                    stable_physics=args.stable_physics,
                 )
             )
         }

@@ -26,7 +26,7 @@
       "source_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/ppo_workspace_v2_stable_stage10mm_free_seed20261040_env1024_std080_hold4_800/model_100.pt",
       "sha256": "30caafb5eda609777dfdc6e13cd7085b7643d33959c8d48262a5cf68494f4d66",
       "bytes": 14906059,
-      "fresh_on_policy_transitions": 2457600,
+      "fresh_on_policy_transitions": 2482176,
       "selected_update": 100,
       "num_envs": 1024,
       "steps_per_env_per_update": 24,
@@ -201,13 +201,208 @@
       }
     ]
   },
+  "multi_object_workspace_v5": {
+    "status": "tomato_and_potato_accepted_bowl_rejected",
+    "documentation": "MULTI_OBJECT_WORKSPACE_V5.md",
+    "route": "xmove_bend_ep11_v1",
+    "existing_defaults_changed": false,
+    "stable_physics_requires_explicit_flag": ["Tomato_1", "Potato_1", "Bowl_1"],
+    "training": {
+      "num_envs": 1024,
+      "updates": 200,
+      "steps_per_env_per_update": 24,
+      "transitions_per_update": 24576,
+      "completed_run_transitions_per_object": 4915200,
+      "exploration_std": 0.08,
+      "exploration_hold_steps": 4,
+      "dr_initial_strength": 1.0,
+      "reference_reward_weight": 0.0,
+      "max_reference_action_deviation": 2.0,
+      "goal_potential_scale": 20.0,
+      "goal_potential_negative_clip": 1.0,
+      "success_bonus": 80.0,
+      "selection_rule": "best_native_physical_evaluation_not_last_checkpoint"
+    },
+    "objects": [
+      {
+        "object_id": "Tomato_1",
+        "status": "accepted",
+        "asset": {
+          "local_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/assets/mjlab_assets/grasp_anything/Tomato_1_object_reward_v5_stable_xmove_bend_ep11",
+          "validated_manifest_hash": "5f50193f98855ddbe31fba96aa1fd1f15e9b0a1edae06c41eb0dcc6d672f89f9",
+          "free_joint_damping": 0.1,
+          "table_clearance_m": 0.0
+        },
+        "checkpoint": {
+          "path": "checkpoints/tomato_1_xmove_bend_workspace_v5_model_150.pt",
+          "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/tomato_1_xmove_bend_workspace_v5_model_150.pt",
+          "source_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Tomato_1/xmove_bend_ep11_v1/ppo_workspace_v5_stable_target10mm_seed20261110_env1024_std080_hold4_200/model_150.pt",
+          "sha256": "6d85e4c5b28c339fe91bfa2b20030009fea8d25c9620b2ad2f0588143d47e6d0",
+          "bytes": 14906059,
+          "selected_update": 150,
+          "fresh_on_policy_transitions": 3710976,
+          "completed_run_updates": 200,
+          "completed_run_transitions": 4915200
+        },
+        "checkpoint_screen": [
+          {"update": 50, "seed": 20261121, "episodes": 512, "successes": 27},
+          {"update": 100, "seed": 20261123, "episodes": 512, "successes": 97},
+          {"update": 150, "seed": 20261126, "episodes": 512, "successes": 369},
+          {"update": 199, "seed": 20261129, "episodes": 512, "successes": 308}
+        ],
+        "core_target_xy_10mm": {
+          "seed": 20261131,
+          "episodes": 1024,
+          "checkpoint_successes": 739,
+          "reference_successes": 310,
+          "checkpoint_success_rate": 0.7216796875,
+          "reference_success_rate": 0.302734375,
+          "mean_max_lift_m": 0.17343373791663907,
+          "max_lift_m": 0.25190988183021545,
+          "max_absolute_effective_action_delta": 0.32792288064956665,
+          "initial_world_sha256": "44361426f89a7cba6d7d97faa273c4ea22a8449380527f25f9ba2ee929b4ad5e"
+        },
+        "outer_target_xy_25mm": {
+          "claim": "measured_one_seed_generalization_not_core_scope",
+          "seed": 20261134,
+          "episodes": 512,
+          "checkpoint_successes": 199,
+          "reference_successes": 45,
+          "checkpoint_success_rate": 0.388671875,
+          "reference_success_rate": 0.087890625,
+          "initial_world_sha256": "fc74765f19bafe971fab7085c796d84b981ae753146c423c4974abcabf382342"
+        },
+        "videos": [
+          {
+            "camera": "full_robot",
+            "path": "videos/tomato_1_xmove_bend_workspace_v5_model_150/full_robot/gpu_ppo_success_full_dr_01.mp4",
+            "sha256": "891c491b6ad54a4602c3d635e281191903f003c8182e94e85c80ca1e8ac44611",
+            "bytes": 655812,
+            "metadata_path": "videos/tomato_1_xmove_bend_workspace_v5_model_150/full_robot/gpu_ppo_success_full_dr_01.json",
+            "metadata_sha256": "0c84a99323adfc4057233ea6fe1981950ef59f224192995f16c45acba2449dfb",
+            "precontact_target_motion_m": 0.0,
+            "first_hand_contact_step": 196,
+            "audit_passed": true
+          },
+          {
+            "camera": "grasp_closeup",
+            "path": "videos/tomato_1_xmove_bend_workspace_v5_model_150/grasp_closeup/gpu_ppo_success_full_dr_01.mp4",
+            "sha256": "4cb959cb3ad3623fc1d47ba95750d774df40fdfd37867fad5443893565d80602",
+            "bytes": 1440752,
+            "metadata_path": "videos/tomato_1_xmove_bend_workspace_v5_model_150/grasp_closeup/gpu_ppo_success_full_dr_01.json",
+            "metadata_sha256": "8647ac921cf0bc3151402f7b861309e5db8934e2e571fe04a451b6c598bedecf",
+            "precontact_target_motion_m": 0.0,
+            "first_hand_contact_step": 196,
+            "audit_passed": true
+          }
+        ]
+      },
+      {
+        "object_id": "Potato_1",
+        "status": "accepted",
+        "asset": {
+          "local_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/assets/mjlab_assets/grasp_anything/Potato_1_object_reward_v5_stable_xmove_bend_ep11",
+          "validated_manifest_hash": "5ef2bafb44337eb6ffef62aa71367ebeb1fa22ad16495705622b4349598d08ea",
+          "free_joint_damping": 0.1,
+          "table_clearance_m": 0.0
+        },
+        "checkpoint": {
+          "path": "checkpoints/potato_1_xmove_bend_workspace_v5_model_50.pt",
+          "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/potato_1_xmove_bend_workspace_v5_model_50.pt",
+          "source_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Potato_1/xmove_bend_ep11_v1/ppo_workspace_v5_stable_target10mm_seed20261111_env1024_std080_hold4_200/model_50.pt",
+          "sha256": "df4dfe38a090790b44acfc1e2f9ba191334a61977ed497867b1365769038a7ad",
+          "bytes": 14905951,
+          "selected_update": 50,
+          "fresh_on_policy_transitions": 1253376,
+          "completed_run_updates": 200,
+          "completed_run_transitions": 4915200
+        },
+        "checkpoint_screen": [
+          {"update": 50, "seed": 20261120, "episodes": 512, "successes": 511},
+          {"update": 100, "seed": 20261124, "episodes": 512, "successes": 23},
+          {"update": 150, "seed": 20261127, "episodes": 512, "successes": 0},
+          {"update": 199, "seed": 20261130, "episodes": 512, "successes": 0}
+        ],
+        "core_target_xy_10mm": {
+          "seed": 20261132,
+          "episodes": 1024,
+          "checkpoint_successes": 1024,
+          "reference_successes": 618,
+          "checkpoint_success_rate": 1.0,
+          "reference_success_rate": 0.603515625,
+          "mean_max_lift_m": 0.22418314206879586,
+          "max_lift_m": 0.24063313007354736,
+          "max_absolute_effective_action_delta": 0.16926662623882294,
+          "initial_world_sha256": "eec42ff27c6e0f2d8f17c7af03acb1da6df920a4eb0e97a3d01066e6809d415a"
+        },
+        "outer_target_xy_25mm": {
+          "claim": "measured_one_seed_generalization_not_core_scope",
+          "seed": 20261133,
+          "episodes": 512,
+          "checkpoint_successes": 429,
+          "reference_successes": 135,
+          "checkpoint_success_rate": 0.837890625,
+          "reference_success_rate": 0.263671875,
+          "initial_world_sha256": "b144a774818722bee9259d7a10b4ae8f563e805054c3ce0b3150f66d61be13dd"
+        },
+        "videos": [
+          {
+            "camera": "full_robot",
+            "path": "videos/potato_1_xmove_bend_workspace_v5_model_50/full_robot/gpu_ppo_success_full_dr_01.mp4",
+            "sha256": "0d14b320ab94913e6feb46be18d56df50378bb8096dc5b0efec298799e661617",
+            "bytes": 656323,
+            "metadata_path": "videos/potato_1_xmove_bend_workspace_v5_model_50/full_robot/gpu_ppo_success_full_dr_01.json",
+            "metadata_sha256": "c758e2ce7b0986a3ba637da8063a7c00684109a02f96ed5c408488fc08a68d95",
+            "precontact_target_motion_m": 4.470348358154297e-08,
+            "first_hand_contact_step": 236,
+            "audit_passed": true
+          },
+          {
+            "camera": "grasp_closeup",
+            "path": "videos/potato_1_xmove_bend_workspace_v5_model_50/grasp_closeup/gpu_ppo_success_full_dr_01.mp4",
+            "sha256": "9feb72bf24ae116fec0c4a6b5d4d8c90891fd8037b8e3bb283330d719f941969",
+            "bytes": 1433166,
+            "metadata_path": "videos/potato_1_xmove_bend_workspace_v5_model_50/grasp_closeup/gpu_ppo_success_full_dr_01.json",
+            "metadata_sha256": "c61d90eac21202070cd4dc3fd0d908eccd8c3b91a69f850748b5a8ca21ef3bd8",
+            "precontact_target_motion_m": 4.470348358154297e-08,
+            "first_hand_contact_step": 225,
+            "audit_passed": true
+          }
+        ]
+      },
+      {
+        "object_id": "Bowl_1",
+        "status": "rejected_no_checkpoint_released",
+        "asset": {
+          "local_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/assets/mjlab_assets/grasp_anything/Bowl_1_object_reward_v5_stable_xmove_bend_ep11",
+          "validated_manifest_hash": "ac2af94d5eb11b62904983b67b498d8185e8aa9e4ac38ab43906036a69aea9c9",
+          "free_joint_damping": 0.1,
+          "table_clearance_m": 0.0
+        },
+        "stable_reference_target_xy_10mm": {
+          "seed": 20261102,
+          "episodes": 1024,
+          "successes": 24,
+          "success_rate": 0.0234375
+        },
+        "completed_run_transitions": 4915200,
+        "checkpoint_screen": [
+          {"update": 50, "seed": 20261122, "episodes": 512, "successes": 0},
+          {"update": 100, "seed": 20261125, "episodes": 512, "successes": 0},
+          {"update": 150, "seed": 20261128, "episodes": 512, "successes": 0},
+          {"update": 199, "seed": 20261135, "episodes": 512, "successes": 0}
+        ],
+        "training_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Bowl_1/xmove_bend_ep11_v1/ppo_workspace_v5_stable_target10mm_seed20261112_env1024_std080_hold4_200"
+      }
+    ]
+  },
   "dr_bend_followup": {
     "route": "xmove_bend_ep11_v1",
     "reference_task": "xmove_bend_pick",
     "reference_episode": 11,
     "opt_in": true,
     "existing_defaults_changed": false,
-    "accepted_rl_checkpoint_count": 6,
+    "accepted_rl_checkpoint_count": 8,
     "accepted_rl_checkpoints_changed": true,
     "unique_physically_supported_objects": [
       "Soap_Bottle_1",
@@ -368,8 +563,8 @@
       },
       {
         "object_id": "Bowl_1",
-        "policy": "reference_only",
-        "position_dr_status": "moderate",
+        "policy": "legacy_v4_reference_only_stable_v5_ppo_rejected",
+        "position_dr_status": "legacy_v4_moderate_stable_v5_target10mm_not_supported",
         "release_reference_path": "references/bowl_1_xmove_bend_ep11_staged_native_v1",
         "local_reference_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Bowl_1_xmove_bend_ep11_staged_native_v1",
         "action_transform_sha256": "0b0ac2e1f69c2e304f2cc720fadbdc7fab5d678f0f492ad24815d5ae4e9002be",
@@ -396,8 +591,8 @@
       },
       {
         "object_id": "Potato_1",
-        "policy": "reference_only",
-        "position_dr_status": "strong_within_measured_2p5mm_scope",
+        "policy": "stable_workspace_v5_ppo_plus_legacy_v4_reference",
+        "position_dr_status": "accepted_target10mm_with_measured_target25mm_generalization",
         "release_reference_path": "references/potato_1_xmove_bend_ep11_staged_native_v1",
         "local_reference_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Potato_1_xmove_bend_ep11_staged_native_v1",
         "action_transform_sha256": "0b0ac2e1f69c2e304f2cc720fadbdc7fab5d678f0f492ad24815d5ae4e9002be",
@@ -424,8 +619,8 @@
       },
       {
         "object_id": "Tomato_1",
-        "policy": "reference_only",
-        "position_dr_status": "strong_within_measured_2p5mm_scope",
+        "policy": "stable_workspace_v5_ppo_plus_legacy_v4_reference",
+        "position_dr_status": "accepted_target10mm_with_measured_target25mm_generalization",
         "release_reference_path": "references/tomato_1_xmove_bend_ep11_staged_native_v1",
         "local_reference_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Tomato_1_xmove_bend_ep11_staged_native_v1",
         "action_transform_sha256": "0b0ac2e1f69c2e304f2cc720fadbdc7fab5d678f0f492ad24815d5ae4e9002be",
@@ -600,7 +795,10 @@
     "supported_v2_reference_tasks": ["xmove_pick", "xmove_bend_pick"],
     "rejected_legacy_reference_task": "bend_pick",
     "rejection_reason": "legacy 192D schema is incompatible with the reviewed V2 331D/842D/36D contract",
-    "existing_checkpoints_replaced": false
+    "existing_checkpoints_replaced": false,
+    "stable_physics_flag": "--stable-physics",
+    "stable_physics_opt_in_objects": ["Tomato_1", "Potato_1", "Bowl_1"],
+    "legacy_bend_asset_defaults_preserved": true
   },
   "checkpoints": [
     {
@@ -705,7 +903,7 @@
       "status": "accepted_stable_physics_replacement",
       "sha256": "30caafb5eda609777dfdc6e13cd7085b7643d33959c8d48262a5cf68494f4d66",
       "bytes": 14906059,
-      "fresh_on_policy_transitions": 2457600,
+      "fresh_on_policy_transitions": 2482176,
       "scope": "xmove_bend_ep11_target_xy_10mm_stable_physics_v5",
       "aggregate_evaluation": {
         "seeds": [20261046, 20261055],
@@ -716,6 +914,50 @@
         "paired_reference_success_rate": 0.67529296875
       },
       "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos"
+    },
+    {
+      "object_id": "Potato_1",
+      "path": "checkpoints/potato_1_xmove_bend_workspace_v5_model_50.pt",
+      "status": "accepted_stable_physics_workspace_v5",
+      "sha256": "df4dfe38a090790b44acfc1e2f9ba191334a61977ed497867b1365769038a7ad",
+      "bytes": 14905951,
+      "fresh_on_policy_transitions": 1253376,
+      "completed_training_run_transitions": 4915200,
+      "scope": "xmove_bend_ep11_target_xy_10mm_stable_physics_v5",
+      "evaluation": {
+        "seed": 20261132,
+        "episodes": 1024,
+        "successes": 1024,
+        "success_rate": 1.0,
+        "paired_reference_successes": 618,
+        "paired_reference_success_rate": 0.603515625,
+        "mean_max_lift_m": 0.22418314206879586,
+        "max_lift_m": 0.24063313007354736,
+        "initial_world_sha256": "eec42ff27c6e0f2d8f17c7af03acb1da6df920a4eb0e97a3d01066e6809d415a"
+      },
+      "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/videos/potato_1_xmove_bend_workspace_v5_model_50"
+    },
+    {
+      "object_id": "Tomato_1",
+      "path": "checkpoints/tomato_1_xmove_bend_workspace_v5_model_150.pt",
+      "status": "accepted_stable_physics_workspace_v5",
+      "sha256": "6d85e4c5b28c339fe91bfa2b20030009fea8d25c9620b2ad2f0588143d47e6d0",
+      "bytes": 14906059,
+      "fresh_on_policy_transitions": 3710976,
+      "completed_training_run_transitions": 4915200,
+      "scope": "xmove_bend_ep11_target_xy_10mm_stable_physics_v5",
+      "evaluation": {
+        "seed": 20261131,
+        "episodes": 1024,
+        "successes": 739,
+        "success_rate": 0.7216796875,
+        "paired_reference_successes": 310,
+        "paired_reference_success_rate": 0.302734375,
+        "mean_max_lift_m": 0.17343373791663907,
+        "max_lift_m": 0.25190988183021545,
+        "initial_world_sha256": "44361426f89a7cba6d7d97faa273c4ea22a8449380527f25f9ba2ee929b4ad5e"
+      },
+      "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/videos/tomato_1_xmove_bend_workspace_v5_model_150"
     },
     {
       "object_id": "Bowl_1",
