@@ -12,7 +12,9 @@ artifact and video paths, is in
 extension and rejected Bowl experiment are in
 [`MULTI_OBJECT_WORKSPACE_V5.md`](MULTI_OBJECT_WORKSPACE_V5.md). The older
 position-DR history is retained in
-[`DR_BEND_FOLLOWUP.md`](DR_BEND_FOLLOWUP.md). In short, seven
+[`DR_BEND_FOLLOWUP.md`](DR_BEND_FOLLOWUP.md). The strict `+/-20 cm` profile,
+full training record, rejected long-run checkpoints, and audited sparse-success
+videos are in [`WORKSPACE_200MM_V6.md`](WORKSPACE_200MM_V6.md). In short, seven
 unique objects now have measured physical successes: `Soap_Bottle_1`,
 `Bottle_1`, `Apple_1`, `Bowl_1`, `Cup_6`, `Potato_1` and `Tomato_1`. There are
 now eight accepted RL checkpoints. Apple, Potato, and Tomato have accepted
@@ -42,6 +44,13 @@ stable lift is not counted as success.
 | `Tomato_1` bend v5 | `checkpoints/tomato_1_xmove_bend_workspace_v5_model_150.pt` | 739/1024 (72.17%) vs paired reference 310/1024 | stable physics; trained target XY +/-1 cm; measured +/-2.5 cm generalization 199/512 |
 | `Bowl_1` | `checkpoints/bowl_1_model_0.pt` | 194/512 (37.89%) | fixed-pose rim-grasp baseline only |
 | `Cup_6` | `checkpoints/cup_6_model_39.pt` | 1523/1536 (99.15%) over three seeds | full DR profile evaluated at strength 0.2 with the Cup X-conditioned proposal |
+
+The opt-in `target_xy_200mm` profile samples X and Y independently over
+`+/-0.20 m`, a 40 x 40 cm plane. Existing v5 checkpoints have sparse measured
+success there: Apple 39/1024 (3.81%), Potato 40/1024 (3.91%), and Tomato
+31/1024 (3.03%). Complete 800-update, 19.66M-transition Apple/Potato expansion
+runs collapsed to 0/512 at their final checkpoints, so no new weight is
+released and robust `+/-20 cm` support is not claimed.
 
 The original five checkpoints are unchanged. The new Potato and Tomato v5
 checkpoints are additional opt-in bend policies and do not replace older
@@ -217,6 +226,9 @@ in their retained local output directories. The absolute directories are:
 | `Potato_1` bend v5 PPO close-up | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Potato_1/xmove_bend_ep11_v1/videos/ppo_target_xy_10mm_grasp_closeup_seed20261143` | 1 audited `+/-1 cm` success |
 | `Tomato_1` bend v5 PPO full robot | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Tomato_1/xmove_bend_ep11_v1/videos/ppo_target_xy_10mm_full_robot_seed20261140` | 1 audited `+/-1 cm` success |
 | `Tomato_1` bend v5 PPO close-up | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Tomato_1/xmove_bend_ep11_v1/videos/ppo_target_xy_10mm_grasp_closeup_seed20261141` | 1 audited `+/-1 cm` success |
+| `Apple_1` strict `+/-20 cm` profile | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/videos/apple_1_xmove_bend_target_xy_200mm_sparse_v5` | 1 full-robot + 1 close-up sparse success; not an edge claim |
+| `Potato_1` strict `+/-20 cm` profile | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/videos/potato_1_xmove_bend_target_xy_200mm_sparse_v5` | 1 full-robot + 1 close-up sparse success; not an edge claim |
+| `Tomato_1` strict `+/-20 cm` profile | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/videos/tomato_1_xmove_bend_target_xy_200mm_sparse_v5` | 1 full-robot + 1 close-up sparse success; not an edge claim |
 
 The original v4 Apple fixed videos are retained under
 `videos/apple_1_xmove_bend_ep11_reference` as legacy evidence. The follow-up additionally backs

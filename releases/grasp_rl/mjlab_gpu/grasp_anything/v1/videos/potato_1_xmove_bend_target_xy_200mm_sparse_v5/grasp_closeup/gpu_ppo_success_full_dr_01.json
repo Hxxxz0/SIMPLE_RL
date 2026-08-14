@@ -1,0 +1,320 @@
+{
+  "attempt": 235,
+  "world_id": 302,
+  "steps": 318,
+  "success": true,
+  "simulator_success": true,
+  "max_lift": 0.11325544118881226,
+  "max_grasp_quality": 1.0,
+  "terminal_lift": 0.11086350679397583,
+  "terminal_grasp_quality": 1.0,
+  "terminal_is_grasp": true,
+  "max_stage": 2,
+  "max_stage_name": "lift",
+  "randomization": {
+    "target_translation_xy": [
+      -0.0569625161588192,
+      -0.05801636353135109
+    ],
+    "target_yaw": -0.0,
+    "destination_translation_xy": [
+      0.0,
+      0.0
+    ],
+    "destination_yaw": 0.0,
+    "distractor_poses": {
+      "peeler_cover": {
+        "translation_xy": [
+          0.0,
+          0.0
+        ],
+        "yaw": 0.0
+      },
+      "white_mouse": {
+        "translation_xy": [
+          0.0,
+          0.0
+        ],
+        "yaw": 0.0
+      },
+      "bowl": {
+        "translation_xy": [
+          0.0,
+          0.0
+        ],
+        "yaw": 0.0
+      }
+    },
+    "robot_base_translation_xy": [
+      0.0,
+      0.0
+    ],
+    "robot_base_yaw": 0.0,
+    "target_mass_scale": 1.0,
+    "friction_scale": 1.0,
+    "joint_damping_scale": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "actuator_strength_scale": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "action_delay_steps": 0,
+    "reference_episode_row": 0
+  },
+  "finger_grasp_audit": {
+    "schema_version": 1,
+    "required_hands": [
+      "right"
+    ],
+    "distal_closure_threshold_rad": 0.2,
+    "mean_closure_threshold_rad": 0.25,
+    "contact_force_threshold": 2.0,
+    "required_consecutive_steps": 5,
+    "hands": {
+      "left": {
+        "joint_names": [
+          "left_hand_thumb_0_joint",
+          "left_hand_thumb_1_joint",
+          "left_hand_thumb_2_joint",
+          "left_hand_index_0_joint",
+          "left_hand_index_1_joint",
+          "left_hand_middle_0_joint",
+          "left_hand_middle_1_joint"
+        ],
+        "peak_closure_delta_rad": [
+          0.000608339614700526,
+          0.0016849380917847157,
+          0.0002554048551246524,
+          0.00045481568668037653,
+          8.2366619608365e-05,
+          0.00045085398596711457,
+          8.170799992512912e-05
+        ],
+        "distal_closure_delta_rad": [
+          0.0002554048551246524,
+          8.2366619608365e-05,
+          8.170799992512912e-05
+        ],
+        "contact_link_names": [
+          "left_wrist_yaw_link",
+          "left_hand_thumb_0_link",
+          "left_hand_thumb_1_link",
+          "left_hand_thumb_2_link",
+          "left_hand_index_0_link",
+          "left_hand_index_1_link",
+          "left_hand_middle_0_link",
+          "left_hand_middle_1_link"
+        ],
+        "peak_contact_force": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "max_consecutive_valid_grasp_steps": 0,
+        "passed": false
+      },
+      "right": {
+        "joint_names": [
+          "right_hand_thumb_0_joint",
+          "right_hand_thumb_1_joint",
+          "right_hand_thumb_2_joint",
+          "right_hand_index_0_joint",
+          "right_hand_index_1_joint",
+          "right_hand_middle_0_joint",
+          "right_hand_middle_1_joint"
+        ],
+        "peak_closure_delta_rad": [
+          0.0775597095489502,
+          0.5160249471664429,
+          0.5919148921966553,
+          1.0792542695999146,
+          1.021152377128601,
+          0.0871524065732956,
+          1.268860936164856
+        ],
+        "distal_closure_delta_rad": [
+          0.5919148921966553,
+          1.021152377128601,
+          1.268860936164856
+        ],
+        "contact_link_names": [
+          "right_wrist_yaw_link",
+          "right_hand_thumb_0_link",
+          "right_hand_thumb_1_link",
+          "right_hand_thumb_2_link",
+          "right_hand_index_0_link",
+          "right_hand_index_1_link",
+          "right_hand_middle_0_link",
+          "right_hand_middle_1_link"
+        ],
+        "peak_contact_force": [
+          0.0,
+          0.0,
+          0.0,
+          13.670422554016113,
+          0.0,
+          0.0,
+          0.0,
+          15.352538108825684
+        ],
+        "max_consecutive_valid_grasp_steps": 74,
+        "passed": true
+      }
+    },
+    "passed": true
+  },
+  "precontact_target_motion_audit": {
+    "max_target_displacement_m": 0.0019397452706471086,
+    "maximum_allowed_displacement_m": 0.003,
+    "first_hand_contact_step": 221,
+    "passed": true
+  },
+  "success_rejection_reason": null,
+  "checkpoint": "potato_1_xmove_bend_workspace_v5_model_50.pt",
+  "checkpoint_sha256": "df4dfe38a090790b44acfc1e2f9ba191334a61977ed497867b1365769038a7ad",
+  "backend": "mjlab_mujoco_warp",
+  "ppo_integrity": {
+    "algorithm": "rsl_rl.algorithms.ppo.PPO",
+    "audit_path": "ppo_integrity.jsonl",
+    "expected_steps_per_rollout": 24,
+    "expected_optimizer_steps_per_update": 20,
+    "starting_total_transitions": 0,
+    "total_transitions": 1253376,
+    "latest_record": {
+      "update": 50,
+      "policy_version_collected": 50,
+      "algorithm": "rsl_rl.algorithms.ppo.PPO",
+      "on_policy": true,
+      "rollout_reused": false,
+      "stochastic_action_noise_rms": 0.08001320489459261,
+      "transitions": 24576,
+      "total_transitions": 1253376,
+      "num_learning_epochs": 5,
+      "num_mini_batches": 4,
+      "optimizer_steps": 20,
+      "actor_parameter_delta_l2": 0.10617786162807832,
+      "critic_parameter_delta_l2": 0.10305037161031635,
+      "losses": {
+        "value": 0.04428431261330843,
+        "surrogate": -0.009567694482393562,
+        "entropy": -39.844444274902344
+      }
+    }
+  },
+  "video": "gpu_ppo_success_full_dr_01.mp4",
+  "task": "grasp_anything",
+  "diagnostic": false,
+  "selection": "simulator_truth_finger_and_precontact_motion_audit_success",
+  "policy": "ppo",
+  "deterministic_actor": true,
+  "policy_sampling": "mean",
+  "policy_seed": 20261334,
+  "domain_randomization": true,
+  "reference_noise": false,
+  "dr_strength": 1.0,
+  "fps": 50,
+  "resolution": [
+    640,
+    360
+  ],
+  "render_source": "full_visual_sidecar",
+  "camera": "free_grasp_closeup",
+  "physical_target_audit": {
+    "target_body": "cracker_box",
+    "target_joint_types": [
+      "mjJNT_FREE"
+    ],
+    "target_is_free_body": true,
+    "target_equality_constraint_count": 0,
+    "physically_unattached": true
+  }
+}

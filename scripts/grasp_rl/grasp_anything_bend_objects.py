@@ -107,6 +107,7 @@ PROFILES = {
     "target_xy_25mm": PoseProfile((0.025, 0.025)),
     "target_xy_50mm": PoseProfile((0.050, 0.050)),
     "target_xy_100mm": PoseProfile((0.100, 0.100)),
+    "target_xy_200mm": PoseProfile((0.200, 0.200)),
     "target_base_xy_2p5mm": PoseProfile((0.0025, 0.0025), (0.0025, 0.0025)),
 }
 TARGET_CENTER_XY_M = (0.0, -0.09)
@@ -250,9 +251,24 @@ def environment_args(
     reference_reward_weight: float = 0.005,
     max_reference_action_deviation: float = 0.7,
     stable_physics: bool = False,
+    target_focus_probability: float = 0.0,
+    target_focus_jitter_xy_m: tuple[float, float] = (0.0, 0.0),
+    target_focus_center_xy_m: tuple[float, float] = TARGET_CENTER_XY_M,
 ) -> list[str]:
     pose = PROFILES[profile]
     reference = reference_processed or staged_reference_path(spec.object_id)
+    focus = (
+        []
+        if target_focus_probability == 0.0
+        else [
+            "--target-position-focus-probability",
+            str(target_focus_probability),
+            "--target-position-focus-jitter-xy",
+            *(str(value) for value in target_focus_jitter_xy_m),
+            "--target-position-focus-offset-center-xy",
+            *(str(value) for value in target_focus_center_xy_m),
+        ]
+    )
     return [
         "--task",
         "grasp_anything",
@@ -300,6 +316,7 @@ def environment_args(
         *(str(value) for value in pose.target_jitter_xy_m),
         "--target-position-offset-center-xy",
         *(str(value) for value in TARGET_CENTER_XY_M),
+        *focus,
         "--target-yaw-jitter",
         str(pose.target_yaw_jitter_rad),
         "--destination-position-jitter-xy",
@@ -463,6 +480,8 @@ def train(
     reference_reward_weight: float = 0.005,
     max_reference_action_deviation: float = 0.7,
     stable_physics: bool = False,
+    target_focus_probability: float = 0.0,
+    target_focus_jitter_xy_m: tuple[float, float] = (0.0, 0.0),
 ) -> Path:
     output = run_root(spec.object_id) / run_name
     if output.exists() and any(output.iterdir()):
@@ -519,6 +538,8 @@ def train(
                 reference_reward_weight=reference_reward_weight,
                 max_reference_action_deviation=max_reference_action_deviation,
                 stable_physics=stable_physics,
+                target_focus_probability=target_focus_probability,
+                target_focus_jitter_xy_m=target_focus_jitter_xy_m,
             ),
             "--num-envs",
             str(num_envs),
@@ -653,6 +674,14 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--success-bonus", type=float, default=40.0)
     child.add_argument("--reference-reward-weight", type=float, default=0.005)
     child.add_argument("--max-reference-action-deviation", type=float, default=0.7)
+    child.add_argument("--target-focus-probability", type=float, default=0.0)
+    child.add_argument(
+        "--target-focus-jitter-xy-m",
+        type=float,
+        nargs=2,
+        metavar=("X", "Y"),
+        default=(0.0, 0.0),
+    )
     child.add_argument("--stable-physics", action="store_true")
     child = commands.add_parser("record")
     child.add_argument("object", choices=OBJECTS)
@@ -745,6 +774,8 @@ def main(argv: list[str] | None = None) -> int:
                         args.max_reference_action_deviation
                     ),
                     stable_physics=args.stable_physics,
+                    target_focus_probability=args.target_focus_probability,
+                    target_focus_jitter_xy_m=tuple(args.target_focus_jitter_xy_m),
                 )
             )
         }

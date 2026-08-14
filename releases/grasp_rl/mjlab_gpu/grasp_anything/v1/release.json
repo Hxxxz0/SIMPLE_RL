@@ -790,6 +790,78 @@
       ]
     }
   ],
+  "workspace_200mm_v6": {
+    "status": "profile_supported_sparse_generalization_only_no_new_checkpoint",
+    "documentation": "WORKSPACE_200MM_V6.md",
+    "profile": {
+      "name": "target_xy_200mm",
+      "target_position_jitter_xy_m": [0.2, 0.2],
+      "sampled_plane_m": [0.4, 0.4],
+      "opt_in": true
+    },
+    "strict_profile_baselines": [
+      {
+        "object_id": "Apple_1",
+        "checkpoint": "checkpoints/apple_1_xmove_bend_workspace_v5_model_100.pt",
+        "seed": 20261200,
+        "episodes": 1024,
+        "successes": 39,
+        "success_rate": 0.0380859375
+      },
+      {
+        "object_id": "Potato_1",
+        "checkpoint": "checkpoints/potato_1_xmove_bend_workspace_v5_model_50.pt",
+        "seed": 20261201,
+        "episodes": 1024,
+        "successes": 40,
+        "success_rate": 0.0390625
+      },
+      {
+        "object_id": "Tomato_1",
+        "checkpoint": "checkpoints/tomato_1_xmove_bend_workspace_v5_model_150.pt",
+        "seed": 20261202,
+        "episodes": 1024,
+        "successes": 31,
+        "success_rate": 0.0302734375
+      }
+    ],
+    "final_training": {
+      "num_envs": 1024,
+      "steps_per_env_per_update": 24,
+      "updates_per_object": 800,
+      "transitions_per_object": 19660800,
+      "target_focus_probability": 0.5,
+      "target_focus_jitter_xy_m": [0.1, 0.1],
+      "reference_reward_weight": 0.0,
+      "max_reference_action_deviation": 2.0,
+      "runs": [
+        {
+          "object_id": "Apple_1",
+          "seed": 20261241,
+          "final_checkpoint": "model_799.pt",
+          "final_screen_seed": 20261323,
+          "final_screen_successes": 0,
+          "final_screen_episodes": 512,
+          "accepted": false
+        },
+        {
+          "object_id": "Potato_1",
+          "seed": 20261240,
+          "final_checkpoint": "model_799.pt",
+          "final_screen_seed": 20261324,
+          "final_screen_successes": 0,
+          "final_screen_episodes": 512,
+          "accepted": false
+        }
+      ]
+    },
+    "video_scope": "successful_samples_inside_200mm_profile_not_edge_or_robust_support",
+    "video_directories": [
+      "videos/apple_1_xmove_bend_target_xy_200mm_sparse_v5",
+      "videos/potato_1_xmove_bend_target_xy_200mm_sparse_v5",
+      "videos/tomato_1_xmove_bend_target_xy_200mm_sparse_v5"
+    ]
+  },
   "compatibility": {
     "default_reference_task": "xmove_pick",
     "supported_v2_reference_tasks": ["xmove_pick", "xmove_bend_pick"],

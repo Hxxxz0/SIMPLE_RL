@@ -74,6 +74,9 @@ def test_pose_profiles_expand_target_then_robot_base_position_dr() -> None:
     assert RUNNER.PROFILES["target_xy_100mm"].target_jitter_xy_m == pytest.approx(
         (0.1, 0.1)
     )
+    assert RUNNER.PROFILES["target_xy_200mm"].target_jitter_xy_m == pytest.approx(
+        (0.2, 0.2)
+    )
     assert RUNNER.PROFILES[
         "target_base_xy_2p5mm"
     ].robot_base_jitter_xy_m == pytest.approx((0.0025, 0.0025))
@@ -143,6 +146,8 @@ def test_train_cli_defaults_to_scratch_without_resume() -> None:
     assert args.success_bonus == pytest.approx(40.0)
     assert args.reference_reward_weight == pytest.approx(0.005)
     assert args.max_reference_action_deviation == pytest.approx(0.7)
+    assert args.target_focus_probability == pytest.approx(0.0)
+    assert args.target_focus_jitter_xy_m == pytest.approx((0.0, 0.0))
     assert not args.stable_physics
 
 
@@ -164,6 +169,27 @@ def test_train_cli_exposes_temporally_coherent_exploration() -> None:
     assert args.exploration_std == pytest.approx(0.08)
     assert args.exploration_hold_steps == 4
     assert args.stable_physics
+
+
+def test_training_focus_mixture_is_explicit_and_keeps_legacy_args_unchanged() -> None:
+    spec = RUNNER.OBJECTS["Apple_1"]
+    legacy = RUNNER.environment_args(spec, "target_xy_200mm", 123)
+    focused = RUNNER.environment_args(
+        spec,
+        "target_xy_200mm",
+        123,
+        target_focus_probability=0.25,
+        target_focus_jitter_xy_m=(0.025, 0.025),
+    )
+
+    assert "--target-position-focus-probability" not in legacy
+    assert focused[focused.index("--target-position-focus-probability") + 1] == "0.25"
+    assert focused[focused.index("--target-position-focus-jitter-xy") + 1 :][
+        :2
+    ] == ["0.025", "0.025"]
+    assert focused[
+        focused.index("--target-position-focus-offset-center-xy") + 1 :
+    ][:2] == ["0.0", "-0.09"]
 
 
 def test_evaluate_cli_reward_alignment_is_explicit_and_defaults_stay_legacy() -> None:
