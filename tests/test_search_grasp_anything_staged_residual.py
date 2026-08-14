@@ -42,6 +42,33 @@ def test_reference_episode_defaults_to_legacy_episode_82() -> None:
     assert SEARCH.reference_episode_path(args.reference, args.reference_episode) == Path(
         "reference/bc/episode_000082.npz"
     )
+    assert args.target_position_jitter_xy == (0.0, 0.0)
+    assert args.robot_base_position_jitter_xy == (0.0, 0.0)
+    assert args.target_yaw_jitter == 0.0
+    assert args.robot_base_yaw_jitter == 0.0
+
+
+def test_pose_randomization_is_explicitly_opt_in() -> None:
+    args = SEARCH._parser().parse_args(
+        [
+            *_required_cli_args(),
+            "--target-position-jitter-xy",
+            "0.0025",
+            "0.003",
+            "--target-yaw-jitter",
+            "0.01",
+            "--robot-base-position-jitter-xy",
+            "0.001",
+            "0.002",
+            "--robot-base-yaw-jitter",
+            "0.005",
+        ]
+    )
+
+    assert args.target_position_jitter_xy == [0.0025, 0.003]
+    assert args.target_yaw_jitter == pytest.approx(0.01)
+    assert args.robot_base_position_jitter_xy == [0.001, 0.002]
+    assert args.robot_base_yaw_jitter == pytest.approx(0.005)
 
 
 def test_reference_episode_can_select_bend_pick_episode_11() -> None:

@@ -1269,6 +1269,140 @@ def _evaluation_world_sha256(
     )
 
 
+def _pose_distribution_summary(
+    values: torch.Tensor, mask: torch.Tensor
+) -> dict[str, int | float | None]:
+    selected = values[mask].to(dtype=torch.float64)
+    if not selected.numel():
+        return {
+            "samples": 0,
+            "minimum": None,
+            "maximum": None,
+            "mean": None,
+            "standard_deviation": None,
+        }
+    return {
+        "samples": int(selected.numel()),
+        "minimum": float(selected.min().item()),
+        "maximum": float(selected.max().item()),
+        "mean": float(selected.mean().item()),
+        "standard_deviation": float(selected.std(unbiased=False).item()),
+    }
+
+
+def _pose_axis_diagnostics(
+    values: torch.Tensor,
+    outcome_codes: torch.Tensor,
+    *,
+    bin_count: int = 8,
+) -> dict[str, object]:
+    """Summarize one initial-pose axis against terminal episode outcomes."""
+
+    values = values.detach().flatten().to(dtype=torch.float64, device="cpu")
+    outcome_codes = outcome_codes.detach().flatten().to(device="cpu")
+    if values.shape != outcome_codes.shape or not values.numel():
+        raise ValueError("pose values and outcomes must be non-empty matching vectors")
+    if bin_count < 1:
+        raise ValueError("pose diagnostic bin count must be positive")
+    if not torch.isfinite(values).all():
+        raise ValueError("initial pose diagnostics require finite values")
+    if not torch.isin(outcome_codes, torch.tensor([0, 1, 2])).all():
+        raise ValueError("outcome codes must be 0=failure, 1=success or 2=timeout")
+
+    masks = {
+        "all": torch.ones_like(outcome_codes, dtype=torch.bool),
+        "success": outcome_codes == 1,
+        "physical_failure": outcome_codes == 0,
+        "timeout": outcome_codes == 2,
+    }
+    summaries = {
+        name: _pose_distribution_summary(values, mask) for name, mask in masks.items()
+    }
+
+    lower = float(values.min().item())
+    upper = float(values.max().item())
+    if lower == upper:
+        edges = torch.tensor([lower, upper], dtype=torch.float64)
+        bin_ids = torch.zeros_like(outcome_codes, dtype=torch.long)
+    else:
+        edges = torch.linspace(lower, upper, bin_count + 1, dtype=torch.float64)
+        bin_ids = torch.bucketize(values, edges[1:-1])
+    bins = []
+    for index in range(len(edges) - 1):
+        mask = bin_ids == index
+        samples = int(mask.sum().item())
+        successes = int(((outcome_codes == 1) & mask).sum().item())
+        physical_failures = int(((outcome_codes == 0) & mask).sum().item())
+        timeouts = int(((outcome_codes == 2) & mask).sum().item())
+        bins.append(
+            {
+                "lower": float(edges[index].item()),
+                "upper": float(edges[index + 1].item()),
+                "samples": samples,
+                "successes": successes,
+                "physical_failures": physical_failures,
+                "timeouts": timeouts,
+                "success_rate": successes / samples if samples else None,
+            }
+        )
+    return {"summaries": summaries, "bins": bins}
+
+
+def _initial_pose_diagnostics(
+    initial_poses: dict[str, torch.Tensor], outcome_codes: torch.Tensor
+) -> dict[str, object]:
+    required = {
+        "target_translation_xy": 2,
+        "target_yaw": 1,
+        "robot_base_translation_xy": 2,
+        "robot_base_yaw": 1,
+    }
+    missing = required.keys() - initial_poses.keys()
+    if missing:
+        raise ValueError(f"initial pose diagnostics are missing {sorted(missing)}")
+    episodes = int(outcome_codes.numel())
+    values: dict[str, torch.Tensor] = {}
+    for name, width in required.items():
+        tensor = initial_poses[name]
+        expected = (episodes,) if width == 1 else (episodes, width)
+        if tuple(tensor.shape) != expected:
+            raise ValueError(f"{name} must have shape {expected}")
+        if width == 1:
+            values[name] = tensor
+        else:
+            values[f"{name}_x"] = tensor[:, 0]
+            values[f"{name}_y"] = tensor[:, 1]
+
+    return {
+        "sample_count": episodes,
+        "outcome_counts": {
+            "success": int((outcome_codes == 1).sum().item()),
+            "physical_failure": int((outcome_codes == 0).sum().item()),
+            "timeout": int((outcome_codes == 2).sum().item()),
+        },
+        "target_translation_xy": {
+            "x": _pose_axis_diagnostics(
+                values["target_translation_xy_x"], outcome_codes
+            ),
+            "y": _pose_axis_diagnostics(
+                values["target_translation_xy_y"], outcome_codes
+            ),
+        },
+        "target_yaw": _pose_axis_diagnostics(values["target_yaw"], outcome_codes),
+        "robot_base_translation_xy": {
+            "x": _pose_axis_diagnostics(
+                values["robot_base_translation_xy_x"], outcome_codes
+            ),
+            "y": _pose_axis_diagnostics(
+                values["robot_base_translation_xy_y"], outcome_codes
+            ),
+        },
+        "robot_base_yaw": _pose_axis_diagnostics(
+            values["robot_base_yaw"], outcome_codes
+        ),
+    }
+
+
 @torch.inference_mode()
 def _evaluate(args: argparse.Namespace) -> dict[str, object]:
     if args.episodes < 1:
@@ -1323,6 +1457,22 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         initial_policy_state_sha256,
         initial_proposal_context_sha256,
     ) = _evaluation_world_sha256(env, observations, args.episodes)
+    initial_poses = {
+        "target_translation_xy": env.randomizer.target_translation_xy[
+            : args.episodes
+        ]
+        .detach()
+        .clone(),
+        "target_yaw": env.randomizer.target_yaw[: args.episodes].detach().clone(),
+        "robot_base_translation_xy": env.randomizer.robot_base_translation_xy[
+            : args.episodes
+        ]
+        .detach()
+        .clone(),
+        "robot_base_yaw": env.randomizer.robot_base_yaw[: args.episodes]
+        .detach()
+        .clone(),
+    }
     checkpoint_training_dr_strength = (
         None
         if args.checkpoint is None
@@ -1354,6 +1504,7 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
     completed_world = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     evaluation_world = torch.arange(env.num_envs, device=env.device) < args.episodes
     outcomes = torch.full((env.num_envs,), -1, dtype=torch.int8, device=env.device)
+    terminal_outcomes = torch.full_like(outcomes, -1)
     action_delta_sum = 0.0
     action_delta_count = 0
     max_action_delta = 0.0
@@ -1436,6 +1587,15 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
                 terms.success[selected],
                 torch.ones_like(outcomes[selected]),
                 torch.zeros_like(outcomes[selected]),
+            )
+            terminal_outcomes[selected] = torch.where(
+                terms.success[selected],
+                torch.ones_like(terminal_outcomes[selected]),
+                torch.where(
+                    terms.failure[selected],
+                    torch.zeros_like(terminal_outcomes[selected]),
+                    torch.full_like(terminal_outcomes[selected], 2),
+                ),
             )
             episode_max_lift[finished] = -torch.inf
             episode_max_grasp_quality[finished] = 0.0
@@ -1527,6 +1687,9 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         ),
         "failed_world_ids": (
             (outcomes == 0).nonzero(as_tuple=False).flatten().cpu().tolist()
+        ),
+        "initial_pose_diagnostics": _initial_pose_diagnostics(
+            initial_poses, terminal_outcomes[: args.episodes]
         ),
     }
     if (

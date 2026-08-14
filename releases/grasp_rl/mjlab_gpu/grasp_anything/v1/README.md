@@ -1,10 +1,17 @@
 # grasp_anything mjlab GPU PPO v1
 
-This release backs up the selected object-specific RL checkpoints and the
+This release backs up the five selected object-specific RL checkpoints and the
 corresponding evaluation record for the current `grasp_anything` work. It also
-contains the small Apple `xmove_bend_pick` staged reference and its two audited
-videos. The derived object bundles and full experiment logs remain under the
-local `outputs/` and `data/` trees.
+contains opt-in episode-11 `xmove_bend_pick` references for Apple, Bowl, Potato
+and Tomato, plus audited fixed/position-DR videos. The derived object bundles
+and full experiment logs remain under the local `outputs/` and `data/` trees.
+
+The position-DR follow-up, including absolute artifact paths and known failure
+boundaries, is in [`DR_BEND_FOLLOWUP.md`](DR_BEND_FOLLOWUP.md). In short, seven
+unique objects now have measured physical successes: `Soap_Bottle_1`,
+`Bottle_1`, `Apple_1`, `Bowl_1`, `Cup_6`, `Potato_1` and `Tomato_1`. There are
+still exactly five accepted RL checkpoints; the four bend routes are
+reference-only policies.
 
 Git LFS is required to download the `.pt`, `.npz`, and `.mp4` files:
 
@@ -31,6 +38,16 @@ checkpoint remains the 112/512 fixed-pose baseline; it was not replaced or
 used to drive the new episode-11 result because the action-transform hashes do
 not match.
 
+The separate bend route has these reference-only position results. These rows
+do not add RL checkpoints:
+
+| Object | Released bend reference | Target XY +/-2.5 mm | Measured scope |
+| :--- | :--- | ---: | :--- |
+| `Apple_1` | `references/apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2` | 95/512 (18.55%) | low; not robust position DR |
+| `Bowl_1` | `references/bowl_1_xmove_bend_ep11_staged_native_v1` | 270/512 (52.73%) | moderate position tolerance |
+| `Potato_1` | `references/potato_1_xmove_bend_ep11_staged_native_v1` | 490/512 (95.70%) | strong within measured +/-2.5 mm scope |
+| `Tomato_1` | `references/tomato_1_xmove_bend_ep11_staged_native_v1` | 496/512 (96.88%) | strong within measured +/-2.5 mm scope |
+
 ## Apple low-object reference variant
 
 The lower `xmove_bend_pick` trajectory is a substantially better geometric fit
@@ -49,10 +66,12 @@ passed two independent 512-world checks:
 
 The exact same reference scored 0/32 with `num_envs=32`; the current MuJoCo-Warp
 contact result is batch-size sensitive. Therefore this is not a general DR
-claim and must not be quoted without the 512-world runtime contract. PPO was
-not trained for this route because the reference itself already achieved
-512/512, and adding PPO at that point would add regression risk without an
-established gain.
+claim and must not be quoted without the 512-world runtime contract. The later
+position-DR audit showed that the fixed score does not generalize: the improved
+Apple reference reached 95/512 under target X/Y jitter of +/-2.5 mm. Two
+40-update PPO trials reached only 44/512 and 45/512 on their paired seed versus
+46/512 for the reference. Those weights are retained only under
+`experiments/rejected_checkpoints`; neither is an accepted checkpoint.
 
 Compatibility is opt-in:
 
@@ -90,8 +109,8 @@ and training transition counts are recorded in `release.json`.
 
 ## Local evaluation
 
-From the repository root, the four catalog objects can be evaluated with the
-object runner. For example:
+From the repository root, the original catalog objects can be evaluated with
+the object runner. For example:
 
 ```bash
 scripts/grasp_rl/grasp_anything_objects.sh evaluate Soap_Bottle_1 \
@@ -147,10 +166,13 @@ local output directories. The absolute directories are:
 | `Cup_6` | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Cup_6/release_single_ref_ep82_dr02_xonly_s12p5_e4/videos_dr02_final` | 3 full-robot + 3 close-ups |
 | `Apple_1` bend reference | `/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/videos_fixed_reference` | 1 audited full-robot + 1 audited close-up |
 
-The new videos are also backed up in this release under
-`videos/apple_1_xmove_bend_ep11_reference`. Both are H.264, 960x540, 50 fps,
-319 frames, and 6.38 seconds. Their JSON sidecars report native simulator
-success, the lift stage, and 86 consecutive valid right-hand grasp steps.
+The original Apple fixed videos are backed up under
+`videos/apple_1_xmove_bend_ep11_reference`. The follow-up additionally backs
+up Apple target/base position-DR recordings, Bowl fixed and target-position
+recordings, and Potato/Tomato target-position recordings. Every MP4 has a JSON
+sidecar reporting native simulator success, lift and finger-contact audit.
+Exact release-relative and absolute local paths are listed in
+`DR_BEND_FOLLOWUP.md` and checksummed in `SHA256SUMS`.
 
 ## Integrity
 

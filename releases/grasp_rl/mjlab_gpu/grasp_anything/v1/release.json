@@ -8,6 +8,210 @@
     "hold_steps": 13,
     "requires_grasp": true
   },
+  "dr_bend_followup": {
+    "route": "xmove_bend_ep11_v1",
+    "reference_task": "xmove_bend_pick",
+    "reference_episode": 11,
+    "opt_in": true,
+    "existing_defaults_changed": false,
+    "accepted_rl_checkpoint_count": 5,
+    "accepted_rl_checkpoints_changed": false,
+    "unique_physically_supported_objects": [
+      "Soap_Bottle_1",
+      "Bottle_1",
+      "Apple_1",
+      "Bowl_1",
+      "Cup_6",
+      "Potato_1",
+      "Tomato_1"
+    ],
+    "bend_runner_objects": [
+      "Apple_1",
+      "Bowl_1",
+      "Potato_1",
+      "Tomato_1"
+    ],
+    "screened_not_supported": [
+      {
+        "object_id": "Egg_1",
+        "searches": "original and approximately 64 mm scales with Apple-like and Bowl-like initial arm poses",
+        "successful_candidates": 0,
+        "candidates": 4096,
+        "reason": "no bilateral grasp formed"
+      }
+    ],
+    "pose_profiles": {
+      "fixed": {
+        "target_position_jitter_xy_m": [0.0, 0.0],
+        "robot_base_position_jitter_xy_m": [0.0, 0.0]
+      },
+      "target_xy_2p5mm": {
+        "target_position_jitter_xy_m": [0.0025, 0.0025],
+        "robot_base_position_jitter_xy_m": [0.0, 0.0]
+      },
+      "target_xy_5mm": {
+        "target_position_jitter_xy_m": [0.005, 0.005],
+        "robot_base_position_jitter_xy_m": [0.0, 0.0]
+      },
+      "target_xy_10mm": {
+        "target_position_jitter_xy_m": [0.01, 0.01],
+        "robot_base_position_jitter_xy_m": [0.0, 0.0]
+      },
+      "target_base_xy_2p5mm": {
+        "target_position_jitter_xy_m": [0.0025, 0.0025],
+        "robot_base_position_jitter_xy_m": [0.0025, 0.0025]
+      }
+    },
+    "evaluation_pose_diagnostics": {
+      "axes": [
+        "target_x",
+        "target_y",
+        "target_yaw",
+        "robot_base_x",
+        "robot_base_y",
+        "robot_base_yaw"
+      ],
+      "outcomes": ["success", "physical_failure", "timeout"],
+      "maximum_success_rate_bins_per_axis": 8,
+      "constant_axes_collapse_to_one_bin": true
+    },
+    "object_results": [
+      {
+        "object_id": "Apple_1",
+        "policy": "reference_only",
+        "position_dr_status": "low",
+        "release_reference_path": "references/apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2",
+        "local_reference_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2",
+        "action_transform_sha256": "0b0ac2e1f69c2e304f2cc720fadbdc7fab5d678f0f492ad24815d5ae4e9002be",
+        "episode_sha256": "1bdb7340b6a36887f540a9fc1f4478448a580d6837f804721661b6533fb4faad",
+        "manifest_sha256": "90e7f5f48987b1e0c2bb2a9175c97cf27e91e00ec35ec20741978194872a2de8",
+        "target_xy_2p5mm_evaluations": [
+          {
+            "seed": 20260934,
+            "episodes": 512,
+            "successes": 84,
+            "success_rate": 0.1640625,
+            "result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/reference_reference-Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2_target_xy_2p5mm_seed20260934_512.log"
+          },
+          {
+            "seed": 20260938,
+            "episodes": 512,
+            "successes": 95,
+            "success_rate": 0.185546875,
+            "paired_old_reference_successes": 81,
+            "result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/acceptance/reference_reference-Apple_1_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2_target_xy_2p5mm_seed20260938_512.log"
+          }
+        ]
+      },
+      {
+        "object_id": "Bowl_1",
+        "policy": "reference_only",
+        "position_dr_status": "moderate",
+        "release_reference_path": "references/bowl_1_xmove_bend_ep11_staged_native_v1",
+        "local_reference_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Bowl_1_xmove_bend_ep11_staged_native_v1",
+        "action_transform_sha256": "0b0ac2e1f69c2e304f2cc720fadbdc7fab5d678f0f492ad24815d5ae4e9002be",
+        "episode_sha256": "054d70cbc8437f25df5761be001afe5a2cc92474d0b2c2deae182edf381b284e",
+        "manifest_sha256": "52670d35bc18d2de07531e77958548e1f9d421aac38c18f869fd78a2e18d814b",
+        "fixed_evaluation": {
+          "seed": 20260924,
+          "episodes": 512,
+          "successes": 389,
+          "success_rate": 0.759765625,
+          "mean_max_lift_m": 0.27230107138166204,
+          "max_lift_m": 0.2864445447921753,
+          "result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Bowl_1/xmove_bend_ep11_v1/acceptance/reference_fixed_seed20260924_512.log"
+        },
+        "target_xy_2p5mm_evaluation": {
+          "seed": 20260925,
+          "episodes": 512,
+          "successes": 270,
+          "success_rate": 0.52734375,
+          "mean_max_lift_m": 0.22910178627353162,
+          "max_lift_m": 0.29048430919647217,
+          "result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Bowl_1/xmove_bend_ep11_v1/acceptance/reference_target_xy_2p5mm_seed20260925_512.log"
+        }
+      },
+      {
+        "object_id": "Potato_1",
+        "policy": "reference_only",
+        "position_dr_status": "strong_within_measured_2p5mm_scope",
+        "release_reference_path": "references/potato_1_xmove_bend_ep11_staged_native_v1",
+        "local_reference_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Potato_1_xmove_bend_ep11_staged_native_v1",
+        "action_transform_sha256": "0b0ac2e1f69c2e304f2cc720fadbdc7fab5d678f0f492ad24815d5ae4e9002be",
+        "episode_sha256": "e90f6fd603850aa3c35aea9e178d87589645efbeba9359a0dc4a3da178ce97fb",
+        "manifest_sha256": "0bfd2322c719b88551c686ec431436d0bd7f5baf4d0a0bb2a43a91712a6876b3",
+        "fixed_evaluation": {
+          "seed": 20260939,
+          "episodes": 512,
+          "successes": 510,
+          "success_rate": 0.99609375,
+          "mean_max_lift_m": 0.2673200492281467,
+          "max_lift_m": 0.26963528990745544,
+          "result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Potato_1/xmove_bend_ep11_v1/acceptance/reference_fixed_seed20260939_512.log"
+        },
+        "target_xy_2p5mm_evaluation": {
+          "seed": 20260940,
+          "episodes": 512,
+          "successes": 490,
+          "success_rate": 0.95703125,
+          "mean_max_lift_m": 0.25772679230431095,
+          "max_lift_m": 0.27108922600746155,
+          "result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Potato_1/xmove_bend_ep11_v1/acceptance/reference_target_xy_2p5mm_seed20260940_512.log"
+        }
+      },
+      {
+        "object_id": "Tomato_1",
+        "policy": "reference_only",
+        "position_dr_status": "strong_within_measured_2p5mm_scope",
+        "release_reference_path": "references/tomato_1_xmove_bend_ep11_staged_native_v1",
+        "local_reference_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Tomato_1_xmove_bend_ep11_staged_native_v1",
+        "action_transform_sha256": "0b0ac2e1f69c2e304f2cc720fadbdc7fab5d678f0f492ad24815d5ae4e9002be",
+        "episode_sha256": "b02c1991d1bc26f73936db6c30033ffd2f51ceb35a25f08c6388423ce0ef8b4d",
+        "manifest_sha256": "f5996f19b20a9136042b3778348c84a4675039492569041ee35112c064f7ec55",
+        "fixed_evaluation": {
+          "seed": 20260941,
+          "episodes": 512,
+          "successes": 512,
+          "success_rate": 1.0,
+          "mean_max_lift_m": 0.2887213728390634,
+          "max_lift_m": 0.2924236059188843,
+          "result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Tomato_1/xmove_bend_ep11_v1/acceptance/reference_fixed_seed20260941_512.log"
+        },
+        "target_xy_2p5mm_evaluation": {
+          "seed": 20260942,
+          "episodes": 512,
+          "successes": 496,
+          "success_rate": 0.96875,
+          "mean_max_lift_m": 0.278057920106221,
+          "max_lift_m": 0.29249608516693115,
+          "result_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Tomato_1/xmove_bend_ep11_v1/acceptance/reference_target_xy_2p5mm_seed20260942_512.log"
+        }
+      }
+    ],
+    "rejected_ppo_experiments": [
+      {
+        "path": "experiments/rejected_checkpoints/apple_1_position_dr_2p5mm_std010_model_39.pt",
+        "sha256": "19b87918df84705eab74062fc7b891efa8081bd9ecc343fe47bec08e1ff32dc4",
+        "fresh_transitions": 7864320,
+        "paired_seed": 20260914,
+        "reference_successes": 46,
+        "checkpoint_successes": 44,
+        "episodes": 512,
+        "accepted": false
+      },
+      {
+        "path": "experiments/rejected_checkpoints/apple_1_position_dr_2p5mm_std020_model_39.pt",
+        "sha256": "eaa64bf0ab1312b8a1927e8954187a42a0d43a06b55279faef0109b6de56baee",
+        "fresh_transitions": 7864320,
+        "paired_seed": 20260914,
+        "reference_successes": 46,
+        "checkpoint_successes": 45,
+        "episodes": 512,
+        "accepted": false
+      }
+    ],
+    "documentation": "DR_BEND_FOLLOWUP.md"
+  },
   "reference_variants": [
     {
       "object_id": "Apple_1",
@@ -15,7 +219,7 @@
       "reference_episode": 11,
       "policy": "reference_only",
       "ppo_trained": false,
-      "ppo_not_trained_reason": "exported reference reached 512/512; training would add regression risk without an established gain",
+      "ppo_not_trained_reason": "no PPO was attached to this fixed reference; later separate position-DR trials are recorded as rejected under dr_bend_followup",
       "release_reference_path": "references/apple_1_xmove_bend_ep11_staged_native_v1",
       "local_asset_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/assets/mjlab_assets/grasp_anything/Apple_1_object_reward_v4_xmove_bend_ep11",
       "local_strict_reference_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Apple_1_xmove_bend_ep11_strict_v1",

@@ -1,0 +1,625 @@
+{
+  "action_transform_sha256": "0b0ac2e1f69c2e304f2cc720fadbdc7fab5d678f0f492ad24815d5ae4e9002be",
+  "action_transform_version": "successful_replay_cover_v1",
+  "excluded_episodes": [],
+  "excluded_reason": null,
+  "failed_replay_episodes": [],
+  "independent_replay_success_rate_at_first_terminal_step": 0.98828125,
+  "reference_derivation": {
+    "aperture": [
+      1.2451421022415161,
+      0.1785673201084137,
+      0.16523632407188416,
+      0.2029145061969757
+    ],
+    "arm_bounds": [
+      [
+        -0.75,
+        0.25
+      ],
+      [
+        -0.15,
+        0.7
+      ],
+      [
+        0.1,
+        0.9
+      ],
+      [
+        0.2,
+        0.9
+      ],
+      [
+        -0.9,
+        0.2
+      ],
+      [
+        -0.1,
+        0.8
+      ],
+      [
+        -1.0,
+        0.5
+      ]
+    ],
+    "environment_adaptation": {
+      "reference_target_positive_y_arm_gains": [
+        0.0,
+        0.0
+      ],
+      "reference_target_x_arm_gains": [
+        0.0,
+        0.0
+      ],
+      "reference_target_y_arm_gains": [
+        0.0,
+        0.0
+      ],
+      "robot_base_position_jitter_xy": [
+        0.0,
+        0.0
+      ],
+      "robot_base_yaw_jitter": 0.0,
+      "target_position_jitter_xy": [
+        0.0,
+        0.0
+      ],
+      "target_position_offset_center_xy": [
+        0.0,
+        -0.09
+      ],
+      "target_yaw_jitter": 0.0
+    },
+    "phase": {
+      "arm_release_end": 295,
+      "arm_release_start": 250,
+      "arm_start": 145,
+      "capture_step": 198,
+      "close_end": 220,
+      "open_hand_step": 180
+    },
+    "replay_attempts": [
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.435546875,
+        "max_bilateral_contact_streak": 63,
+        "max_grasp_streak": 64,
+        "max_lift_m": 0.28069746494293213,
+        "max_min_opposing_force_n": 6.615930080413818,
+        "rank": 0,
+        "reproduced": true,
+        "search_env_id": 2523,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.19393697381019592,
+        "successes_at_first_terminal_step": 223,
+        "successful_world_id": 132,
+        "terminal_step": 313
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.09375,
+        "max_bilateral_contact_streak": 72,
+        "max_grasp_streak": 73,
+        "max_lift_m": 0.27202093601226807,
+        "max_min_opposing_force_n": 9.579246520996094,
+        "rank": 1,
+        "reproduced": true,
+        "search_env_id": 652,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.19776862859725952,
+        "successes_at_first_terminal_step": 48,
+        "successful_world_id": 400,
+        "terminal_step": 317
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.73046875,
+        "max_bilateral_contact_streak": 78,
+        "max_grasp_streak": 79,
+        "max_lift_m": 0.28232014179229736,
+        "max_min_opposing_force_n": 10.954115867614746,
+        "rank": 2,
+        "reproduced": true,
+        "search_env_id": 1227,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.2017519176006317,
+        "successes_at_first_terminal_step": 374,
+        "successful_world_id": 31,
+        "terminal_step": 318
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.017578125,
+        "max_bilateral_contact_streak": 71,
+        "max_grasp_streak": 72,
+        "max_lift_m": 0.28365248441696167,
+        "max_min_opposing_force_n": 9.513838768005371,
+        "rank": 3,
+        "reproduced": true,
+        "search_env_id": 1229,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.2062520533800125,
+        "successes_at_first_terminal_step": 9,
+        "successful_world_id": 290,
+        "terminal_step": 313
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.818359375,
+        "max_bilateral_contact_streak": 77,
+        "max_grasp_streak": 78,
+        "max_lift_m": 0.28784704208374023,
+        "max_min_opposing_force_n": 8.76850414276123,
+        "rank": 4,
+        "reproduced": true,
+        "search_env_id": 4057,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.20643079280853271,
+        "successes_at_first_terminal_step": 419,
+        "successful_world_id": 50,
+        "terminal_step": 318
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.98828125,
+        "max_bilateral_contact_streak": 77,
+        "max_grasp_streak": 78,
+        "max_lift_m": 0.2867751121520996,
+        "max_min_opposing_force_n": 8.224761009216309,
+        "rank": 5,
+        "reproduced": true,
+        "search_env_id": 121,
+        "search_round": 0,
+        "selected": true,
+        "success_neighbor_radius": 0.21027079224586487,
+        "successes_at_first_terminal_step": 506,
+        "successful_world_id": 14,
+        "terminal_step": 318
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 75,
+        "max_grasp_streak": 76,
+        "max_lift_m": 0.2878507971763611,
+        "max_min_opposing_force_n": 9.607271194458008,
+        "rank": 6,
+        "reproduced": true,
+        "search_env_id": 1754,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.2104417085647583,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 431,
+        "terminal_step": 317
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.005859375,
+        "max_bilateral_contact_streak": 67,
+        "max_grasp_streak": 68,
+        "max_lift_m": 0.28956204652786255,
+        "max_min_opposing_force_n": 8.814903259277344,
+        "rank": 7,
+        "reproduced": true,
+        "search_env_id": 648,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.21045425534248352,
+        "successes_at_first_terminal_step": 3,
+        "successful_world_id": 232,
+        "terminal_step": 314
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.0703125,
+        "max_bilateral_contact_streak": 60,
+        "max_grasp_streak": 61,
+        "max_lift_m": 0.28596508502960205,
+        "max_min_opposing_force_n": 6.766389846801758,
+        "rank": 8,
+        "reproduced": true,
+        "search_env_id": 709,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.21458950638771057,
+        "successes_at_first_terminal_step": 36,
+        "successful_world_id": 324,
+        "terminal_step": 313
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.9296875,
+        "max_bilateral_contact_streak": 81,
+        "max_grasp_streak": 82,
+        "max_lift_m": 0.28858304023742676,
+        "max_min_opposing_force_n": 9.79882526397705,
+        "rank": 9,
+        "reproduced": true,
+        "search_env_id": 3172,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.21549873054027557,
+        "successes_at_first_terminal_step": 476,
+        "successful_world_id": 39,
+        "terminal_step": 318
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.392578125,
+        "max_bilateral_contact_streak": 68,
+        "max_grasp_streak": 69,
+        "max_lift_m": 0.28764235973358154,
+        "max_min_opposing_force_n": 7.712581634521484,
+        "rank": 10,
+        "reproduced": true,
+        "search_env_id": 2066,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.21648094058036804,
+        "successes_at_first_terminal_step": 201,
+        "successful_world_id": 20,
+        "terminal_step": 313
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.78515625,
+        "max_bilateral_contact_streak": 83,
+        "max_grasp_streak": 84,
+        "max_lift_m": 0.28122276067733765,
+        "max_min_opposing_force_n": 11.332768440246582,
+        "rank": 11,
+        "reproduced": true,
+        "search_env_id": 4073,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.22080552577972412,
+        "successes_at_first_terminal_step": 402,
+        "successful_world_id": 408,
+        "terminal_step": 318
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.1953125,
+        "max_bilateral_contact_streak": 70,
+        "max_grasp_streak": 71,
+        "max_lift_m": 0.29122698307037354,
+        "max_min_opposing_force_n": 8.457440376281738,
+        "rank": 12,
+        "reproduced": true,
+        "search_env_id": 3776,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.22578176856040955,
+        "successes_at_first_terminal_step": 100,
+        "successful_world_id": 196,
+        "terminal_step": 313
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.24609375,
+        "max_bilateral_contact_streak": 78,
+        "max_grasp_streak": 79,
+        "max_lift_m": 0.2833932042121887,
+        "max_min_opposing_force_n": 9.747737884521484,
+        "rank": 13,
+        "reproduced": true,
+        "search_env_id": 3449,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.22669580578804016,
+        "successes_at_first_terminal_step": 126,
+        "successful_world_id": 274,
+        "terminal_step": 318
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.111328125,
+        "max_bilateral_contact_streak": 73,
+        "max_grasp_streak": 74,
+        "max_lift_m": 0.26945143938064575,
+        "max_min_opposing_force_n": 12.914410591125488,
+        "rank": 14,
+        "reproduced": true,
+        "search_env_id": 1894,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.22868362069129944,
+        "successes_at_first_terminal_step": 57,
+        "successful_world_id": 465,
+        "terminal_step": 312
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.01171875,
+        "max_bilateral_contact_streak": 67,
+        "max_grasp_streak": 68,
+        "max_lift_m": 0.2802025079727173,
+        "max_min_opposing_force_n": 8.098055839538574,
+        "rank": 15,
+        "reproduced": true,
+        "search_env_id": 3231,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.23043231666088104,
+        "successes_at_first_terminal_step": 6,
+        "successful_world_id": 171,
+        "terminal_step": 313
+      }
+    ],
+    "reproduction": {
+      "independent_replay_success_rate_at_first_terminal_step": 0.98828125,
+      "max_bilateral_contact_streak": 77,
+      "max_grasp_streak": 78,
+      "max_lift_m": 0.2867751121520996,
+      "max_min_opposing_force_n": 8.224761009216309,
+      "replay_envs": 512,
+      "successes_at_first_terminal_step": 506,
+      "successful_world_id": 14,
+      "terminal_step": 318
+    },
+    "right_arm_correction": [
+      0.13461585342884064,
+      0.31087225675582886,
+      0.6694575548171997,
+      0.8646234273910522,
+      -0.5707213878631592,
+      0.7907689809799194,
+      -0.951505720615387
+    ],
+    "search_env_id": 121,
+    "search_result": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Tomato_1/xmove_bend_ep11_v1/diagnostics/staged_bowl_pose_fixed_seed20260928_4096.json",
+    "search_round": 0,
+    "source_immutable": true,
+    "source_reference_sha256": "7d10a9060a0690f3a58c9983964c4d9f0fb29ad75c3d8fffb896f68b9166eec3",
+    "success_neighbor_radius": 0.21027079224586487,
+    "version": "tomato_1_xmove_bend_ep11_staged_native_v1"
+  },
+  "repair_version": "none",
+  "replay_gate_passed": true,
+  "replay_success_rate": 1.0,
+  "reports": [
+    {
+      "episode": 11,
+      "failure": false,
+      "frames": 318,
+      "max_grasp_streak": 78,
+      "max_lift": 0.2867751121520996,
+      "native_success_criteria": {
+        "lift_height_m": 0.09,
+        "stable_hold_steps": 13
+      },
+      "success": true,
+      "terminal_step": 318,
+      "timeout": false
+    }
+  ],
+  "requested_episode_id": 11,
+  "schema": {
+    "action_dim": 36,
+    "action_slices": {
+      "base_height": {
+        "start": 31,
+        "stop": 32
+      },
+      "left_arm": {
+        "start": 14,
+        "stop": 21
+      },
+      "left_hand": {
+        "start": 0,
+        "stop": 7
+      },
+      "right_arm": {
+        "start": 21,
+        "stop": 28
+      },
+      "right_hand": {
+        "start": 7,
+        "stop": 14
+      },
+      "target_yaw": {
+        "start": 35,
+        "stop": 36
+      },
+      "torso_rpy": {
+        "start": 28,
+        "stop": 31
+      },
+      "torso_vx": {
+        "start": 32,
+        "stop": 33
+      },
+      "torso_vy": {
+        "start": 33,
+        "stop": 34
+      },
+      "turning_flag": {
+        "start": 34,
+        "stop": 35
+      }
+    },
+    "actor_obs_dim": 192,
+    "actor_obs_v2_dim": 331,
+    "joint_names": [
+      "left_hip_pitch_joint",
+      "left_hip_roll_joint",
+      "left_hip_yaw_joint",
+      "left_knee_joint",
+      "left_ankle_pitch_joint",
+      "left_ankle_roll_joint",
+      "right_hip_pitch_joint",
+      "right_hip_roll_joint",
+      "right_hip_yaw_joint",
+      "right_knee_joint",
+      "right_ankle_pitch_joint",
+      "right_ankle_roll_joint",
+      "waist_yaw_joint",
+      "waist_roll_joint",
+      "waist_pitch_joint",
+      "left_shoulder_pitch_joint",
+      "left_shoulder_roll_joint",
+      "left_shoulder_yaw_joint",
+      "left_elbow_joint",
+      "left_wrist_roll_joint",
+      "left_wrist_pitch_joint",
+      "left_wrist_yaw_joint",
+      "right_shoulder_pitch_joint",
+      "right_shoulder_roll_joint",
+      "right_shoulder_yaw_joint",
+      "right_elbow_joint",
+      "right_wrist_roll_joint",
+      "right_wrist_pitch_joint",
+      "right_wrist_yaw_joint",
+      "left_hand_thumb_0_joint",
+      "left_hand_thumb_1_joint",
+      "left_hand_thumb_2_joint",
+      "left_hand_index_0_joint",
+      "left_hand_index_1_joint",
+      "left_hand_middle_0_joint",
+      "left_hand_middle_1_joint",
+      "right_hand_thumb_0_joint",
+      "right_hand_thumb_1_joint",
+      "right_hand_thumb_2_joint",
+      "right_hand_index_0_joint",
+      "right_hand_index_1_joint",
+      "right_hand_middle_0_joint",
+      "right_hand_middle_1_joint"
+    ],
+    "left_contact_link_names": [
+      "left_wrist_yaw_link",
+      "left_hand_thumb_0_link",
+      "left_hand_thumb_1_link",
+      "left_hand_thumb_2_link",
+      "left_hand_index_0_link",
+      "left_hand_index_1_link",
+      "left_hand_middle_0_link",
+      "left_hand_middle_1_link"
+    ],
+    "max_episode_steps": 192,
+    "motion_feature_dim": 82,
+    "motion_frame_dim": 80,
+    "motion_link_names": [
+      "left_wrist_yaw_link",
+      "right_wrist_yaw_link",
+      "left_hand_thumb_2_link",
+      "left_hand_index_1_link",
+      "left_hand_middle_1_link",
+      "right_hand_thumb_2_link",
+      "right_hand_index_1_link",
+      "right_hand_middle_1_link"
+    ],
+    "motion_window": 10,
+    "reference_actor_obs_dim": 593,
+    "reference_actor_obs_v2_dim": 842,
+    "reference_context_dim": 401,
+    "reference_context_v2_dim": 511,
+    "reference_frame_dim": 40,
+    "reference_frame_v2_dim": 51,
+    "reference_future_offsets": [
+      0,
+      5,
+      10,
+      15,
+      20,
+      25,
+      30,
+      35,
+      40,
+      45
+    ],
+    "right_contact_link_names": [
+      "right_wrist_yaw_link",
+      "right_hand_thumb_0_link",
+      "right_hand_thumb_1_link",
+      "right_hand_thumb_2_link",
+      "right_hand_index_0_link",
+      "right_hand_index_1_link",
+      "right_hand_middle_0_link",
+      "right_hand_middle_1_link"
+    ]
+  },
+  "seed": 42,
+  "source": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/data/simple/G1WholebodyXMoveBendPickTeleop-v0",
+  "source_episode_ids": [
+    11
+  ],
+  "source_immutable": true,
+  "source_sha256": "d147d1ca84971ebe8f21495d0b315bd2d253d902aa55368dcef34d485d8568f4",
+  "source_state_vector_dim": 32,
+  "splits": {
+    "test": [],
+    "train": [
+      11
+    ],
+    "val": []
+  },
+  "strict_subset_source": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Tomato_1_xmove_bend_ep11_strict_v1",
+  "task": "xmove_bend_pick",
+  "task_metadata": {
+    "action_dim": 36,
+    "action_schema": "g1_wholebody_tracker_36_v1",
+    "actor_observation_dim": 331,
+    "observation_schema": "task_privileged_v2",
+    "reference_actor_observation_dim": 842,
+    "reference_schema": "complete_plan_10x51_plus_phase_v2",
+    "registry_uid": "g1_wholebody_xmove_bend_pick_teleop",
+    "robot_uid": "g1_sonic",
+    "spec": {
+      "action_schema": "g1_wholebody_tracker_36_v1",
+      "articulation": null,
+      "controller_backend": "sonic_wbc",
+      "dataset_name": "G1WholebodyXMoveBendPickTeleop-v0",
+      "family": "grasp",
+      "fast_reset": false,
+      "label": "Move and bend pick",
+      "lift_height": 0.08,
+      "max_episode_steps": 800,
+      "name": "xmove_bend_pick",
+      "native_target_x": [
+        0.0,
+        0.0
+      ],
+      "native_target_y": [
+        0.0,
+        0.0
+      ],
+      "native_yaw_jitter": 0.15,
+      "observation_schema": "task_privileged_v2",
+      "placement_xy_tolerance": 0.12,
+      "reference_schema": "complete_plan_10x51_plus_phase_v2",
+      "registry_uid": "g1_wholebody_xmove_bend_pick_teleop",
+      "robot_uid": "g1_sonic",
+      "roles": {
+        "auxiliary": null,
+        "destination": "table",
+        "primary": "target"
+      },
+      "schema_version": 2,
+      "source_uids": [
+        "g1_wholebody_xmove_bend_pick_teleop",
+        "g1_sonic_xmove_bend_pick_teleop"
+      ],
+      "stable_angular_speed": 1.0,
+      "stable_linear_speed": 0.1,
+      "stages": [
+        {
+          "hand": "right",
+          "hold_steps": 1,
+          "name": "approach",
+          "primitive": "approach",
+          "threshold": 0.06
+        },
+        {
+          "hand": "right",
+          "hold_steps": 3,
+          "name": "grasp",
+          "primitive": "grasp",
+          "threshold": 0
+        },
+        {
+          "hand": "right",
+          "hold_steps": 13,
+          "name": "lift",
+          "primitive": "lift",
+          "threshold": 0.08
+        }
+      ],
+      "target_object": null
+    },
+    "task": "xmove_bend_pick",
+    "task_schema_version": 2
+  },
+  "unique_episodes": [
+    11
+  ]
+}

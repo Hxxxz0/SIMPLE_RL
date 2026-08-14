@@ -1,0 +1,881 @@
+{
+  "action_transform_sha256": "0b0ac2e1f69c2e304f2cc720fadbdc7fab5d678f0f492ad24815d5ae4e9002be",
+  "action_transform_version": "successful_replay_cover_v1",
+  "excluded_episodes": [],
+  "excluded_reason": null,
+  "failed_replay_episodes": [],
+  "independent_replay_success_rate_at_first_terminal_step": 0.0234375,
+  "reference_derivation": {
+    "aperture": [
+      1.23866868019104,
+      0.0837511494755745,
+      0.2440250813961029,
+      0.19645948708057404
+    ],
+    "arm_bounds": [
+      [
+        -0.4,
+        0.4
+      ],
+      [
+        -0.4,
+        0.4
+      ],
+      [
+        -0.4,
+        0.4
+      ],
+      [
+        -0.4,
+        0.4
+      ],
+      [
+        -0.4,
+        0.4
+      ],
+      [
+        -0.4,
+        0.4
+      ],
+      [
+        -0.4,
+        0.4
+      ]
+    ],
+    "environment_adaptation": {
+      "reference_target_positive_y_arm_gains": [
+        22.0,
+        0.0
+      ],
+      "reference_target_x_arm_gains": [
+        -10.0,
+        4.0
+      ],
+      "reference_target_y_arm_gains": [
+        12.0,
+        0.0
+      ],
+      "robot_base_position_jitter_xy": [
+        0.0,
+        0.0
+      ],
+      "robot_base_yaw_jitter": 0.0,
+      "target_position_jitter_xy": [
+        0.0025,
+        0.0025
+      ],
+      "target_position_offset_center_xy": [
+        0.0,
+        -0.09
+      ],
+      "target_yaw_jitter": 0.0
+    },
+    "phase": {
+      "arm_release_end": 295,
+      "arm_release_start": 250,
+      "arm_start": 145,
+      "capture_step": 198,
+      "close_end": 220,
+      "open_hand_step": 180
+    },
+    "replay_attempts": [
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.005859375,
+        "max_bilateral_contact_streak": 102,
+        "max_grasp_streak": 103,
+        "max_lift_m": 0.30624067783355713,
+        "max_min_opposing_force_n": 15.941720962524414,
+        "rank": 0,
+        "reproduced": true,
+        "search_env_id": 683,
+        "search_round": 4,
+        "selected": false,
+        "success_neighbor_radius": 0.13706856966018677,
+        "successes_at_first_terminal_step": 3,
+        "successful_world_id": 508,
+        "terminal_step": 329
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 68,
+        "max_grasp_streak": 69,
+        "max_lift_m": 0.28101927042007446,
+        "max_min_opposing_force_n": 7.5111284255981445,
+        "rank": 1,
+        "reproduced": true,
+        "search_env_id": 1972,
+        "search_round": 7,
+        "selected": false,
+        "success_neighbor_radius": 0.13937710225582123,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 71,
+        "max_grasp_streak": 72,
+        "max_lift_m": 0.2780773639678955,
+        "max_min_opposing_force_n": 7.568625450134277,
+        "rank": 2,
+        "reproduced": true,
+        "search_env_id": 1016,
+        "search_round": 7,
+        "selected": false,
+        "success_neighbor_radius": 0.13943561911582947,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 96,
+        "max_grasp_streak": 97,
+        "max_lift_m": 0.3047088384628296,
+        "max_min_opposing_force_n": 10.582350730895996,
+        "rank": 3,
+        "reproduced": true,
+        "search_env_id": 3975,
+        "search_round": 2,
+        "selected": false,
+        "success_neighbor_radius": 0.1401449739933014,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 508,
+        "terminal_step": 328
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 61,
+        "max_grasp_streak": 62,
+        "max_lift_m": 0.2758138179779053,
+        "max_min_opposing_force_n": 6.802276134490967,
+        "rank": 4,
+        "reproduced": true,
+        "search_env_id": 0,
+        "search_round": 4,
+        "selected": false,
+        "success_neighbor_radius": 0.14173778891563416,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 100,
+        "max_grasp_streak": 101,
+        "max_lift_m": 0.3000512719154358,
+        "max_min_opposing_force_n": 18.419189453125,
+        "rank": 5,
+        "reproduced": true,
+        "search_env_id": 2368,
+        "search_round": 5,
+        "selected": false,
+        "success_neighbor_radius": 0.14203259348869324,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 508,
+        "terminal_step": 328
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 63,
+        "max_grasp_streak": 64,
+        "max_lift_m": 0.27376872301101685,
+        "max_min_opposing_force_n": 7.081261157989502,
+        "rank": 6,
+        "reproduced": true,
+        "search_env_id": 2563,
+        "search_round": 6,
+        "selected": false,
+        "success_neighbor_radius": 0.14269977807998657,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.0078125,
+        "max_bilateral_contact_streak": 91,
+        "max_grasp_streak": 92,
+        "max_lift_m": 0.28463178873062134,
+        "max_min_opposing_force_n": 9.066302299499512,
+        "rank": 7,
+        "reproduced": true,
+        "search_env_id": 2856,
+        "search_round": 7,
+        "selected": false,
+        "success_neighbor_radius": 0.14289754629135132,
+        "successes_at_first_terminal_step": 4,
+        "successful_world_id": 493,
+        "terminal_step": 328
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 98,
+        "max_grasp_streak": 99,
+        "max_lift_m": 0.3034512400627136,
+        "max_min_opposing_force_n": 11.479053497314453,
+        "rank": 8,
+        "reproduced": true,
+        "search_env_id": 1228,
+        "search_round": 5,
+        "selected": false,
+        "success_neighbor_radius": 0.14339499175548553,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 16,
+        "terminal_step": 329
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 63,
+        "max_grasp_streak": 64,
+        "max_lift_m": 0.2750856876373291,
+        "max_min_opposing_force_n": 7.06862735748291,
+        "rank": 9,
+        "reproduced": true,
+        "search_env_id": 702,
+        "search_round": 3,
+        "selected": false,
+        "success_neighbor_radius": 0.1434275209903717,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 62,
+        "max_grasp_streak": 63,
+        "max_lift_m": 0.2768442630767822,
+        "max_min_opposing_force_n": 6.880599498748779,
+        "rank": 10,
+        "reproduced": true,
+        "search_env_id": 3382,
+        "search_round": 3,
+        "selected": false,
+        "success_neighbor_radius": 0.14411334693431854,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 71,
+        "max_grasp_streak": 72,
+        "max_lift_m": 0.2730984687805176,
+        "max_min_opposing_force_n": 7.804000377655029,
+        "rank": 11,
+        "reproduced": true,
+        "search_env_id": 782,
+        "search_round": 4,
+        "selected": false,
+        "success_neighbor_radius": 0.14478632807731628,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 69,
+        "max_grasp_streak": 70,
+        "max_lift_m": 0.27740633487701416,
+        "max_min_opposing_force_n": 7.127681732177734,
+        "rank": 12,
+        "reproduced": true,
+        "search_env_id": 837,
+        "search_round": 2,
+        "selected": false,
+        "success_neighbor_radius": 0.14488185942173004,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 64,
+        "max_grasp_streak": 65,
+        "max_lift_m": 0.2742975950241089,
+        "max_min_opposing_force_n": 7.026393890380859,
+        "rank": 13,
+        "reproduced": true,
+        "search_env_id": 591,
+        "search_round": 7,
+        "selected": false,
+        "success_neighbor_radius": 0.14501261711120605,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 54,
+        "max_grasp_streak": 55,
+        "max_lift_m": 0.27908188104629517,
+        "max_min_opposing_force_n": 11.441121101379395,
+        "rank": 14,
+        "reproduced": true,
+        "search_env_id": 3580,
+        "search_round": 3,
+        "selected": false,
+        "success_neighbor_radius": 0.14536212384700775,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 321
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 60,
+        "max_grasp_streak": 61,
+        "max_lift_m": 0.2699103355407715,
+        "max_min_opposing_force_n": 6.866055488586426,
+        "rank": 15,
+        "reproduced": true,
+        "search_env_id": 3363,
+        "search_round": 2,
+        "selected": false,
+        "success_neighbor_radius": 0.14586997032165527,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 67,
+        "max_grasp_streak": 68,
+        "max_lift_m": 0.28464001417160034,
+        "max_min_opposing_force_n": 8.337946891784668,
+        "rank": 16,
+        "reproduced": true,
+        "search_env_id": 2152,
+        "search_round": 6,
+        "selected": false,
+        "success_neighbor_radius": 0.14588885009288788,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 66,
+        "max_grasp_streak": 67,
+        "max_lift_m": 0.2799176573753357,
+        "max_min_opposing_force_n": 7.397202491760254,
+        "rank": 17,
+        "reproduced": true,
+        "search_env_id": 3139,
+        "search_round": 6,
+        "selected": false,
+        "success_neighbor_radius": 0.14620262384414673,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 67,
+        "max_grasp_streak": 68,
+        "max_lift_m": 0.27214592695236206,
+        "max_min_opposing_force_n": 7.157502174377441,
+        "rank": 18,
+        "reproduced": true,
+        "search_env_id": 951,
+        "search_round": 1,
+        "selected": false,
+        "success_neighbor_radius": 0.14631183445453644,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 64,
+        "max_grasp_streak": 65,
+        "max_lift_m": 0.2912002205848694,
+        "max_min_opposing_force_n": 11.868704795837402,
+        "rank": 19,
+        "reproduced": true,
+        "search_env_id": 2511,
+        "search_round": 6,
+        "selected": false,
+        "success_neighbor_radius": 0.1467919498682022,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 453,
+        "terminal_step": 326
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 102,
+        "max_grasp_streak": 103,
+        "max_lift_m": 0.30554020404815674,
+        "max_min_opposing_force_n": 18.21880340576172,
+        "rank": 20,
+        "reproduced": true,
+        "search_env_id": 1804,
+        "search_round": 3,
+        "selected": false,
+        "success_neighbor_radius": 0.14707282185554504,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 508,
+        "terminal_step": 329
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 53,
+        "max_grasp_streak": 54,
+        "max_lift_m": 0.28287166357040405,
+        "max_min_opposing_force_n": 12.216544151306152,
+        "rank": 21,
+        "reproduced": true,
+        "search_env_id": 554,
+        "search_round": 5,
+        "selected": false,
+        "success_neighbor_radius": 0.14722968637943268,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 44,
+        "max_grasp_streak": 45,
+        "max_lift_m": 0.269315242767334,
+        "max_min_opposing_force_n": 14.28605842590332,
+        "rank": 22,
+        "reproduced": true,
+        "search_env_id": 332,
+        "search_round": 7,
+        "selected": false,
+        "success_neighbor_radius": 0.14753228425979614,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 99,
+        "max_grasp_streak": 100,
+        "max_lift_m": 0.30482804775238037,
+        "max_min_opposing_force_n": 11.652971267700195,
+        "rank": 23,
+        "reproduced": true,
+        "search_env_id": 3410,
+        "search_round": 5,
+        "selected": false,
+        "success_neighbor_radius": 0.1475493609905243,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 508,
+        "terminal_step": 328
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.0234375,
+        "max_bilateral_contact_streak": 103,
+        "max_grasp_streak": 104,
+        "max_lift_m": 0.2927643060684204,
+        "max_min_opposing_force_n": 28.39501190185547,
+        "rank": 24,
+        "reproduced": true,
+        "search_env_id": 4003,
+        "search_round": 5,
+        "selected": true,
+        "success_neighbor_radius": 0.1478651762008667,
+        "successes_at_first_terminal_step": 12,
+        "successful_world_id": 331,
+        "terminal_step": 330
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 65,
+        "max_grasp_streak": 66,
+        "max_lift_m": 0.2682494521141052,
+        "max_min_opposing_force_n": 7.858790397644043,
+        "rank": 25,
+        "reproduced": true,
+        "search_env_id": 1542,
+        "search_round": 6,
+        "selected": false,
+        "success_neighbor_radius": 0.14791972935199738,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 44,
+        "max_grasp_streak": 45,
+        "max_lift_m": 0.2680228352546692,
+        "max_min_opposing_force_n": 8.282805442810059,
+        "rank": 26,
+        "reproduced": true,
+        "search_env_id": 3926,
+        "search_round": 4,
+        "selected": false,
+        "success_neighbor_radius": 0.14851880073547363,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 103,
+        "max_grasp_streak": 104,
+        "max_lift_m": 0.30340778827667236,
+        "max_min_opposing_force_n": 26.012598037719727,
+        "rank": 27,
+        "reproduced": true,
+        "search_env_id": 2073,
+        "search_round": 6,
+        "selected": false,
+        "success_neighbor_radius": 0.14963725209236145,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 508,
+        "terminal_step": 329
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 79,
+        "max_grasp_streak": 80,
+        "max_lift_m": 0.28904056549072266,
+        "max_min_opposing_force_n": 8.166873931884766,
+        "rank": 28,
+        "reproduced": true,
+        "search_env_id": 3451,
+        "search_round": 0,
+        "selected": false,
+        "success_neighbor_radius": 0.14967632293701172,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 343,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 59,
+        "max_grasp_streak": 60,
+        "max_lift_m": 0.26963937282562256,
+        "max_min_opposing_force_n": 6.6796698570251465,
+        "rank": 29,
+        "reproduced": true,
+        "search_env_id": 1465,
+        "search_round": 6,
+        "selected": false,
+        "success_neighbor_radius": 0.14970389008522034,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.01171875,
+        "max_bilateral_contact_streak": 104,
+        "max_grasp_streak": 105,
+        "max_lift_m": 0.2989368438720703,
+        "max_min_opposing_force_n": 39.3868522644043,
+        "rank": 30,
+        "reproduced": true,
+        "search_env_id": 2665,
+        "search_round": 1,
+        "selected": false,
+        "success_neighbor_radius": 0.15008792281150818,
+        "successes_at_first_terminal_step": 6,
+        "successful_world_id": 331,
+        "terminal_step": 330
+      },
+      {
+        "independent_replay_success_rate_at_first_terminal_step": 0.001953125,
+        "max_bilateral_contact_streak": 58,
+        "max_grasp_streak": 59,
+        "max_lift_m": 0.28665369749069214,
+        "max_min_opposing_force_n": 7.595880508422852,
+        "rank": 31,
+        "reproduced": true,
+        "search_env_id": 1402,
+        "search_round": 1,
+        "selected": false,
+        "success_neighbor_radius": 0.15079829096794128,
+        "successes_at_first_terminal_step": 1,
+        "successful_world_id": 385,
+        "terminal_step": 320
+      }
+    ],
+    "reproduction": {
+      "independent_replay_success_rate_at_first_terminal_step": 0.0234375,
+      "max_bilateral_contact_streak": 103,
+      "max_grasp_streak": 104,
+      "max_lift_m": 0.2927643060684204,
+      "max_min_opposing_force_n": 28.39501190185547,
+      "replay_envs": 512,
+      "successes_at_first_terminal_step": 12,
+      "successful_world_id": 331,
+      "terminal_step": 330
+    },
+    "right_arm_correction": [
+      -0.011593643575906754,
+      0.03806641697883606,
+      -0.061469584703445435,
+      0.017439696937799454,
+      0.027173765003681183,
+      0.008861642330884933,
+      -0.026148859411478043
+    ],
+    "search_env_id": 4003,
+    "search_result": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/raw_runs/mjlab_gpu/grasp_anything/Apple_1/xmove_bend_ep11_v1/diagnostics/staged_position_dr_2p5mm_seed20260915_4096.json",
+    "search_round": 5,
+    "source_immutable": true,
+    "source_reference_sha256": "f377e28458badee178b7c15641196c3de9202911c61b6380966378470510c823",
+    "success_neighbor_radius": 0.1478651762008667,
+    "version": "apple_xmove_bend_ep11_position_dr_2p5mm_staged_native_v2"
+  },
+  "repair_version": "none",
+  "replay_gate_passed": true,
+  "replay_success_rate": 1.0,
+  "reports": [
+    {
+      "episode": 11,
+      "failure": false,
+      "frames": 330,
+      "max_grasp_streak": 104,
+      "max_lift": 0.2927643060684204,
+      "native_success_criteria": {
+        "lift_height_m": 0.09,
+        "stable_hold_steps": 13
+      },
+      "success": true,
+      "terminal_step": 330,
+      "timeout": false
+    }
+  ],
+  "requested_episode_id": 11,
+  "schema": {
+    "action_dim": 36,
+    "action_slices": {
+      "base_height": {
+        "start": 31,
+        "stop": 32
+      },
+      "left_arm": {
+        "start": 14,
+        "stop": 21
+      },
+      "left_hand": {
+        "start": 0,
+        "stop": 7
+      },
+      "right_arm": {
+        "start": 21,
+        "stop": 28
+      },
+      "right_hand": {
+        "start": 7,
+        "stop": 14
+      },
+      "target_yaw": {
+        "start": 35,
+        "stop": 36
+      },
+      "torso_rpy": {
+        "start": 28,
+        "stop": 31
+      },
+      "torso_vx": {
+        "start": 32,
+        "stop": 33
+      },
+      "torso_vy": {
+        "start": 33,
+        "stop": 34
+      },
+      "turning_flag": {
+        "start": 34,
+        "stop": 35
+      }
+    },
+    "actor_obs_dim": 192,
+    "actor_obs_v2_dim": 331,
+    "joint_names": [
+      "left_hip_pitch_joint",
+      "left_hip_roll_joint",
+      "left_hip_yaw_joint",
+      "left_knee_joint",
+      "left_ankle_pitch_joint",
+      "left_ankle_roll_joint",
+      "right_hip_pitch_joint",
+      "right_hip_roll_joint",
+      "right_hip_yaw_joint",
+      "right_knee_joint",
+      "right_ankle_pitch_joint",
+      "right_ankle_roll_joint",
+      "waist_yaw_joint",
+      "waist_roll_joint",
+      "waist_pitch_joint",
+      "left_shoulder_pitch_joint",
+      "left_shoulder_roll_joint",
+      "left_shoulder_yaw_joint",
+      "left_elbow_joint",
+      "left_wrist_roll_joint",
+      "left_wrist_pitch_joint",
+      "left_wrist_yaw_joint",
+      "right_shoulder_pitch_joint",
+      "right_shoulder_roll_joint",
+      "right_shoulder_yaw_joint",
+      "right_elbow_joint",
+      "right_wrist_roll_joint",
+      "right_wrist_pitch_joint",
+      "right_wrist_yaw_joint",
+      "left_hand_thumb_0_joint",
+      "left_hand_thumb_1_joint",
+      "left_hand_thumb_2_joint",
+      "left_hand_index_0_joint",
+      "left_hand_index_1_joint",
+      "left_hand_middle_0_joint",
+      "left_hand_middle_1_joint",
+      "right_hand_thumb_0_joint",
+      "right_hand_thumb_1_joint",
+      "right_hand_thumb_2_joint",
+      "right_hand_index_0_joint",
+      "right_hand_index_1_joint",
+      "right_hand_middle_0_joint",
+      "right_hand_middle_1_joint"
+    ],
+    "left_contact_link_names": [
+      "left_wrist_yaw_link",
+      "left_hand_thumb_0_link",
+      "left_hand_thumb_1_link",
+      "left_hand_thumb_2_link",
+      "left_hand_index_0_link",
+      "left_hand_index_1_link",
+      "left_hand_middle_0_link",
+      "left_hand_middle_1_link"
+    ],
+    "max_episode_steps": 192,
+    "motion_feature_dim": 82,
+    "motion_frame_dim": 80,
+    "motion_link_names": [
+      "left_wrist_yaw_link",
+      "right_wrist_yaw_link",
+      "left_hand_thumb_2_link",
+      "left_hand_index_1_link",
+      "left_hand_middle_1_link",
+      "right_hand_thumb_2_link",
+      "right_hand_index_1_link",
+      "right_hand_middle_1_link"
+    ],
+    "motion_window": 10,
+    "reference_actor_obs_dim": 593,
+    "reference_actor_obs_v2_dim": 842,
+    "reference_context_dim": 401,
+    "reference_context_v2_dim": 511,
+    "reference_frame_dim": 40,
+    "reference_frame_v2_dim": 51,
+    "reference_future_offsets": [
+      0,
+      5,
+      10,
+      15,
+      20,
+      25,
+      30,
+      35,
+      40,
+      45
+    ],
+    "right_contact_link_names": [
+      "right_wrist_yaw_link",
+      "right_hand_thumb_0_link",
+      "right_hand_thumb_1_link",
+      "right_hand_thumb_2_link",
+      "right_hand_index_0_link",
+      "right_hand_index_1_link",
+      "right_hand_middle_0_link",
+      "right_hand_middle_1_link"
+    ]
+  },
+  "seed": 42,
+  "source": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/data/simple/G1WholebodyXMoveBendPickTeleop-v0",
+  "source_episode_ids": [
+    11
+  ],
+  "source_immutable": true,
+  "source_sha256": "d147d1ca84971ebe8f21495d0b315bd2d253d902aa55368dcef34d485d8568f4",
+  "source_state_vector_dim": 32,
+  "splits": {
+    "test": [],
+    "train": [
+      11
+    ],
+    "val": []
+  },
+  "strict_subset_source": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/other/references/grasp_anything/Apple_1_xmove_bend_ep11_staged_native_v1",
+  "task": "xmove_bend_pick",
+  "task_metadata": {
+    "action_dim": 36,
+    "action_schema": "g1_wholebody_tracker_36_v1",
+    "actor_observation_dim": 331,
+    "observation_schema": "task_privileged_v2",
+    "reference_actor_observation_dim": 842,
+    "reference_schema": "complete_plan_10x51_plus_phase_v2",
+    "registry_uid": "g1_wholebody_xmove_bend_pick_teleop",
+    "robot_uid": "g1_sonic",
+    "spec": {
+      "action_schema": "g1_wholebody_tracker_36_v1",
+      "articulation": null,
+      "controller_backend": "sonic_wbc",
+      "dataset_name": "G1WholebodyXMoveBendPickTeleop-v0",
+      "family": "grasp",
+      "fast_reset": false,
+      "label": "Move and bend pick",
+      "lift_height": 0.08,
+      "max_episode_steps": 800,
+      "name": "xmove_bend_pick",
+      "native_target_x": [
+        0.0,
+        0.0
+      ],
+      "native_target_y": [
+        0.0,
+        0.0
+      ],
+      "native_yaw_jitter": 0.15,
+      "observation_schema": "task_privileged_v2",
+      "placement_xy_tolerance": 0.12,
+      "reference_schema": "complete_plan_10x51_plus_phase_v2",
+      "registry_uid": "g1_wholebody_xmove_bend_pick_teleop",
+      "robot_uid": "g1_sonic",
+      "roles": {
+        "auxiliary": null,
+        "destination": "table",
+        "primary": "target"
+      },
+      "schema_version": 2,
+      "source_uids": [
+        "g1_wholebody_xmove_bend_pick_teleop",
+        "g1_sonic_xmove_bend_pick_teleop"
+      ],
+      "stable_angular_speed": 1.0,
+      "stable_linear_speed": 0.1,
+      "stages": [
+        {
+          "hand": "right",
+          "hold_steps": 1,
+          "name": "approach",
+          "primitive": "approach",
+          "threshold": 0.06
+        },
+        {
+          "hand": "right",
+          "hold_steps": 3,
+          "name": "grasp",
+          "primitive": "grasp",
+          "threshold": 0
+        },
+        {
+          "hand": "right",
+          "hold_steps": 13,
+          "name": "lift",
+          "primitive": "lift",
+          "threshold": 0.08
+        }
+      ],
+      "target_object": null
+    },
+    "task": "xmove_bend_pick",
+    "task_schema_version": 2
+  },
+  "unique_episodes": [
+    11
+  ]
+}

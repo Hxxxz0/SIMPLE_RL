@@ -28,22 +28,25 @@ Contributors: [Songlin Wei](https://songlin.github.io/)\*, [Zhenhao Ni](https://
 
 ## grasp_anything 物体抓取发布（2026-08-14）
 
-`grasp_anything` 当前已有 5 种物体的独立 RL checkpoint：`Soap_Bottle_1`、
-`Bottle_1`、`Apple_1`、`Bowl_1` 和 `Cup_6`。选定权重、SHA256、验收数据、
-适用边界和本机视频绝对路径已归档到
+`grasp_anything` 当前保留 5 个独立 RL checkpoint：`Soap_Bottle_1`、
+`Bottle_1`、`Apple_1`、`Bowl_1` 和 `Cup_6`。另外，低矮物体的 opt-in
+`xmove_bend_pick` episode-11 路线实证支持 `Apple_1`、`Bowl_1`、`Potato_1`
+和 `Tomato_1`，因此共有 7 种不重复物体通过了物理抓取验收。选定权重、reference、
+SHA256、验收数据、适用边界和本机视频绝对路径已归档到
 [`releases/grasp_rl/mjlab_gpu/grasp_anything/v1`](releases/grasp_rl/mjlab_gpu/grasp_anything/v1)，
 大文件通过 Git LFS 发布。
 
 验收成功要求物体在原生物理中被抓住、抬高至少 9 cm 并保持 13 个控制步，
 不把仅接触或闭合手指计为成功。`Soap_Bottle_1` 和 `Bottle_1` 支持 narrow
-pose DR，但需要 lift-arm-decay 运行时变体；`Apple_1` 和 `Bowl_1` 目前只是
-fixed-pose baseline，不宣称 narrow/workspace DR 支持。五种物体都已有成功视频。
+pose DR，但需要 lift-arm-decay 运行时变体。新 bend reference 在目标 X/Y 各
+`+/-2.5 mm` 下，`Potato_1` 为 490/512、`Tomato_1` 为 496/512、`Bowl_1`
+为 270/512；所有 bend 支持物体都有全身和近景成功视频。
 
-针对低矮的 `Apple_1`，另增加了不覆盖旧结果的 `xmove_bend_pick` episode 11
-固定参考变体：精确 512-world Warp 合同下 reference-only 为 512/512，平均抬升
-0.26416 m；未训练新 PPO，原 episode-82 Apple 权重仍保持 112/512。该结果在
-32-world batch 下为 0/32，因此不宣称 DR 或 batch-size 泛化。staged reference、
-两条成功视频、SHA256、完整运行参数和本机绝对路径均记录在同一 release README。
+Apple 的固定 bend reference 在精确 512-world Warp 合同下为 512/512，但位置
+DR 揭示其泛化不足。新位置 DR reference 在配对 seed 上从旧 reference 的 81/512
+提高到 95/512，仍只有 18.55%，不能称为稳健。两次 PPO 训练也未超过 reference，
+所以只作为 rejected 实验备份，不替换原 episode-82 Apple 权重。完整分析、DR
+profiles、失败边界和全部绝对路径见 release 中的 `DR_BEND_FOLLOWUP.md`。
 
 ## mjlab CUDA PPO 可复现发布（2026-08-03）
 

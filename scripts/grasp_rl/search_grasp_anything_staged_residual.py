@@ -150,15 +150,15 @@ def _sample_candidates(
 def _environment(args: argparse.Namespace) -> GpuGraspVecEnv:
     dr = DomainRandomizationConfig(
         enabled=True,
-        target_position_jitter_xy=(0.0, 0.0),
+        target_position_jitter_xy=tuple(args.target_position_jitter_xy),
         target_position_offset_center_xy=tuple(args.target_position_offset_center_xy),
-        target_yaw_jitter=0.0,
+        target_yaw_jitter=args.target_yaw_jitter,
         destination_position_jitter_xy=(0.0, 0.0),
         destination_yaw_jitter=0.0,
         distractor_position_jitter_xy=(0.0, 0.0),
         distractor_yaw_jitter=0.0,
-        robot_base_position_jitter_xy=(0.0, 0.0),
-        robot_base_yaw_jitter=0.0,
+        robot_base_position_jitter_xy=tuple(args.robot_base_position_jitter_xy),
+        robot_base_yaw_jitter=args.robot_base_yaw_jitter,
         target_mass_scale=(1.0, 1.0),
         friction_scale=(1.0, 1.0),
         joint_damping_scale=(1.0, 1.0),
@@ -1030,9 +1030,15 @@ def search(args: argparse.Namespace) -> dict[str, object]:
         "geometry_mode": args.geometry_mode,
         "arm_bounds": [list(bounds) for bounds in arm_bounds],
         "environment_adaptation": {
+            "target_position_jitter_xy": list(args.target_position_jitter_xy),
             "target_position_offset_center_xy": list(
                 args.target_position_offset_center_xy
             ),
+            "target_yaw_jitter": args.target_yaw_jitter,
+            "robot_base_position_jitter_xy": list(
+                args.robot_base_position_jitter_xy
+            ),
+            "robot_base_yaw_jitter": args.robot_base_yaw_jitter,
             "reference_target_x_arm_gains": list(args.reference_target_x_arm_gains),
             "reference_target_y_arm_gains": list(args.reference_target_y_arm_gains),
             "reference_target_positive_y_arm_gains": list(
@@ -1095,6 +1101,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--arm-release-start", type=int)
     parser.add_argument("--arm-release-end", type=int)
     parser.add_argument("--target-position-offset-center-xy", type=float, nargs=2, default=(0.087, 0.0))
+    parser.add_argument(
+        "--target-position-jitter-xy", type=float, nargs=2, default=(0.0, 0.0)
+    )
+    parser.add_argument("--target-yaw-jitter", type=float, default=0.0)
+    parser.add_argument(
+        "--robot-base-position-jitter-xy", type=float, nargs=2, default=(0.0, 0.0)
+    )
+    parser.add_argument("--robot-base-yaw-jitter", type=float, default=0.0)
     parser.add_argument("--reference-target-x-arm-gains", type=float, nargs=2, default=(-5.3, 2.4))
     parser.add_argument("--reference-target-y-arm-gains", type=float, nargs=2, default=(12.0, 0.0))
     parser.add_argument("--reference-target-positive-y-arm-gains", type=float, nargs=2, default=(22.0, 0.0))
