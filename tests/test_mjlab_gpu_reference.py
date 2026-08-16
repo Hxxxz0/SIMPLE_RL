@@ -261,6 +261,40 @@ def test_v2_reference_can_retarget_positive_y_with_separate_gains(tmp_path) -> N
     assert library.metadata()["target_positive_y_arm_gains"] == [22.0, 3.0]
 
 
+def test_v2_reference_can_disable_retargeting_for_positive_x(tmp_path) -> None:
+    root = tmp_path / "retarget_positive_x_v2"
+    source = root / "bc"
+    source.mkdir(parents=True)
+    observations = np.zeros((60, ACTOR_OBS_V2_DIM), dtype=np.float32)
+    actions = np.zeros((60, ACTION_DIM), dtype=np.float32)
+    (root / "manifest.json").write_text(
+        json.dumps({"splits": {"train": [0], "val": [], "test": []}})
+    )
+    np.savez(
+        source / "episode_000000.npz",
+        observations=observations,
+        raw_actions=actions,
+    )
+    library = GpuReferenceLibrary(
+        root,
+        num_envs=3,
+        device="cpu",
+        target_x_arm_gains=(-12.5, 4.0),
+        target_positive_x_arm_gains=(0.0, 0.0),
+        target_x_arm_gain_y_bounds=(-0.05, 0.025),
+    )
+    current = torch.from_numpy(observations[:3]).clone()
+    current[:, 163] = torch.tensor([-0.04, 0.04, -0.04])
+    current[:, 164] = torch.tensor([0.00, 0.00, 0.04])
+    library.reset(current, episode_rows=torch.tensor([0, 0, 0]))
+
+    actions = library.current_action()
+    torch.testing.assert_close(actions[:, 21], torch.tensor([0.5, 0.0, 0.0]))
+    torch.testing.assert_close(actions[:, 24], torch.tensor([-0.16, 0.0, 0.0]))
+    assert library.metadata()["target_positive_x_arm_gains"] == [0.0, 0.0]
+    assert library.metadata()["target_x_arm_gain_y_bounds"] == [-0.05, 0.025]
+
+
 def test_reference_noise_changes_policy_view_but_not_clean_contact_truth(
     tmp_path,
 ) -> None:

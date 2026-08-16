@@ -243,6 +243,15 @@ class GpuGoalGraphReward:
         self.reference_contact[indices] = values.clamp(0.0, 1.0)
         self.reference_contact_valid[indices] = True
 
+    def _approach_reward_progress(
+        self,
+        state: GpuTaskStateV2,
+        fingertip_distances: torch.Tensor,
+    ) -> torch.Tensor:
+        del state
+        progress, _ = _approach_progress(fingertip_distances)
+        return progress
+
     def _hand_grasp(
         self, state: GpuTaskStateV2, hand_index: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -459,7 +468,9 @@ class GpuGoalGraphReward:
                     selected = state.fingertip_distances.flatten(1)
                 else:
                     selected = state.fingertip_distances[:, 1]
-                stage_reward_progress, _ = _approach_progress(selected)
+                stage_reward_progress = self._approach_reward_progress(
+                    state, selected
+                )
             elif stage.primitive == "lift":
                 if stage.hand == "left":
                     selected_quality = left_quality

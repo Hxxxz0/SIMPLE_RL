@@ -7,9 +7,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
 from rsl_rl.models import MLPModel
 from tensordict import TensorDict
+from torch import nn
 
 from simple.grasp_rl.models import (
     ClippedMLPModel,
@@ -19,8 +19,8 @@ from simple.grasp_rl.models import (
 from simple.grasp_rl.schema import (
     ACTION_DIM,
     ACTOR_OBS_DIM,
-    REFERENCE_ACTOR_OBS_DIM,
     ACTOR_OBS_V2_DIM,
+    REFERENCE_ACTOR_OBS_DIM,
     REFERENCE_ACTOR_OBS_V2_DIM,
 )
 from simple.grasp_rl.task_spec import (
@@ -38,6 +38,7 @@ def make_actor(
     recurrent: bool = False,
     rnn_hidden_dim: int = 256,
     plan_conditioned: bool = False,
+    residual_action_groups: tuple[str, ...] = ("right_hand", "right_arm"),
 ) -> MLPModel:
     device = torch.device(device)
     dummy = TensorDict(
@@ -54,7 +55,7 @@ def make_actor(
         if plan_conditioned
         else ClippedMLPModel
     )
-    model_kwargs = (
+    model_kwargs: dict[str, object] = (
         {
             "rnn_type": "gru",
             "rnn_hidden_dim": rnn_hidden_dim,
@@ -63,6 +64,8 @@ def make_actor(
         if recurrent
         else {}
     )
+    if plan_conditioned:
+        model_kwargs["residual_action_groups"] = residual_action_groups
     return model_class(
         dummy,
         {"actor": ["actor"]},
@@ -164,9 +167,7 @@ def build_knn_actor_checkpoint(
                 with np.load(
                     source / f"episode_{episode:06d}.npz", allow_pickle=False
                 ) as episode_data:
-                    observations.append(
-                        episode_data["observations"].astype(np.float32)
-                    )
+                    observations.append(episode_data["observations"].astype(np.float32))
                     actions.append(episode_data["raw_actions"].astype(np.float32))
                     frames = len(episode_data["observations"])
                     episode_ids.append(np.full(frames, episode, dtype=np.int64))
@@ -214,16 +215,14 @@ def load_actor(
     if data.get("policy_type") == "knn_bc_v1":
         return KnnBcActor(data, device).eval()
     recurrent = "rnn.rnn.weight_ih_l0" in data["actor_state_dict"]
-    plan_conditioned = (
-        "_plan_conditioned_actor" in data["actor_state_dict"]
+    plan_conditioned = "_plan_conditioned_actor" in data["actor_state_dict"]
+    resolved = data.get("mjlab_gpu_metadata", {}).get("config", {}).get("resolved", {})
+    residual_action_groups = tuple(
+        resolved.get("residual_action_groups", ("right_hand", "right_arm"))
     )
     if recurrent:
-        observation_dim = int(
-            data["actor_state_dict"]["rnn.rnn.weight_ih_l0"].shape[1]
-        )
-        rnn_hidden_dim = int(
-            data["actor_state_dict"]["rnn.rnn.weight_hh_l0"].shape[1]
-        )
+        observation_dim = int(data["actor_state_dict"]["rnn.rnn.weight_ih_l0"].shape[1])
+        rnn_hidden_dim = int(data["actor_state_dict"]["rnn.rnn.weight_hh_l0"].shape[1])
     else:
         observation_dim = int(data["actor_state_dict"]["mlp.0.weight"].shape[1])
         rnn_hidden_dim = 256
@@ -234,16 +233,19 @@ def load_actor(
         ACTOR_OBS_V2_DIM,
         REFERENCE_ACTOR_OBS_V2_DIM,
     }:
-        raise ValueError(
-            f"Unsupported actor observation dimension {observation_dim}"
-        )
+        raise ValueError(f"Unsupported actor observation dimension {observation_dim}")
     actor = make_actor(
         device,
         observation_dim,
         recurrent=recurrent,
         rnn_hidden_dim=rnn_hidden_dim,
         plan_conditioned=plan_conditioned,
+        residual_action_groups=residual_action_groups,
     )
+    if plan_conditioned and "_residual_action_mask" not in data["actor_state_dict"]:
+        data["actor_state_dict"]["_residual_action_mask"] = actor.state_dict()[
+            "_residual_action_mask"
+        ].clone()
     actor.load_state_dict(data["actor_state_dict"])
     actor.grasp_observation_dim = observation_dim
     actor.eval()

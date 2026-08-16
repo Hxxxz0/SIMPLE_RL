@@ -19,6 +19,7 @@ from simple.grasp_rl.diffusion import DiffusionTrainConfig, train_diffusion
 from simple.grasp_rl.evaluate import evaluate_policy
 from simple.grasp_rl.grasp_anything import (
     derive_grasp_anything_bundle,
+    derive_grasp_anything_workspace_bundle,
     validate_grasp_anything_bundle,
 )
 from simple.grasp_rl.hard_targets import mine_hard_targets
@@ -126,6 +127,27 @@ def _parser() -> argparse.ArgumentParser:
         "--maximum-grip-force-newtons", type=float, default=80.0
     )
     derive_object.add_argument("--table-clearance-m", type=float, default=0.002)
+
+    derive_workspace = commands.add_parser("derive-grasp-anything-workspace")
+    derive_workspace.set_defaults(task="grasp_anything")
+    derive_workspace.add_argument("--base-bundle", type=Path, required=True)
+    derive_workspace.add_argument("--output", type=Path, required=True)
+    derive_workspace.add_argument(
+        "--support-extensions-m",
+        type=float,
+        nargs=4,
+        required=True,
+        metavar=("X_MIN", "X_MAX", "Y_MIN", "Y_MAX"),
+    )
+    derive_workspace.add_argument(
+        "--target-position-jitter-xy-m", type=float, nargs=2, required=True
+    )
+    derive_workspace.add_argument(
+        "--target-position-center-xy-m", type=float, nargs=2, default=(0.0, 0.0)
+    )
+    derive_workspace.add_argument(
+        "--required-support-margin-m", type=float, default=0.03
+    )
 
     strict_reference = commands.add_parser("derive-strict-reference")
     strict_reference.add_argument("--task", default="xmove_pick")
@@ -646,6 +668,19 @@ def main() -> None:
             ),
             maximum_grip_force_newtons=args.maximum_grip_force_newtons,
             table_clearance_m=args.table_clearance_m,
+        )
+    elif args.command == "derive-grasp-anything-workspace":
+        result = derive_grasp_anything_workspace_bundle(
+            args.base_bundle,
+            args.output,
+            support_extensions_m=tuple(args.support_extensions_m),
+            target_position_jitter_xy_m=tuple(
+                args.target_position_jitter_xy_m
+            ),
+            target_position_center_xy_m=tuple(
+                args.target_position_center_xy_m
+            ),
+            required_support_margin_m=args.required_support_margin_m,
         )
     elif args.command == "derive-strict-reference":
         result = derive_strict_reference_subset(

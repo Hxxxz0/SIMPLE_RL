@@ -172,6 +172,8 @@ class GpuReferenceLibrary:
         source: str = "bc",
         splits: tuple[str, ...] = ("train", "val", "test"),
         target_x_arm_gains: tuple[float, float] = (0.0, 0.0),
+        target_positive_x_arm_gains: tuple[float, float] | None = None,
+        target_x_arm_gain_y_bounds: tuple[float, float] | None = None,
         target_y_arm_gains: tuple[float, float] = (0.0, 0.0),
         target_positive_y_arm_gains: tuple[float, float] | None = None,
         target_yaw_arm_gains: tuple[float, float] = (0.0, 0.0),
@@ -182,6 +184,16 @@ class GpuReferenceLibrary:
         self.num_envs = int(num_envs)
         self.source = source
         self.target_x_arm_gains = tuple(float(value) for value in target_x_arm_gains)
+        self.target_positive_x_arm_gains = (
+            None
+            if target_positive_x_arm_gains is None
+            else tuple(float(value) for value in target_positive_x_arm_gains)
+        )
+        self.target_x_arm_gain_y_bounds = (
+            None
+            if target_x_arm_gain_y_bounds is None
+            else tuple(float(value) for value in target_x_arm_gain_y_bounds)
+        )
         self.target_y_arm_gains = tuple(float(value) for value in target_y_arm_gains)
         self.target_positive_y_arm_gains = (
             None
@@ -232,6 +244,10 @@ class GpuReferenceLibrary:
         self.observation_dim = observation_dim
         if (
             any(self.target_x_arm_gains)
+            or (
+                self.target_positive_x_arm_gains is not None
+                and any(self.target_positive_x_arm_gains)
+            )
             or any(self.target_y_arm_gains)
             or (
                 self.target_positive_y_arm_gains is not None
@@ -307,6 +323,16 @@ class GpuReferenceLibrary:
             "data_sha256": self.data_sha256,
             "observation_dim": self.observation_dim,
             "target_x_arm_gains": list(self.target_x_arm_gains),
+            "target_positive_x_arm_gains": (
+                None
+                if self.target_positive_x_arm_gains is None
+                else list(self.target_positive_x_arm_gains)
+            ),
+            "target_x_arm_gain_y_bounds": (
+                None
+                if self.target_x_arm_gain_y_bounds is None
+                else list(self.target_x_arm_gain_y_bounds)
+            ),
             "target_y_arm_gains": list(self.target_y_arm_gains),
             "target_positive_y_arm_gains": (
                 None
@@ -331,6 +357,11 @@ class GpuReferenceLibrary:
         if not any(
             (
                 *self.target_x_arm_gains,
+                *(
+                    ()
+                    if self.target_positive_x_arm_gains is None
+                    else self.target_positive_x_arm_gains
+                ),
                 *self.target_y_arm_gains,
                 *(
                     ()
@@ -348,8 +379,35 @@ class GpuReferenceLibrary:
             offset_y = offset_y.unsqueeze(-1)
             offset_yaw = offset_yaw.unsqueeze(-1)
         result = actions.clone()
-        result[..., 21].add_(offset_x, alpha=shoulder_gain)
-        result[..., 24].add_(offset_x, alpha=elbow_gain)
+        x_offset_for_retarget = offset_x
+        if self.target_x_arm_gain_y_bounds is not None:
+            lower_y, upper_y = self.target_x_arm_gain_y_bounds
+            x_offset_for_retarget = offset_x * (
+                (offset_y >= lower_y) & (offset_y <= upper_y)
+            )
+        if self.target_positive_x_arm_gains is None:
+            result[..., 21].add_(x_offset_for_retarget, alpha=shoulder_gain)
+            result[..., 24].add_(x_offset_for_retarget, alpha=elbow_gain)
+        else:
+            positive_shoulder_gain, positive_elbow_gain = (
+                self.target_positive_x_arm_gains
+            )
+            result[..., 21].add_(
+                x_offset_for_retarget
+                * torch.where(
+                    offset_x > 0,
+                    positive_shoulder_gain,
+                    shoulder_gain,
+                )
+            )
+            result[..., 24].add_(
+                x_offset_for_retarget
+                * torch.where(
+                    offset_x > 0,
+                    positive_elbow_gain,
+                    elbow_gain,
+                )
+            )
         if self.target_positive_y_arm_gains is None:
             result[..., 23].add_(offset_y, alpha=shoulder_yaw_gain)
             result[..., 27].add_(offset_y, alpha=wrist_yaw_gain)

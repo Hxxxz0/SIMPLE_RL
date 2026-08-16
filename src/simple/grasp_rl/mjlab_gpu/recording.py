@@ -287,12 +287,17 @@ def _diagnostic_rank(episode: dict[str, Any]) -> tuple[int, float, float]:
 
 
 def _precontact_motion_audit(
-    max_displacement_m: float, first_hand_contact_step: int
+    max_displacement_m: float,
+    first_hand_contact_step: int,
+    *,
+    maximum_allowed_displacement_m: float = MAX_PRECONTACT_TARGET_DISPLACEMENT_M,
 ) -> dict[str, Any]:
-    passed = max_displacement_m <= MAX_PRECONTACT_TARGET_DISPLACEMENT_M
+    if maximum_allowed_displacement_m < 0.0:
+        raise ValueError("maximum pre-contact displacement must be non-negative")
+    passed = max_displacement_m <= maximum_allowed_displacement_m
     return {
         "max_target_displacement_m": max_displacement_m,
-        "maximum_allowed_displacement_m": MAX_PRECONTACT_TARGET_DISPLACEMENT_M,
+        "maximum_allowed_displacement_m": maximum_allowed_displacement_m,
         "first_hand_contact_step": (
             None if first_hand_contact_step < 0 else first_hand_contact_step
         ),
@@ -376,6 +381,10 @@ def record_success_videos(
     camera_view: str = "full_robot",
     stochastic_policy: bool = False,
     reference_only: bool = False,
+    policy_provenance: dict[str, Any] | None = None,
+    maximum_precontact_target_displacement_m: float = (
+        MAX_PRECONTACT_TARGET_DISPLACEMENT_M
+    ),
 ) -> dict[str, Any]:
     """Render verified successes, optionally falling back to best failed episodes."""
 
@@ -389,6 +398,8 @@ def record_success_videos(
         if actor is None or checkpoint is None:
             raise ValueError("PPO video recording requires a checkpoint and actor")
         provenance = _checkpoint_provenance(checkpoint)
+        if policy_provenance is not None:
+            provenance.update(policy_provenance)
     render_model, render_source = _render_model(env)
     recorded_dr_strength = (
         env.config.domain_randomization.strength(env.common_step_counter)
@@ -520,6 +531,9 @@ def record_success_videos(
             motion_audit = _precontact_motion_audit(
                 float(max_precontact_displacement[env_id]),
                 int(first_hand_contact_step[env_id]),
+                maximum_allowed_displacement_m=(
+                    maximum_precontact_target_displacement_m
+                ),
             )
             success = simulator_success and finger_audit_passed and motion_audit["passed"]
             stage = int(max_stage[env_id])

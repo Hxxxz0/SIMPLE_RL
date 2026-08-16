@@ -22,6 +22,8 @@ from simple.grasp_rl.mjlab_gpu.vec_env import GpuGraspVecEnv
 
 HAND = slice(7, 14)
 ARM = slice(21, 28)
+BODY = slice(28, 32)
+NAVIGATION = slice(32, 34)
 PARAMETER_COUNT = 11
 PARAMETER_NAMES = (
     "arm_0",
@@ -36,6 +38,9 @@ PARAMETER_NAMES = (
     "index_open",
     "middle_open",
 )
+CAPTURE_ARM_PARAMETER_NAMES = tuple(f"capture_arm_{index}" for index in range(7))
+BODY_PARAMETER_NAMES = ("torso_roll", "torso_pitch", "torso_yaw", "base_height")
+NAVIGATION_PARAMETER_NAMES = ("torso_vx", "torso_vy")
 
 
 def reference_episode_path(reference: Path, episode: int) -> Path:
@@ -44,6 +49,8 @@ def reference_episode_path(reference: Path, episode: int) -> Path:
     if episode < 0:
         raise ValueError("reference episode must be non-negative")
     return reference / "bc" / f"episode_{episode:06d}.npz"
+
+
 ARM_BOUNDS = (
     (-0.75, -0.25),
     (-0.15, 0.35),
@@ -73,6 +80,109 @@ def _arm_bounds(args: argparse.Namespace) -> tuple[tuple[float, float], ...]:
     return bounds
 
 
+def _capture_arm_bounds(
+    args: argparse.Namespace,
+) -> tuple[tuple[float, float], ...]:
+    if not args.search_capture_arm:
+        return ()
+    values = tuple(float(value) for value in args.capture_arm_bounds)
+    if len(values) != 2 * len(ARM_BOUNDS):
+        raise ValueError("capture arm bounds require one low/high pair per arm joint")
+    bounds = tuple(zip(values[::2], values[1::2], strict=True))
+    if any(low >= high for low, high in bounds):
+        raise ValueError("each capture arm bound must be strictly ordered")
+    return bounds
+
+
+def _body_bounds(args: argparse.Namespace) -> tuple[tuple[float, float], ...]:
+    if not args.search_body:
+        return ()
+    values = tuple(float(value) for value in args.body_bounds)
+    if len(values) != 2 * len(BODY_PARAMETER_NAMES):
+        raise ValueError("body bounds require one low/high pair per body action")
+    bounds = tuple(zip(values[::2], values[1::2], strict=True))
+    if any(low >= high for low, high in bounds):
+        raise ValueError("each body bound must be strictly ordered")
+    return bounds
+
+
+def _navigation_bounds(
+    args: argparse.Namespace,
+) -> tuple[tuple[float, float], ...]:
+    if not args.search_navigation:
+        return ()
+    values = tuple(float(value) for value in args.navigation_bounds)
+    if len(values) != 2 * len(NAVIGATION_PARAMETER_NAMES):
+        raise ValueError("navigation bounds require one low/high pair per XY command")
+    bounds = tuple(zip(values[::2], values[1::2], strict=True))
+    if any(low >= high for low, high in bounds):
+        raise ValueError("each navigation bound must be strictly ordered")
+    return bounds
+
+
+def _parameter_names(
+    *,
+    search_capture_arm: bool,
+    search_body: bool = False,
+    search_navigation: bool = False,
+) -> tuple[str, ...]:
+    return (
+        *PARAMETER_NAMES[:7],
+        *(CAPTURE_ARM_PARAMETER_NAMES if search_capture_arm else ()),
+        *(BODY_PARAMETER_NAMES if search_body else ()),
+        *(NAVIGATION_PARAMETER_NAMES if search_navigation else ()),
+        *PARAMETER_NAMES[7:],
+    )
+
+
+def _candidate_layout(
+    candidates: torch.Tensor,
+) -> tuple[slice | None, slice | None, slice | None, slice]:
+    """Resolve optional staged blocks while retaining every released layout."""
+
+    flags = {
+        11: (False, False, False),
+        13: (False, False, True),
+        15: (False, True, False),
+        17: (False, True, True),
+        18: (True, False, False),
+        20: (True, False, True),
+        22: (True, True, False),
+        24: (True, True, True),
+    }.get(candidates.shape[-1])
+    if flags is None:
+        raise ValueError("candidate parameters use an unsupported staged layout")
+    has_capture, has_body, has_navigation = flags
+    cursor = 7
+    capture = slice(cursor, cursor + 7) if has_capture else None
+    cursor += 7 if has_capture else 0
+    body = slice(cursor, cursor + 4) if has_body else None
+    cursor += 4 if has_body else 0
+    navigation = slice(cursor, cursor + 2) if has_navigation else None
+    cursor += 2 if has_navigation else 0
+    return capture, body, navigation, slice(cursor, cursor + 4)
+
+
+def _candidate_capture_arm(candidates: torch.Tensor) -> torch.Tensor:
+    capture, _, _, _ = _candidate_layout(candidates)
+    return candidates[..., :7] if capture is None else candidates[..., capture]
+
+
+def _candidate_body(candidates: torch.Tensor) -> torch.Tensor | None:
+    _, body, _, _ = _candidate_layout(candidates)
+    return None if body is None else candidates[..., body]
+
+
+def _candidate_navigation(candidates: torch.Tensor) -> torch.Tensor | None:
+    _, _, navigation, _ = _candidate_layout(candidates)
+    return None if navigation is None else candidates[..., navigation]
+
+
+def _candidate_aperture(candidates: torch.Tensor) -> torch.Tensor:
+    _, _, _, aperture = _candidate_layout(candidates)
+    return candidates[..., aperture]
+
+
 def phase_blend(
     step: int, *, arm_start: int, capture_step: int, close_end: int
 ) -> tuple[float, float]:
@@ -97,18 +207,91 @@ def arm_release_blend(
     return min(max((step - release_start) / (release_end - release_start), 0.0), 1.0)
 
 
-def _initial_distribution(args: argparse.Namespace) -> tuple[torch.Tensor, torch.Tensor]:
+def body_phase_blend(
+    step: int,
+    *,
+    body_start: int | None,
+    body_full_step: int | None,
+    fallback_weight: float,
+) -> float:
+    """Optionally reach the posture correction before the arm capture phase."""
+
+    if body_start is None and body_full_step is None:
+        return fallback_weight
+    if (
+        body_start is None
+        or body_full_step is None
+        or not 0 <= body_start < body_full_step
+    ):
+        raise ValueError("body phase requires strictly ordered non-negative steps")
+    return min(max((step - body_start) / (body_full_step - body_start), 0.0), 1.0)
+
+
+def _effective_arm_release_weight(
+    args: argparse.Namespace,
+    *,
+    step: int,
+    capture_active: bool,
+    overhead_release_weight: float,
+) -> float:
+    if not capture_active:
+        return overhead_release_weight
+    if args.search_capture_arm and (
+        args.capture_arm_release_start is not None
+        or args.capture_arm_release_end is not None
+    ):
+        return arm_release_blend(
+            step,
+            release_start=args.capture_arm_release_start,
+            release_end=args.capture_arm_release_end,
+        )
+    if (
+        args.search_capture_arm
+        and args.arm_release_end is not None
+        and args.arm_release_end <= args.capture_step
+    ):
+        return 0.0
+    return overhead_release_weight
+
+
+def _initial_distribution(
+    args: argparse.Namespace,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    capture_mean = args.base_capture_arm if args.search_capture_arm else ()
+    capture_std = args.capture_arm_std if args.search_capture_arm else ()
+    body_mean = args.base_body if args.search_body else ()
+    body_std = args.body_std if args.search_body else ()
+    navigation_mean = args.base_navigation if args.search_navigation else ()
+    navigation_std = args.navigation_std if args.search_navigation else ()
     mean = torch.tensor(
-        [*args.base_arm, *args.aperture_mean],
+        [
+            *args.base_arm,
+            *capture_mean,
+            *body_mean,
+            *navigation_mean,
+            *args.aperture_mean,
+        ],
         dtype=torch.float32,
         device=args.device,
     )
     std = torch.tensor(
-        [*args.arm_std, *args.aperture_std],
+        [
+            *args.arm_std,
+            *capture_std,
+            *body_std,
+            *navigation_std,
+            *args.aperture_std,
+        ],
         dtype=torch.float32,
         device=args.device,
     )
-    if mean.shape != (PARAMETER_COUNT,) or std.shape != (PARAMETER_COUNT,):
+    expected = (
+        PARAMETER_COUNT
+        + (7 if args.search_capture_arm else 0)
+        + (4 if args.search_body else 0)
+        + (2 if args.search_navigation else 0)
+    )
+    if mean.shape != (expected,) or std.shape != (expected,):
         raise ValueError("arm vectors need seven values and aperture vectors need four")
     if (std <= 0).any():
         raise ValueError("CEM standard deviations must be positive")
@@ -122,14 +305,25 @@ def _sample_candidates(
     count: int,
     generator: torch.Generator,
     arm_bounds: tuple[tuple[float, float], ...] = ARM_BOUNDS,
+    capture_arm_bounds: tuple[tuple[float, float], ...] = (),
+    body_bounds: tuple[tuple[float, float], ...] = (),
+    navigation_bounds: tuple[tuple[float, float], ...] = (),
 ) -> torch.Tensor:
     if count < 32:
         raise ValueError("staged residual search requires at least 32 candidates")
+    bounds = (
+        *arm_bounds,
+        *capture_arm_bounds,
+        *body_bounds,
+        *navigation_bounds,
+        *APERTURE_BOUNDS,
+    )
+    if mean.shape != std.shape or mean.shape != (len(bounds),):
+        raise ValueError("candidate distribution does not match parameter bounds")
     candidates = mean + std * torch.randn(
-        count, PARAMETER_COUNT, device=mean.device, generator=generator
+        count, len(bounds), device=mean.device, generator=generator
     )
     candidates[0] = mean
-    bounds = (*arm_bounds, *APERTURE_BOUNDS)
     for index, (low, high) in enumerate(bounds):
         candidates[:, index].clamp_(low, high)
     # Always probe each bound independently. The previous narrow Apple run
@@ -145,6 +339,24 @@ def _sample_candidates(
         candidates[high_row] = mean
         candidates[high_row, index] = high
     return candidates
+
+
+def replay_candidate_across_worlds(
+    candidates: torch.Tensor,
+    candidate: torch.Tensor,
+    *,
+    replicas: int,
+) -> None:
+    """Replace a prefix with one candidate for opt-in robust-world evaluation."""
+
+    if replicas < 0:
+        raise ValueError("replay best candidate replicas must be non-negative")
+    if replicas > len(candidates):
+        raise ValueError("replay best candidate replicas exceed environment count")
+    if candidate.shape != candidates.shape[1:]:
+        raise ValueError("replayed candidate has the wrong parameter shape")
+    if replicas:
+        candidates[:replicas] = candidate
 
 
 def _environment(args: argparse.Namespace) -> GpuGraspVecEnv:
@@ -244,9 +456,7 @@ def balanced_surface_gap(surface_distances: torch.Tensor) -> torch.Tensor:
 
     if surface_distances.ndim != 2 or surface_distances.shape[-1] != 3:
         raise ValueError("surface distances must have shape (N, 3)")
-    return torch.maximum(
-        surface_distances[:, 0], surface_distances[:, 1:].amin(dim=-1)
-    )
+    return torch.maximum(surface_distances[:, 0], surface_distances[:, 1:].amin(dim=-1))
 
 
 def candidate_score(
@@ -258,43 +468,79 @@ def candidate_score(
     balanced_shell_gap: torch.Tensor,
     finger_opposition: torch.Tensor,
     lift_height: torch.Tensor,
+    grasp_streak_score_cap: int = 20,
 ) -> torch.Tensor:
     """Rank physical contact first and otherwise minimize both shell gaps."""
 
+    if grasp_streak_score_cap < 1:
+        raise ValueError("grasp streak score cap must be positive")
     physical_lift_gate = (max_grasp_streak >= 2) | (max_bilateral_streak >= 2)
     return (
         2500.0 * success.float()
         + 1000.0 * (max_grasp_streak >= 2).float()
         + 300.0 * (max_bilateral_streak >= 2).float()
-        + 10.0 * max_grasp_streak.float().clamp_max(20)
-        + 5.0 * max_bilateral_streak.float().clamp_max(20)
+        + 10.0 * max_grasp_streak.float().clamp_max(grasp_streak_score_cap)
+        + 5.0 * max_bilateral_streak.float().clamp_max(grasp_streak_score_cap)
         + 20.0 * (min_opposing_force / 8.0).clamp(0.0, 1.0)
         - 100.0 * balanced_shell_gap
         + 2.0 * finger_opposition.clamp(0.0, 1.0)
-        + 500.0
-        * physical_lift_gate.float()
-        * (lift_height / 0.09).clamp(0.0, 1.0)
+        + 500.0 * physical_lift_gate.float() * (lift_height / 0.09).clamp(0.0, 1.0)
     )
+
+
+def should_stop_search(
+    record: dict[str, object],
+    *,
+    stop_grasp_candidates: int,
+    stop_success_candidates: int | None,
+) -> bool:
+    """Apply the legacy grasp stop unless native-success stopping is requested."""
+
+    if stop_grasp_candidates < 1:
+        raise ValueError("stop grasp candidates must be positive")
+    if stop_success_candidates is not None:
+        if stop_success_candidates < 1:
+            raise ValueError("stop success candidates must be positive")
+        return int(record["success_candidates"]) >= stop_success_candidates
+    return int(record["grasp_candidates"]) >= stop_grasp_candidates
 
 
 def _parameter_bound_mask(
     candidates: torch.Tensor,
     *,
     arm_bounds: tuple[tuple[float, float], ...] = ARM_BOUNDS,
+    capture_arm_bounds: tuple[tuple[float, float], ...] = (),
+    body_bounds: tuple[tuple[float, float], ...] = (),
+    navigation_bounds: tuple[tuple[float, float], ...] = (),
 ) -> torch.Tensor:
     bounds = torch.tensor(
-        (*arm_bounds, *APERTURE_BOUNDS),
+        (
+            *arm_bounds,
+            *capture_arm_bounds,
+            *body_bounds,
+            *navigation_bounds,
+            *APERTURE_BOUNDS,
+        ),
         dtype=candidates.dtype,
         device=candidates.device,
     )
-    return torch.isclose(
-        candidates, bounds[:, 0], atol=1e-6, rtol=0.0
-    ) | torch.isclose(candidates, bounds[:, 1], atol=1e-6, rtol=0.0)
+    return torch.isclose(candidates, bounds[:, 0], atol=1e-6, rtol=0.0) | torch.isclose(
+        candidates, bounds[:, 1], atol=1e-6, rtol=0.0
+    )
 
 
 def _candidate_parameters(candidate: dict[str, object]) -> torch.Tensor:
+    capture = candidate.get("capture_arm_correction") or ()
+    body = candidate.get("body_correction") or ()
+    navigation = candidate.get("navigation_correction") or ()
     return torch.tensor(
-        [*candidate["right_arm_correction"], *candidate["aperture"]],
+        [
+            *candidate["right_arm_correction"],
+            *capture,
+            *body,
+            *navigation,
+            *candidate["aperture"],
+        ],
         dtype=torch.float32,
     )
 
@@ -304,6 +550,9 @@ def rank_export_candidates(
     *,
     limit: int,
     arm_bounds: tuple[tuple[float, float], ...] = ARM_BOUNDS,
+    capture_arm_bounds: tuple[tuple[float, float], ...] = (),
+    body_bounds: tuple[tuple[float, float], ...] = (),
+    navigation_bounds: tuple[tuple[float, float], ...] = (),
 ) -> list[dict[str, object]]:
     """Rank distinct native successes by local density and physical margin."""
 
@@ -326,12 +575,24 @@ def rank_export_candidates(
     unique_parameters: list[torch.Tensor] = []
     for candidate in pool:
         parameters = _candidate_parameters(candidate)
-        if any(torch.allclose(parameters, prior, atol=1e-7, rtol=0.0) for prior in unique_parameters):
+        if any(
+            torch.allclose(parameters, prior, atol=1e-7, rtol=0.0)
+            for prior in unique_parameters
+        ):
             continue
         unique.append(candidate)
         unique_parameters.append(parameters)
 
-    bounds = torch.tensor((*arm_bounds, *APERTURE_BOUNDS), dtype=torch.float32)
+    bounds = torch.tensor(
+        (
+            *arm_bounds,
+            *capture_arm_bounds,
+            *body_bounds,
+            *navigation_bounds,
+            *APERTURE_BOUNDS,
+        ),
+        dtype=torch.float32,
+    )
     widths = bounds[:, 1] - bounds[:, 0]
     normalized = torch.stack(unique_parameters) / widths
     pairwise = torch.cdist(normalized, normalized)
@@ -340,7 +601,9 @@ def rank_export_candidates(
     for index, candidate in enumerate(unique):
         if neighbor_count:
             distances = pairwise[index][torch.arange(len(unique)) != index]
-            neighbor_radius = float(distances.topk(neighbor_count, largest=False).values.mean())
+            neighbor_radius = float(
+                distances.topk(neighbor_count, largest=False).values.mean()
+            )
         else:
             neighbor_radius = float("inf")
         enriched = dict(candidate)
@@ -360,7 +623,9 @@ def rank_export_candidates(
     return sorted(ranked, key=key)[:limit]
 
 
-def replay_quality_key(replay: dict[str, object]) -> tuple[float, int, int, float, float]:
+def replay_quality_key(
+    replay: dict[str, object],
+) -> tuple[float, int, int, float, float]:
     """Rank independent replays by repeatability, then physical margin."""
 
     return (
@@ -370,6 +635,64 @@ def replay_quality_key(replay: dict[str, object]) -> tuple[float, int, int, floa
         float(replay["max_lift_m"]),
         float(replay["max_min_opposing_force_n"]),
     )
+
+
+def search_rollout_path(
+    output: Path, *, round_index: int, env_id: int
+) -> Path:
+    """Return the isolated trajectory path for one native search success."""
+
+    if round_index < 0 or env_id < 0:
+        raise ValueError("search rollout indices must be non-negative")
+    return (
+        output.parent
+        / f"{output.stem}_rollouts"
+        / f"round_{round_index:03d}_env_{env_id:04d}.npz"
+    ).resolve()
+
+
+def load_search_rollout(candidate: dict[str, object]) -> dict[str, object]:
+    """Load and validate a trajectory captured in the successful search batch."""
+
+    path_value = candidate.get("search_rollout_path")
+    if not isinstance(path_value, str):
+        raise TypeError("native-success candidate has no captured search rollout")
+    path = Path(path_value).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    with np.load(path, allow_pickle=False) as saved:
+        observations = saved["observations"].astype(np.float32)
+        raw_actions = saved["raw_actions"].astype(np.float32)
+        terminal_success = bool(saved["terminal_success"].item())
+        terminal_step = int(saved["terminal_step"].item())
+        max_lift_m = float(saved["max_lift_m"].item())
+        max_grasp_streak = int(saved["max_grasp_streak"].item())
+        max_bilateral_streak = int(saved["max_bilateral_contact_streak"].item())
+        max_min_force = float(saved["max_min_opposing_force_n"].item())
+    if observations.ndim != 2 or observations.shape[1] != 331:
+        raise RuntimeError("captured search rollout did not contain 331-D observations")
+    if raw_actions.shape != (len(observations), 36):
+        raise RuntimeError("captured search rollout did not contain aligned 36-D actions")
+    if not terminal_success or terminal_step != len(raw_actions):
+        raise RuntimeError("captured search rollout did not end at native success")
+    if max_lift_m < 0.09 or max_grasp_streak < 13:
+        raise RuntimeError("captured search rollout failed strict physical margins")
+    return {
+        "observations": observations,
+        "raw_actions": raw_actions,
+        "successful_world_id": int(candidate["env_id"]),
+        "replay_envs": 1,
+        "successes_at_first_terminal_step": 1,
+        "independent_replay_success_rate_at_first_terminal_step": None,
+        "terminal_step": terminal_step,
+        "max_lift_m": max_lift_m,
+        "max_grasp_streak": max_grasp_streak,
+        "max_bilateral_contact_streak": max_bilateral_streak,
+        "max_min_opposing_force_n": max_min_force,
+        "trajectory_source": "captured_search_rollout",
+        "search_rollout_path": str(path),
+        "search_batch_context_preserved": True,
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -389,20 +712,47 @@ def _action(
     close_weight: float,
     hand_active: bool,
     arm_release_weight: float = 0.0,
+    body_weight: float | None = None,
+    navigation_release_weight: float | None = None,
+    capture_arm_release_residual_scale: float = 0.0,
 ) -> torch.Tensor:
     action = reference.clone()
-    if capture_arm is None:
-        action[:, ARM] = reference[:, ARM] + arm_weight * candidates[:, :7]
-    else:
-        action[:, ARM] = torch.lerp(
-            capture_arm, reference[:, ARM], arm_release_weight
+    body = _candidate_body(candidates)
+    if body is not None:
+        posture_weight = arm_weight if body_weight is None else body_weight
+        action[:, BODY] = reference[:, BODY] + (
+            posture_weight * (1.0 - arm_release_weight) * body
         )
+    navigation = _candidate_navigation(candidates)
+    if navigation is not None:
+        release = (
+            arm_release_weight
+            if navigation_release_weight is None
+            else navigation_release_weight
+        )
+        action[:, NAVIGATION] = reference[:, NAVIGATION] + (
+            arm_weight * (1.0 - release) * navigation
+        )
+    if capture_arm is None:
+        # A release window may intentionally finish before capture: this makes
+        # the sampled correction an overhead detour and returns to the known
+        # grasp reference before the hand closes.  With the default zero
+        # release weight this is identical to the original staged search.
+        correction_weight = arm_weight * (1.0 - arm_release_weight)
+        action[:, ARM] = reference[:, ARM] + correction_weight * candidates[:, :7]
+    else:
+        if not 0.0 <= capture_arm_release_residual_scale <= 1.0:
+            raise ValueError("capture arm release residual scale must be in [0, 1]")
+        release_target = reference[:, ARM] + (
+            capture_arm_release_residual_scale * _candidate_capture_arm(candidates)
+        )
+        action[:, ARM] = torch.lerp(capture_arm, release_target, arm_release_weight)
     # The hand remains exactly on the reference before it starts closing. Once
     # the reference snaps shut, explicitly hold it open, then close to a
     # candidate aperture after the arm pose has been captured.
     if hand_active:
         open_hand = torch.zeros_like(reference[:, HAND])
-        closed_hand = aperture_hand_target(candidates[:, 7:])
+        closed_hand = aperture_hand_target(_candidate_aperture(candidates))
         action[:, HAND] = torch.lerp(open_hand, closed_hand, close_weight)
     return action
 
@@ -425,15 +775,11 @@ def replay_successful_candidate(
     max_lift = torch.full(
         (env.num_envs,), -torch.inf, dtype=torch.float32, device=args.device
     )
-    max_grasp_streak = torch.zeros(
-        env.num_envs, dtype=torch.long, device=args.device
-    )
+    max_grasp_streak = torch.zeros(env.num_envs, dtype=torch.long, device=args.device)
     grasp_streak = torch.zeros_like(max_grasp_streak)
     max_bilateral_streak = torch.zeros_like(max_grasp_streak)
     bilateral_streak = torch.zeros_like(max_grasp_streak)
-    max_min_force = torch.zeros(
-        env.num_envs, dtype=torch.float32, device=args.device
-    )
+    max_min_force = torch.zeros(env.num_envs, dtype=torch.float32, device=args.device)
     terminal_step: int | None = None
     successful_world_id: int | None = None
     successes_at_first_terminal_step = 0
@@ -455,7 +801,19 @@ def replay_successful_candidate(
             )
             reference = env.reference.current_action()
             if step == args.capture_step:
-                capture_arm = reference[:, ARM] + candidate[:, :7]
+                capture_arm = reference[:, ARM] + _candidate_capture_arm(candidate)
+            effective_release_weight = _effective_arm_release_weight(
+                args,
+                step=step,
+                capture_active=capture_arm is not None,
+                overhead_release_weight=release_weight,
+            )
+            body_weight = body_phase_blend(
+                step,
+                body_start=args.body_start,
+                body_full_step=args.body_full_step,
+                fallback_weight=arm_weight,
+            )
             observation, _ = env.state_reader.actor_observation()
             observations.append(observation.detach())
             action = _action(
@@ -465,7 +823,12 @@ def replay_successful_candidate(
                 arm_weight=arm_weight,
                 close_weight=close_weight,
                 hand_active=step >= args.open_hand_step,
-                arm_release_weight=release_weight,
+                arm_release_weight=effective_release_weight,
+                body_weight=body_weight,
+                navigation_release_weight=release_weight,
+                capture_arm_release_residual_scale=(
+                    args.capture_arm_release_residual_scale
+                ),
             )
             executed_raw = env._bounded_reference_action(action)
             raw_actions.append(executed_raw.detach())
@@ -480,9 +843,7 @@ def replay_successful_candidate(
             bilateral = (thumb > 2.0) & (support > 2.0)
             bilateral_streak = torch.where(bilateral, bilateral_streak + 1, 0)
             grasp_streak = torch.where(terms.is_grasp, grasp_streak + 1, 0)
-            max_bilateral_streak = torch.maximum(
-                max_bilateral_streak, bilateral_streak
-            )
+            max_bilateral_streak = torch.maximum(max_bilateral_streak, bilateral_streak)
             max_grasp_streak = torch.maximum(max_grasp_streak, grasp_streak)
             max_min_force = torch.maximum(max_min_force, min_force)
             max_lift = torch.maximum(max_lift, terms.lift_height)
@@ -505,16 +866,20 @@ def replay_successful_candidate(
                 f"in any of {env.num_envs} independent replay worlds"
             )
         world_id = successful_world_id
-        selected_observations = torch.stack(
-            [item[world_id] for item in observations]
-        ).cpu().numpy()
-        selected_raw_actions = torch.stack(
-            [item[world_id] for item in raw_actions]
-        ).cpu().numpy()
+        selected_observations = (
+            torch.stack([item[world_id] for item in observations]).cpu().numpy()
+        )
+        selected_raw_actions = (
+            torch.stack([item[world_id] for item in raw_actions]).cpu().numpy()
+        )
         if selected_observations.ndim != 2 or selected_observations.shape[1] != 331:
-            raise RuntimeError("staged reference replay did not produce 331-D observations")
+            raise RuntimeError(
+                "staged reference replay did not produce 331-D observations"
+            )
         if selected_raw_actions.ndim != 2 or selected_raw_actions.shape[1] != 36:
-            raise RuntimeError("staged reference replay did not produce 36-D raw actions")
+            raise RuntimeError(
+                "staged reference replay did not produce 36-D raw actions"
+            )
         return {
             "observations": selected_observations,
             "raw_actions": selected_raw_actions,
@@ -527,9 +892,7 @@ def replay_successful_candidate(
             "terminal_step": terminal_step,
             "max_lift_m": float(max_lift[world_id].item()),
             "max_grasp_streak": int(max_grasp_streak[world_id].item()),
-            "max_bilateral_contact_streak": int(
-                max_bilateral_streak[world_id].item()
-            ),
+            "max_bilateral_contact_streak": int(max_bilateral_streak[world_id].item()),
             "max_min_opposing_force_n": float(max_min_force[world_id].item()),
         }
     finally:
@@ -549,18 +912,26 @@ def export_reference(
         result,
         limit=args.export_max_candidate_replays,
         arm_bounds=_arm_bounds(args),
+        capture_arm_bounds=_capture_arm_bounds(args),
+        body_bounds=_body_bounds(args),
+        navigation_bounds=_navigation_bounds(args),
     )
     if not candidates:
-        raise RuntimeError("staged reference export requires a native-success candidate")
+        raise RuntimeError(
+            "staged reference export requires a native-success candidate"
+        )
     replay_attempts: list[dict[str, object]] = []
     selected: dict[str, object] | None = None
     replay: dict[str, object] | None = None
     selected_attempt_index: int | None = None
     for index, candidate_record in enumerate(candidates):
-        candidate = _candidate_parameters(candidate_record).to(args.device)
         try:
-            candidate_replay = replay_successful_candidate(args, candidate)
-        except RuntimeError as error:
+            if args.export_search_rollout:
+                candidate_replay = load_search_rollout(candidate_record)
+            else:
+                candidate = _candidate_parameters(candidate_record).to(args.device)
+                candidate_replay = replay_successful_candidate(args, candidate)
+        except (FileNotFoundError, RuntimeError, TypeError) as error:
             replay_attempts.append(
                 {
                     "rank": index,
@@ -579,9 +950,7 @@ def export_reference(
                 "rank": index,
                 "search_round": candidate_record.get("round"),
                 "search_env_id": candidate_record.get("env_id"),
-                "success_neighbor_radius": candidate_record[
-                    "success_neighbor_radius"
-                ],
+                "success_neighbor_radius": candidate_record["success_neighbor_radius"],
                 "reproduced": True,
                 "successful_world_id": candidate_replay["successful_world_id"],
                 "successes_at_first_terminal_step": candidate_replay[
@@ -601,9 +970,12 @@ def export_reference(
                 ],
             }
         )
-        if replay is None or replay_quality_key(candidate_replay) > replay_quality_key(
-            replay
-        ):
+        use_candidate = replay is None
+        if replay is not None and not args.export_search_rollout:
+            use_candidate = replay_quality_key(candidate_replay) > replay_quality_key(
+                replay
+            )
+        if use_candidate:
             selected = candidate_record
             replay = candidate_replay
             selected_attempt_index = len(replay_attempts) - 1
@@ -662,19 +1034,28 @@ def export_reference(
                     },
                 }
             ],
-            "replay_gate_passed": True,
-            # This rate describes the one exported episode in reports. The
-            # independent batch reproduction rate is recorded separately.
-            "replay_success_rate": 1.0,
+            "replay_gate_passed": not args.export_search_rollout,
+            "search_rollout_gate_passed": True,
+            # A captured search world proves native physics success, but it is
+            # not an independent replay. Keep the scopes distinct so consumers
+            # cannot mistake a numerically isolated success for a usable expert.
+            "replay_success_rate": (
+                None if args.export_search_rollout else 1.0
+            ),
             "independent_replay_success_rate_at_first_terminal_step": replay[
                 "independent_replay_success_rate_at_first_terminal_step"
             ],
+            "independent_replay_gate_required": not args.export_search_rollout,
+            "requires_independent_reference_validation": args.export_search_rollout,
             "strict_subset_source": str(source),
             "reference_derivation": {
                 "version": args.reference_derivation_version,
                 "search_result": str(args.output.resolve()),
                 "source_reference_sha256": _sha256(source_episode),
                 "right_arm_correction": selected["right_arm_correction"],
+                "capture_arm_correction": selected.get("capture_arm_correction"),
+                "body_correction": selected.get("body_correction"),
+                "navigation_correction": selected.get("navigation_correction"),
                 "aperture": selected["aperture"],
                 "search_round": selected.get("round"),
                 "search_env_id": selected.get("env_id"),
@@ -702,6 +1083,14 @@ def search(args: argparse.Namespace) -> dict[str, object]:
     env = _environment(args)
     mean, std = _initial_distribution(args)
     arm_bounds = _arm_bounds(args)
+    capture_arm_bounds = _capture_arm_bounds(args)
+    body_bounds = _body_bounds(args)
+    navigation_bounds = _navigation_bounds(args)
+    parameter_names = _parameter_names(
+        search_capture_arm=args.search_capture_arm,
+        search_body=args.search_body,
+        search_navigation=args.search_navigation,
+    )
     generator = torch.Generator(device=args.device).manual_seed(args.seed + 97)
     all_ids = torch.arange(args.num_envs, device=args.device)
     elite_count = max(8, round(args.num_envs * args.elite_fraction))
@@ -718,10 +1107,22 @@ def search(args: argparse.Namespace) -> dict[str, object]:
                 count=args.num_envs,
                 generator=generator,
                 arm_bounds=arm_bounds,
+                capture_arm_bounds=capture_arm_bounds,
+                body_bounds=body_bounds,
+                navigation_bounds=navigation_bounds,
             )
-            max_score = torch.full(
-                (args.num_envs,), -torch.inf, device=args.device
-            )
+            if args.replay_best_candidate_replicas:
+                replay_candidate = (
+                    _candidate_parameters(global_best).to(args.device)
+                    if global_best is not None
+                    else mean
+                )
+                replay_candidate_across_worlds(
+                    candidates,
+                    replay_candidate,
+                    replicas=args.replay_best_candidate_replicas,
+                )
+            max_score = torch.full((args.num_envs,), -torch.inf, device=args.device)
             max_geometry = torch.zeros_like(max_score)
             max_min_force = torch.zeros_like(max_score)
             max_lift = torch.full_like(max_score, -torch.inf)
@@ -736,9 +1137,7 @@ def search(args: argparse.Namespace) -> dict[str, object]:
             best_support_center_distance = torch.full_like(max_score, torch.inf)
             best_opposition = torch.zeros_like(max_score)
             best_arm_action_saturation = torch.zeros_like(max_score)
-            bilateral = torch.zeros(
-                args.num_envs, dtype=torch.bool, device=args.device
-            )
+            bilateral = torch.zeros(args.num_envs, dtype=torch.bool, device=args.device)
             grasp = torch.zeros_like(bilateral)
             success = torch.zeros_like(bilateral)
             numerical_failure = torch.zeros_like(bilateral)
@@ -748,10 +1147,11 @@ def search(args: argparse.Namespace) -> dict[str, object]:
             grasp_streak = torch.zeros_like(bilateral_streak)
             max_bilateral_streak = torch.zeros_like(bilateral_streak)
             max_grasp_streak = torch.zeros_like(bilateral_streak)
-            best_step = torch.zeros(
-                args.num_envs, dtype=torch.long, device=args.device
-            )
+            first_success_step = torch.zeros_like(bilateral_streak)
+            best_step = torch.zeros(args.num_envs, dtype=torch.long, device=args.device)
             capture_arm: torch.Tensor | None = None
+            rollout_observations: list[torch.Tensor] = []
+            rollout_raw_actions: list[torch.Tensor] = []
 
             for step in range(args.max_steps):
                 arm_weight, close_weight = phase_blend(
@@ -767,7 +1167,19 @@ def search(args: argparse.Namespace) -> dict[str, object]:
                 )
                 reference = env.reference.current_action()
                 if step == args.capture_step:
-                    capture_arm = reference[:, ARM] + candidates[:, :7]
+                    capture_arm = reference[:, ARM] + _candidate_capture_arm(candidates)
+                effective_release_weight = _effective_arm_release_weight(
+                    args,
+                    step=step,
+                    capture_active=capture_arm is not None,
+                    overhead_release_weight=arm_release_weight,
+                )
+                body_weight = body_phase_blend(
+                    step,
+                    body_start=args.body_start,
+                    body_full_step=args.body_full_step,
+                    fallback_weight=arm_weight,
+                )
                 action = _action(
                     reference,
                     candidates,
@@ -775,8 +1187,19 @@ def search(args: argparse.Namespace) -> dict[str, object]:
                     arm_weight=arm_weight,
                     close_weight=close_weight,
                     hand_active=step >= args.open_hand_step,
-                    arm_release_weight=arm_release_weight,
+                    arm_release_weight=effective_release_weight,
+                    body_weight=body_weight,
+                    navigation_release_weight=arm_release_weight,
+                    capture_arm_release_residual_scale=(
+                        args.capture_arm_release_residual_scale
+                    ),
                 )
+                if args.export_search_rollout:
+                    observation, _ = env.state_reader.actor_observation()
+                    rollout_observations.append(observation.detach().clone())
+                    rollout_raw_actions.append(
+                        env._bounded_reference_action(action).detach().clone()
+                    )
                 arm_action_saturation = (action[:, ARM].abs() >= 1.0).float().mean(-1)
                 _, _, _, _ = env.step(action)
                 terms = env.last_terms
@@ -825,6 +1248,7 @@ def search(args: argparse.Namespace) -> dict[str, object]:
                     balanced_shell_gap=balanced_gap,
                     finger_opposition=env.reward.last_finger_opposition,
                     lift_height=terms.lift_height,
+                    grasp_streak_score_cap=args.grasp_streak_score_cap,
                 )
                 if step < args.capture_step:
                     score.fill_(-torch.inf)
@@ -834,7 +1258,9 @@ def search(args: argparse.Namespace) -> dict[str, object]:
                 best_thumb_shell_gap[improved] = thumb_shell_gap[improved]
                 best_support_shell_gap[improved] = support_shell_gap[improved]
                 best_thumb_center_distance[improved] = thumb_center_distance[improved]
-                best_support_center_distance[improved] = support_center_distance[improved]
+                best_support_center_distance[improved] = support_center_distance[
+                    improved
+                ]
                 best_opposition[improved] = env.reward.last_finger_opposition[improved]
                 best_arm_action_saturation[improved] = arm_action_saturation[improved]
                 max_geometry = torch.maximum(max_geometry, geometry)
@@ -858,6 +1284,11 @@ def search(args: argparse.Namespace) -> dict[str, object]:
                 bilateral.logical_or_(physical_bilateral)
                 grasp.logical_or_(terms.is_grasp)
                 success.logical_or_(terms.success)
+                first_success_step = torch.where(
+                    (first_success_step == 0) & terms.success,
+                    torch.full_like(first_success_step, step + 1),
+                    first_success_step,
+                )
                 numerical_failure.logical_or_(env.last_numerical_failure)
 
             elite_ids = torch.topk(max_score, elite_count).indices
@@ -869,7 +1300,11 @@ def search(args: argparse.Namespace) -> dict[str, object]:
 
             best_id = int(max_score.argmax().item())
             parameter_bound_mask = _parameter_bound_mask(
-                candidates, arm_bounds=arm_bounds
+                candidates,
+                arm_bounds=arm_bounds,
+                capture_arm_bounds=capture_arm_bounds,
+                body_bounds=body_bounds,
+                navigation_bounds=navigation_bounds,
             )
 
             # This helper is consumed synchronously before the next CEM round.
@@ -880,7 +1315,7 @@ def search(args: argparse.Namespace) -> dict[str, object]:
                 bound_parameters = [
                     name
                     for name, saturated in zip(
-                        PARAMETER_NAMES,
+                        parameter_names,
                         parameter_bound_mask[candidate_id].cpu().tolist(),
                         strict=True,
                     )
@@ -937,11 +1372,29 @@ def search(args: argparse.Namespace) -> dict[str, object]:
                         max_min_force[candidate_id].item()
                     ),
                     "max_lift_m": float(max_lift[candidate_id].item()),
+                    "terminal_step": int(first_success_step[candidate_id].item()),
                     "right_arm_correction": candidate[:7].cpu().tolist(),
-                    "aperture": candidate[7:].cpu().tolist(),
+                    "capture_arm_correction": (
+                        _candidate_capture_arm(candidate).cpu().tolist()
+                        if args.search_capture_arm
+                        else None
+                    ),
+                    "body_correction": (
+                        _candidate_body(candidate).cpu().tolist()
+                        if args.search_body
+                        else None
+                    ),
+                    "navigation_correction": (
+                        _candidate_navigation(candidate).cpu().tolist()
+                        if args.search_navigation
+                        else None
+                    ),
+                    "aperture": _candidate_aperture(candidate).cpu().tolist(),
                     "closed_hand_target": aperture_hand_target(
-                        candidate[None, 7:]
-                    )[0].cpu().tolist(),
+                        _candidate_aperture(candidate)[None]
+                    )[0]
+                    .cpu()
+                    .tolist(),
                 }
 
             successful_ids = success.nonzero().flatten().cpu().tolist()
@@ -951,7 +1404,16 @@ def search(args: argparse.Namespace) -> dict[str, object]:
                     [_candidate_parameters(item) for item in successful_records]
                 )
                 widths = torch.tensor(
-                    [high - low for low, high in (*arm_bounds, *APERTURE_BOUNDS)]
+                    [
+                        high - low
+                        for low, high in (
+                            *arm_bounds,
+                            *capture_arm_bounds,
+                            *body_bounds,
+                            *navigation_bounds,
+                            *APERTURE_BOUNDS,
+                        )
+                    ]
                 )
                 center = successful_parameters.median(dim=0).values
                 for item, distance in zip(
@@ -971,6 +1433,53 @@ def search(args: argparse.Namespace) -> dict[str, object]:
                 successful_records = successful_records[
                     : args.retained_success_candidates
                 ]
+                if args.export_search_rollout:
+                    rollout_dir = search_rollout_path(
+                        args.output, round_index=round_index, env_id=0
+                    ).parent
+                    rollout_dir.mkdir(parents=True, exist_ok=True)
+                    for item in successful_records:
+                        candidate_id = int(item["env_id"])
+                        terminal_step = int(item["terminal_step"])
+                        if terminal_step < 1:
+                            raise RuntimeError(
+                                "native success did not retain its terminal step"
+                            )
+                        path = search_rollout_path(
+                            args.output,
+                            round_index=round_index,
+                            env_id=candidate_id,
+                        )
+                        np.savez_compressed(
+                            path,
+                            observations=torch.stack(
+                                [
+                                    frame[candidate_id]
+                                    for frame in rollout_observations[:terminal_step]
+                                ]
+                            )
+                            .cpu()
+                            .numpy(),
+                            raw_actions=torch.stack(
+                                [
+                                    frame[candidate_id]
+                                    for frame in rollout_raw_actions[:terminal_step]
+                                ]
+                            )
+                            .cpu()
+                            .numpy(),
+                            terminal_success=np.asarray(True),
+                            terminal_step=np.asarray(terminal_step),
+                            max_lift_m=np.asarray(item["max_lift_m"]),
+                            max_grasp_streak=np.asarray(item["max_grasp_streak"]),
+                            max_bilateral_contact_streak=np.asarray(
+                                item["max_bilateral_contact_streak"]
+                            ),
+                            max_min_opposing_force_n=np.asarray(
+                                item["max_min_opposing_force_n"]
+                            ),
+                        )
+                        item["search_rollout_path"] = str(path)
             record = {
                 "round": round_index,
                 "grasp_candidates": int(grasp.sum().item()),
@@ -985,7 +1494,7 @@ def search(args: argparse.Namespace) -> dict[str, object]:
                     "parameter_bound_saturation_fraction": {
                         name: fraction
                         for name, fraction in zip(
-                            PARAMETER_NAMES,
+                            parameter_names,
                             parameter_bound_mask.float().mean(0).cpu().tolist(),
                             strict=True,
                         )
@@ -1004,7 +1513,11 @@ def search(args: argparse.Namespace) -> dict[str, object]:
                     }
                 )
             )
-            if record["grasp_candidates"] >= args.stop_grasp_candidates:
+            if should_stop_search(
+                record,
+                stop_grasp_candidates=args.stop_grasp_candidates,
+                stop_success_candidates=args.stop_success_candidates,
+            ):
                 break
     finally:
         env.close()
@@ -1019,6 +1532,13 @@ def search(args: argparse.Namespace) -> dict[str, object]:
         "rounds_requested": args.rounds,
         "rounds_completed": len(rounds),
         "elite_count": elite_count,
+        "search_stopping": {
+            "stop_grasp_candidates": args.stop_grasp_candidates,
+            "stop_success_candidates": args.stop_success_candidates,
+            "grasp_streak_score_cap": args.grasp_streak_score_cap,
+            "replay_best_candidate_replicas": args.replay_best_candidate_replicas,
+            "export_search_rollout": args.export_search_rollout,
+        },
         "phase": {
             "arm_start": args.arm_start,
             "open_hand_step": args.open_hand_step,
@@ -1026,18 +1546,26 @@ def search(args: argparse.Namespace) -> dict[str, object]:
             "close_end": args.close_end,
             "arm_release_start": args.arm_release_start,
             "arm_release_end": args.arm_release_end,
+            "capture_arm_release_start": args.capture_arm_release_start,
+            "capture_arm_release_end": args.capture_arm_release_end,
+            "capture_arm_release_residual_scale": (
+                args.capture_arm_release_residual_scale
+            ),
+            "body_start": args.body_start,
+            "body_full_step": args.body_full_step,
         },
         "geometry_mode": args.geometry_mode,
         "arm_bounds": [list(bounds) for bounds in arm_bounds],
+        "capture_arm_bounds": [list(bounds) for bounds in capture_arm_bounds],
+        "body_bounds": [list(bounds) for bounds in body_bounds],
+        "navigation_bounds": [list(bounds) for bounds in navigation_bounds],
         "environment_adaptation": {
             "target_position_jitter_xy": list(args.target_position_jitter_xy),
             "target_position_offset_center_xy": list(
                 args.target_position_offset_center_xy
             ),
             "target_yaw_jitter": args.target_yaw_jitter,
-            "robot_base_position_jitter_xy": list(
-                args.robot_base_position_jitter_xy
-            ),
+            "robot_base_position_jitter_xy": list(args.robot_base_position_jitter_xy),
             "robot_base_yaw_jitter": args.robot_base_yaw_jitter,
             "reference_target_x_arm_gains": list(args.reference_target_x_arm_gains),
             "reference_target_y_arm_gains": list(args.reference_target_y_arm_gains),
@@ -1069,6 +1597,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--export-reference", type=Path)
     parser.add_argument("--export-replay-envs", type=int)
+    parser.add_argument(
+        "--export-search-rollout",
+        action="store_true",
+        help=(
+            "Export the actual native-success trajectory captured in its original "
+            "search batch instead of requiring a changed broadcast batch to match"
+        ),
+    )
     parser.add_argument("--export-max-candidate-replays", type=int, default=32)
     parser.add_argument("--retained-success-candidates", type=int, default=64)
     parser.add_argument(
@@ -1086,6 +1622,32 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--minimum-std", type=float, default=0.008)
     parser.add_argument("--stop-grasp-candidates", type=int, default=8)
     parser.add_argument(
+        "--stop-success-candidates",
+        type=int,
+        help=(
+            "When set, replace the legacy grasp-candidate early stop with an "
+            "early stop requiring this many native successes"
+        ),
+    )
+    parser.add_argument(
+        "--grasp-streak-score-cap",
+        type=int,
+        default=20,
+        help=(
+            "Maximum grasp/contact streak rewarded by CEM; increase for lift "
+            "searches that must retain contact through a release window"
+        ),
+    )
+    parser.add_argument(
+        "--replay-best-candidate-replicas",
+        type=int,
+        default=0,
+        help=(
+            "Evaluate the current best candidate in this many worlds each CEM "
+            "round; zero preserves legacy independent sampling"
+        ),
+    )
+    parser.add_argument(
         "--geometry-mode",
         choices=("shell", "surface"),
         default="shell",
@@ -1100,7 +1662,20 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--close-end", type=int, default=233)
     parser.add_argument("--arm-release-start", type=int)
     parser.add_argument("--arm-release-end", type=int)
-    parser.add_argument("--target-position-offset-center-xy", type=float, nargs=2, default=(0.087, 0.0))
+    parser.add_argument("--capture-arm-release-start", type=int)
+    parser.add_argument("--capture-arm-release-end", type=int)
+    parser.add_argument(
+        "--capture-arm-release-residual-scale",
+        type=float,
+        default=0.0,
+        help=(
+            "Fraction of the capture correction retained after release; zero "
+            "preserves the legacy return to the unshifted reference arm"
+        ),
+    )
+    parser.add_argument(
+        "--target-position-offset-center-xy", type=float, nargs=2, default=(0.087, 0.0)
+    )
     parser.add_argument(
         "--target-position-jitter-xy", type=float, nargs=2, default=(0.0, 0.0)
     )
@@ -1109,10 +1684,33 @@ def _parser() -> argparse.ArgumentParser:
         "--robot-base-position-jitter-xy", type=float, nargs=2, default=(0.0, 0.0)
     )
     parser.add_argument("--robot-base-yaw-jitter", type=float, default=0.0)
-    parser.add_argument("--reference-target-x-arm-gains", type=float, nargs=2, default=(-5.3, 2.4))
-    parser.add_argument("--reference-target-y-arm-gains", type=float, nargs=2, default=(12.0, 0.0))
-    parser.add_argument("--reference-target-positive-y-arm-gains", type=float, nargs=2, default=(22.0, 0.0))
+    parser.add_argument(
+        "--reference-target-x-arm-gains", type=float, nargs=2, default=(-5.3, 2.4)
+    )
+    parser.add_argument(
+        "--reference-target-y-arm-gains", type=float, nargs=2, default=(12.0, 0.0)
+    )
+    parser.add_argument(
+        "--reference-target-positive-y-arm-gains",
+        type=float,
+        nargs=2,
+        default=(22.0, 0.0),
+    )
     parser.add_argument("--base-arm", type=float, nargs=7, required=True)
+    parser.add_argument(
+        "--search-capture-arm",
+        action="store_true",
+        help=(
+            "Search a second right-arm correction held after the overhead "
+            "detour returns to the grasp reference"
+        ),
+    )
+    parser.add_argument(
+        "--base-capture-arm",
+        type=float,
+        nargs=7,
+        default=(0.0,) * 7,
+    )
     parser.add_argument(
         "--arm-bounds",
         type=float,
@@ -1130,6 +1728,82 @@ def _parser() -> argparse.ArgumentParser:
         default=(0.06, 0.035, 0.06, 0.06, 0.10, 0.10, 0.12),
     )
     parser.add_argument(
+        "--capture-arm-bounds",
+        type=float,
+        nargs=14,
+        default=tuple(value for _ in range(7) for value in (-0.25, 0.25)),
+    )
+    parser.add_argument(
+        "--capture-arm-std",
+        type=float,
+        nargs=7,
+        default=(0.08,) * 7,
+    )
+    parser.add_argument(
+        "--search-body",
+        action="store_true",
+        help=(
+            "Search opt-in torso roll/pitch/yaw and base-height corrections; "
+            "omitted preserves the legacy arm/hand parameter layout"
+        ),
+    )
+    parser.add_argument(
+        "--base-body",
+        type=float,
+        nargs=4,
+        default=(0.0,) * 4,
+    )
+    parser.add_argument(
+        "--body-bounds",
+        type=float,
+        nargs=8,
+        default=tuple(value for _ in range(4) for value in (-1.0, 1.0)),
+        help="Per-action low/high bounds for torso R/P/Y and base height",
+    )
+    parser.add_argument(
+        "--body-std",
+        type=float,
+        nargs=4,
+        default=(0.25,) * 4,
+    )
+    parser.add_argument(
+        "--body-start",
+        type=int,
+        help="Optional start step for an independent early posture ramp",
+    )
+    parser.add_argument(
+        "--body-full-step",
+        type=int,
+        help="Optional step where the independent posture correction is complete",
+    )
+    parser.add_argument(
+        "--search-navigation",
+        action="store_true",
+        help=(
+            "Search opt-in torso XY velocity corrections during the overhead "
+            "approach; omitted preserves every legacy candidate layout"
+        ),
+    )
+    parser.add_argument(
+        "--base-navigation",
+        type=float,
+        nargs=2,
+        default=(0.0,) * 2,
+    )
+    parser.add_argument(
+        "--navigation-bounds",
+        type=float,
+        nargs=4,
+        default=(-1.0, 1.0, -1.0, 1.0),
+        help="Per-action low/high bounds for torso X/Y velocity",
+    )
+    parser.add_argument(
+        "--navigation-std",
+        type=float,
+        nargs=2,
+        default=(0.25,) * 2,
+    )
+    parser.add_argument(
         "--aperture-mean", type=float, nargs=4, default=(0.35, 0.25, 0.25, 0.25)
     )
     parser.add_argument(
@@ -1141,7 +1815,11 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _parser().parse_args()
     result = search(args)
-    print(json.dumps({key: value for key, value in result.items() if key != "rounds"}, indent=2))
+    print(
+        json.dumps(
+            {key: value for key, value in result.items() if key != "rounds"}, indent=2
+        )
+    )
 
 
 if __name__ == "__main__":

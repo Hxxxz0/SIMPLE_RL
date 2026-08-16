@@ -25,6 +25,17 @@ def test_precontact_target_motion_audit_rejects_self_moving_object() -> None:
     assert moving["maximum_allowed_displacement_m"] == pytest.approx(0.003)
 
 
+def test_precontact_target_motion_audit_supports_strict_release_threshold() -> None:
+    audit = _precontact_motion_audit(
+        0.001,
+        80,
+        maximum_allowed_displacement_m=0.0001,
+    )
+
+    assert not audit["passed"]
+    assert audit["maximum_allowed_displacement_m"] == pytest.approx(0.0001)
+
+
 def test_episode_randomization_records_pose_and_dynamics() -> None:
     class _Model:
         @staticmethod

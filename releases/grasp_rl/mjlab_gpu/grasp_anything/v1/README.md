@@ -19,11 +19,18 @@ multi-region long-rollout Apple experiment, including its partial improvement
 and strict limitations, is in
 [`FRONTIER_REGIONS_V11.md`](FRONTIER_REGIONS_V11.md). In short, seven
 unique objects now have measured physical successes: `Soap_Bottle_1`,
-`Bottle_1`, `Apple_1`, `Bowl_1`, `Cup_6`, `Potato_1` and `Tomato_1`. There are
-now nine accepted RL checkpoints. Apple, Potato, and Tomato have accepted
+`Bottle_1`, `Apple_1`, `Bowl_1`, `Cup_6`, `Potato_1` and `Tomato_1`. The
+exact-cell PPO accounting fixes, routed Apple frontier experiment, strict
+pre-contact-motion videos, and same-world evaluation are in
+[`SPATIAL_COVERAGE_V12.md`](SPATIAL_COVERAGE_V12.md). There are
+still nine independently accepted RL checkpoints, plus an experimental
+five-checkpoint Apple v12 routing bundle. Apple, Potato, and Tomato have accepted
 stable-physics episode-11 workspace PPOs. Bowl retains its earlier fixed-pose
 checkpoint and v4 reference-only bend evidence; its stable workspace PPO was
-rejected after all four screened checkpoints scored 0/512.
+rejected after all four screened checkpoints scored 0/512. The five v12
+training lines completed 100 updates each and 98,304,000 fresh on-policy
+transitions in total; exact-cell cross-seed evaluation, rather than the final
+update or global average, selects the released specialists.
 
 Git LFS is required to download the `.pt`, `.npz`, and `.mp4` files:
 
@@ -44,6 +51,7 @@ stable lift is not counted as success.
 | `Apple_1` | `checkpoints/apple_1_model_0.pt` | 112/512 (21.88%) | fixed-pose baseline only |
 | `Apple_1` bend v5 | `checkpoints/apple_1_xmove_bend_workspace_v5_model_100.pt` | 1969/2048 (96.14%) vs paired reference 1383/2048 | stable physics; target XY +/-1 cm per axis over two seeds |
 | `Apple_1` frontier v11 | `checkpoints/apple_1_xmove_bend_frontier_v11_model_5.pt` | worst region 357/1024 (34.86%); core 800/1024 | additional multi-region frontier policy; five overlapping reachable-region rectangles over two seeds; not a stable full-workspace claim |
+| `Apple_1` spatial v12 router | `checkpoints/apple_1_xmove_bend_spatial_v12_router.json` plus five `.pt` files | paired focus-13 aggregate 2534/4096 (61.87%) vs coarse 2158/4096 (52.69%); exact specialists 3-41/1025 | experimental exact-cell routing in part of the 10 x 10 cm sampled rectangle; minimum routed cell remains 0%; not stable full-grid or +/-20 cm support |
 | `Potato_1` bend v5 | `checkpoints/potato_1_xmove_bend_workspace_v5_model_50.pt` | 1024/1024 (100.00%) vs paired reference 618/1024 | stable physics; trained target XY +/-1 cm; measured +/-2.5 cm generalization 429/512 |
 | `Tomato_1` bend v5 | `checkpoints/tomato_1_xmove_bend_workspace_v5_model_150.pt` | 739/1024 (72.17%) vs paired reference 310/1024 | stable physics; trained target XY +/-1 cm; measured +/-2.5 cm generalization 199/512 |
 | `Bowl_1` | `checkpoints/bowl_1_model_0.pt` | 194/512 (37.89%) | fixed-pose rim-grasp baseline only |

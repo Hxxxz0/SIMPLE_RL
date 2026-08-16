@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from simple.grasp_rl.mjlab_gpu.goal_reward import (
@@ -11,8 +12,10 @@ from simple.grasp_rl.mjlab_gpu.goal_reward import (
     _terminal_adjustment,
 )
 from simple.grasp_rl.mjlab_gpu.object_grasp_reward import (
+    gated_overhead_approach_progress,
     object_grasp_geometry,
     object_grasp_progress,
+    overhead_approach_progress,
 )
 from simple.grasp_rl.mjlab_gpu.reward import GpuGraspReward, finger_closure_score
 from simple.grasp_rl.schema import JOINT_NAMES
@@ -220,3 +223,48 @@ def test_object_grasp_progress_requires_reach_before_geometry() -> None:
 
     assert progress[0] > progress[1]
     assert progress[2] > progress[0]
+
+
+def test_overhead_approach_requires_fixed_vertical_clearance() -> None:
+    center = torch.zeros(3, 3)
+    distal = torch.tensor(
+        [
+            [[0.00, 0.0, 0.14]] * 3,
+            [[0.00, 0.0, 0.00]] * 3,
+            [[0.30, 0.0, 0.14]] * 3,
+        ]
+    )
+
+    progress, distance, waypoint_height = overhead_approach_progress(
+        distal, center, clearance_m=0.14
+    )
+
+    assert progress[0] > progress[1]
+    assert progress[0] > progress[2]
+    assert distance[0] < distance[1]
+    assert distance[0] < distance[2]
+    assert waypoint_height[0] == pytest.approx(0.14, abs=1e-4)
+    assert waypoint_height[2] == pytest.approx(0.14, abs=1e-4)
+    assert progress[1] < 1.0
+
+
+def test_overhead_gate_default_preserves_legacy_potential_allocation() -> None:
+    overhead = torch.tensor([0.8, 0.8])
+    descent = torch.tensor([0.2, 0.2])
+    reached = torch.tensor([False, True])
+
+    progress = gated_overhead_approach_progress(overhead, descent, reached)
+
+    torch.testing.assert_close(progress, torch.tensor([0.60, 0.80]))
+
+
+def test_overhead_gate_can_reserve_most_potential_for_final_descent() -> None:
+    overhead = torch.tensor([1.0, 1.0, 1.0])
+    descent = torch.tensor([0.0, 0.5, 1.0])
+    reached = torch.tensor([False, True, True])
+
+    progress = gated_overhead_approach_progress(
+        overhead, descent, reached, final_descent_weight=0.70
+    )
+
+    torch.testing.assert_close(progress, torch.tensor([0.30, 0.65, 1.00]))

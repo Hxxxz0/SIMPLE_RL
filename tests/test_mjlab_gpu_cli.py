@@ -7,6 +7,7 @@ from simple.grasp_rl.mjlab_gpu.cli import (
     _initial_pose_diagnostics,
     _pose_axis_diagnostics,
     _pose_xy_diagnostics,
+    _stratified_cell_diagnostics,
 )
 
 
@@ -92,3 +93,47 @@ def test_pose_xy_diagnostics_reports_spatial_success_coverage() -> None:
     assert report["successful_cells"] == 2
     assert report["successful_cell_coverage"] == pytest.approx(0.5)
     assert [cell["successes"] for cell in report["cells"]] == [1, 0, 0, 1]
+
+
+def test_pose_xy_diagnostics_supports_rectangular_training_grid() -> None:
+    report = _pose_xy_diagnostics(
+        torch.tensor(
+            [
+                [-0.1, -0.1],
+                [0.1, -0.1],
+                [-0.1, 0.0],
+                [0.1, 0.0],
+                [-0.1, 0.1],
+                [0.1, 0.1],
+            ]
+        ),
+        torch.tensor([1, 0, 1, 0, 1, 0]),
+        bin_count=(2, 3),
+    )
+
+    assert report["shape_yx"] == [3, 2]
+    assert report["sampled_cells"] == 6
+    assert [cell["successes"] for cell in report["cells"]] == [1, 0, 1, 0, 1, 0]
+
+
+def test_stratified_cell_diagnostics_uses_exact_randomizer_assignments() -> None:
+    report = _stratified_cell_diagnostics(
+        torch.tensor([0, 0, 3, 5]),
+        torch.tensor([1, 2, 0, 1]),
+        grid=(2, 3),
+    )
+
+    assert report["shape_yx"] == [3, 2]
+    assert report["sampled_cells"] == 3
+    assert report["successful_cells"] == 2
+    assert report["cells"][0] == {
+        "cell_id": 0,
+        "x_index": 0,
+        "y_index": 0,
+        "samples": 2,
+        "successes": 1,
+        "physical_failures": 0,
+        "timeouts": 1,
+        "success_rate": 0.5,
+    }
+    assert report["cells"][5]["success_rate"] == pytest.approx(1.0)

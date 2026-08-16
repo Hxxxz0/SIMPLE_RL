@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from simple.grasp_rl.schema import ACTION_SLICES
+
 MJLAB_PPO_CONFIG_VERSION = 1
 MIN_LONG_TRAIN_ENVS = 1024
 GPU_SENSOR_SCHEMA_VERSION = 1
@@ -82,12 +84,15 @@ class DomainRandomizationConfig:
     enabled: bool = True
     target_position_jitter_xy: tuple[float, float] = (0.025, 0.03)
     target_position_offset_center_xy: tuple[float, float] = (0.0, 0.0)
+    target_position_scale_offset_center: bool = True
     target_position_focus_probability: float = 0.0
     target_position_focus_jitter_xy: tuple[float, float] = (0.0, 0.0)
     target_position_focus_offset_center_xy: tuple[float, float] = (0.0, 0.0)
     target_position_focus_regions: tuple[
         tuple[float, float, float, float, float], ...
     ] = ()
+    target_position_stratified_grid: tuple[int, int] | None = None
+    target_position_stratified_focus_cell_ids: tuple[int, ...] = ()
     target_yaw_jitter: float = 0.15
     destination_position_jitter_xy: tuple[float, float] = (0.0, 0.0)
     destination_yaw_jitter: float = 0.0
@@ -169,6 +174,43 @@ class DomainRandomizationConfig:
             raise ValueError(
                 "single and multi-region target position focus are mutually exclusive"
             )
+        if self.target_position_stratified_grid is not None:
+            if len(self.target_position_stratified_grid) != 2 or any(
+                int(value) != value or int(value) < 1
+                for value in self.target_position_stratified_grid
+            ):
+                raise ValueError(
+                    "target_position_stratified_grid must contain two positive integers"
+                )
+            if any(
+                bins > 1 and jitter <= 0.0
+                for bins, jitter in zip(
+                    self.target_position_stratified_grid,
+                    self.target_position_jitter_xy,
+                    strict=True,
+                )
+            ):
+                raise ValueError("each stratified axis requires positive jitter")
+            if (
+                self.target_position_focus_probability > 0.0
+                or self.target_position_focus_regions
+            ):
+                raise ValueError(
+                    "stratified and focused target-position sampling are "
+                    "mutually exclusive"
+                )
+            cell_count = math.prod(self.target_position_stratified_grid)
+            if len(set(self.target_position_stratified_focus_cell_ids)) != len(
+                self.target_position_stratified_focus_cell_ids
+            ):
+                raise ValueError("stratified focus cell IDs must be unique")
+            if any(
+                cell_id < 0 or cell_id >= cell_count
+                for cell_id in self.target_position_stratified_focus_cell_ids
+            ):
+                raise ValueError("stratified focus cell ID is outside the grid")
+        elif self.target_position_stratified_focus_cell_ids:
+            raise ValueError("stratified focus cells require a stratified grid")
         for name in (
             "target_yaw_jitter",
             "destination_yaw_jitter",
@@ -246,6 +288,12 @@ class DomainRandomizationConfig:
                     pose.target_position_focus_regions
                 )
             ),
+            target_position_stratified_grid=(
+                None
+                if pose.target_position_stratified_grid is None
+                else (pose.target_position_stratified_grid[0], 1)
+            ),
+            target_position_stratified_focus_cell_ids=(),
             target_yaw_jitter=0.0,
             destination_position_jitter_xy=(0.0, 0.0),
             destination_yaw_jitter=0.0,
@@ -280,6 +328,12 @@ class DomainRandomizationConfig:
                     pose.target_position_focus_regions
                 )
             ),
+            target_position_stratified_grid=(
+                None
+                if pose.target_position_stratified_grid is None
+                else (1, pose.target_position_stratified_grid[1])
+            ),
+            target_position_stratified_focus_cell_ids=(),
             target_yaw_jitter=0.0,
             destination_position_jitter_xy=(0.0, 0.0),
             destination_yaw_jitter=0.0,
@@ -301,6 +355,8 @@ class DomainRandomizationConfig:
             target_position_focus_jitter_xy=(0.0, 0.0),
             target_position_focus_offset_center_xy=(0.0, 0.0),
             target_position_focus_regions=(),
+            target_position_stratified_grid=None,
+            target_position_stratified_focus_cell_ids=(),
             destination_position_jitter_xy=(0.0, 0.0),
             destination_yaw_jitter=0.0,
             distractor_position_jitter_xy=(0.0, 0.0),
@@ -326,11 +382,16 @@ class MjlabPpoConfig:
     reference_selection: str = "asset"
     max_reference_initial_position_offset: float | None = None
     reference_reward_weight: float = 0.05
+    reference_contact_reward_gate: bool = True
     reference_target_x_arm_gains: tuple[float, float] = (0.0, 0.0)
+    reference_target_positive_x_arm_gains: tuple[float, float] | None = None
+    reference_target_x_arm_gain_y_bounds: tuple[float, float] | None = None
     reference_target_y_arm_gains: tuple[float, float] = (0.0, 0.0)
     reference_target_positive_y_arm_gains: tuple[float, float] | None = None
     reference_target_yaw_arm_gains: tuple[float, float] = (0.0, 0.0)
     max_reference_action_deviation: float = 0.35
+    policy_action_filter_alpha: float = 1.0
+    residual_action_groups: tuple[str, ...] = ("right_hand", "right_arm")
     full_dr_reference_reward_scale: float = 0.2
     grasp_anything_lift_arm_residual_min_scale: float = 1.0
     grasp_anything_lift_arm_residual_decay_steps: int = 0
@@ -338,6 +399,8 @@ class MjlabPpoConfig:
     grasp_anything_goal_potential_scale: float = 5.0
     grasp_anything_goal_potential_negative_clip: float = 0.25
     grasp_anything_success_bonus: float = 40.0
+    grasp_anything_overhead_approach_clearance_m: float = 0.0
+    grasp_anything_overhead_final_descent_weight: float = 0.25
     sensor_schema_version: int = GPU_SENSOR_SCHEMA_VERSION
     domain_randomization: DomainRandomizationConfig = field(
         default_factory=DomainRandomizationConfig
@@ -396,6 +459,28 @@ class MjlabPpoConfig:
             raise ValueError(
                 "reference_target_x_arm_gains must contain two finite values"
             )
+        if self.reference_target_positive_x_arm_gains is not None and (
+            len(self.reference_target_positive_x_arm_gains) != 2
+            or not all(
+                math.isfinite(float(value))
+                for value in self.reference_target_positive_x_arm_gains
+            )
+        ):
+            raise ValueError(
+                "reference_target_positive_x_arm_gains must contain two finite values"
+            )
+        if self.reference_target_x_arm_gain_y_bounds is not None and (
+            len(self.reference_target_x_arm_gain_y_bounds) != 2
+            or not all(
+                math.isfinite(float(value))
+                for value in self.reference_target_x_arm_gain_y_bounds
+            )
+            or self.reference_target_x_arm_gain_y_bounds[0]
+            > self.reference_target_x_arm_gain_y_bounds[1]
+        ):
+            raise ValueError(
+                "reference_target_x_arm_gain_y_bounds must contain ordered finite bounds"
+            )
         if len(self.reference_target_y_arm_gains) != 2 or not all(
             math.isfinite(float(value)) for value in self.reference_target_y_arm_gains
         ):
@@ -420,6 +505,20 @@ class MjlabPpoConfig:
             )
         if not 0.0 < self.max_reference_action_deviation <= 2.0:
             raise ValueError("max_reference_action_deviation must be in (0, 2]")
+        if not (
+            math.isfinite(self.policy_action_filter_alpha)
+            and 0.0 < self.policy_action_filter_alpha <= 1.0
+        ):
+            raise ValueError("policy_action_filter_alpha must be in (0, 1]")
+        if not self.residual_action_groups:
+            raise ValueError("residual_action_groups must not be empty")
+        unknown_groups = set(self.residual_action_groups) - ACTION_SLICES.keys()
+        if unknown_groups:
+            raise ValueError(
+                "Unknown residual action groups: " + ", ".join(sorted(unknown_groups))
+            )
+        if len(set(self.residual_action_groups)) != len(self.residual_action_groups):
+            raise ValueError("residual_action_groups must be unique")
         if not 0.0 <= self.full_dr_reference_reward_scale <= 1.0:
             raise ValueError("full_dr_reference_reward_scale must be in [0, 1]")
         if not 0.0 < self.grasp_anything_lift_arm_residual_min_scale <= 1.0:
@@ -453,10 +552,35 @@ class MjlabPpoConfig:
             or self.grasp_anything_success_bonus <= 0.0
         ):
             raise ValueError("grasp_anything_success_bonus must be positive and finite")
+        if not (
+            math.isfinite(self.grasp_anything_overhead_approach_clearance_m)
+            and 0.0 <= self.grasp_anything_overhead_approach_clearance_m <= 0.5
+        ):
+            raise ValueError(
+                "grasp_anything overhead approach clearance must be finite and "
+                "in [0, 0.5]"
+            )
+        if not (
+            math.isfinite(self.grasp_anything_overhead_final_descent_weight)
+            and 0.0 < self.grasp_anything_overhead_final_descent_weight < 1.0
+        ):
+            raise ValueError(
+                "grasp_anything overhead final descent weight must be finite and "
+                "in (0, 1)"
+            )
+        if (
+            self.grasp_anything_overhead_final_descent_weight != 0.25
+            and self.grasp_anything_overhead_approach_clearance_m <= 0.0
+        ):
+            raise ValueError(
+                "overhead final descent weighting requires positive approach clearance"
+            )
         object_reward_changed = (
             self.grasp_anything_goal_potential_scale != 5.0
             or self.grasp_anything_goal_potential_negative_clip != 0.25
             or self.grasp_anything_success_bonus != 40.0
+            or self.grasp_anything_overhead_approach_clearance_m != 0.0
+            or self.grasp_anything_overhead_final_descent_weight != 0.25
         )
         if object_reward_changed and self.task != "grasp_anything":
             raise ValueError(
@@ -518,6 +642,14 @@ class MjlabPpoConfig:
             normalized = dict(legacy)
             for name, gains in (
                 ("reference_target_x_arm_gains", self.reference_target_x_arm_gains),
+                (
+                    "reference_target_positive_x_arm_gains",
+                    self.reference_target_positive_x_arm_gains,
+                ),
+                (
+                    "reference_target_x_arm_gain_y_bounds",
+                    self.reference_target_x_arm_gain_y_bounds,
+                ),
                 ("reference_target_y_arm_gains", self.reference_target_y_arm_gains),
                 (
                     "reference_target_positive_y_arm_gains",
@@ -549,12 +681,16 @@ class MjlabPpoConfig:
             ):
                 normalized["max_reference_initial_position_offset"] = None
             for name, default in (
+                ("reference_contact_reward_gate", True),
                 ("grasp_anything_lift_arm_residual_min_scale", 1.0),
                 ("grasp_anything_lift_arm_residual_decay_steps", 0),
                 ("grasp_anything_lift_arm_residual_grasp_steps", 3),
                 ("grasp_anything_goal_potential_scale", 5.0),
                 ("grasp_anything_goal_potential_negative_clip", 0.25),
                 ("grasp_anything_success_bonus", 40.0),
+                ("grasp_anything_overhead_approach_clearance_m", 0.0),
+                ("grasp_anything_overhead_final_descent_weight", 0.25),
+                ("policy_action_filter_alpha", 1.0),
             ):
                 if name not in normalized and getattr(self, name) == default:
                     normalized[name] = default
@@ -568,13 +704,20 @@ class MjlabPpoConfig:
                     legacy_dr["target_position_offset_center_xy"] = [0.0, 0.0]
                 for name, default in (
                     ("target_position_focus_probability", 0.0),
+                    ("target_position_scale_offset_center", True),
                     ("target_position_focus_jitter_xy", (0.0, 0.0)),
                     ("target_position_focus_offset_center_xy", (0.0, 0.0)),
                     ("target_position_focus_regions", ()),
+                    ("target_position_stratified_grid", None),
+                    ("target_position_stratified_focus_cell_ids", ()),
                 ):
                     if name not in legacy_dr and expected_dr.get(name) == default:
                         legacy_dr[name] = default
                 normalized["domain_randomization"] = legacy_dr
+            if "residual_action_groups" not in normalized and tuple(
+                expected["resolved"].get("residual_action_groups", ())
+            ) == ("right_hand", "right_arm"):
+                normalized["residual_action_groups"] = ["right_hand", "right_arm"]
             # A portable release may relocate frozen assets and reference data.
             # The runner separately verifies both content hashes, so filesystem
             # paths are not part of behavioral compatibility.

@@ -25,7 +25,10 @@ from simple.grasp_rl.task_spec import get_task_spec
 
 GRASP_ANYTHING_TASK = "grasp_anything"
 OBJECT_CONTRACT_VERSION = 1
-SUPPORTED_REFERENCE_TASKS = frozenset(("xmove_pick", "xmove_bend_pick"))
+WORKSPACE_SUPPORT_CONTRACT_VERSION = 1
+SUPPORTED_REFERENCE_TASKS = frozenset(
+    ("xmove_pick", "xmove_bend_pick", "bend_pick_teleop")
+)
 _OBJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
 
 
@@ -147,6 +150,242 @@ def _find_body(root: ET.Element, name: str) -> ET.Element:
         if body.get("name") == name:
             return body
     raise ValueError(f"Body {name!r} is absent from scene")
+
+
+def _extend_support_box(
+    scene_path: Path,
+    *,
+    support_name: str,
+    extensions_m: tuple[float, float, float, float],
+) -> None:
+    """Extend a box support along its local -X,+X,-Y,+Y edges."""
+
+    values = np.asarray(extensions_m, dtype=np.float64)
+    if values.shape != (4,) or not np.isfinite(values).all() or np.any(values < 0.0):
+        raise ValueError("support extensions must contain four finite non-negative values")
+    tree = ET.parse(scene_path)
+    support = _find_body(tree.getroot(), support_name)
+    boxes = [
+        geom
+        for geom in support.findall("geom")
+        if geom.get("type", "sphere") == "box"
+        and (int(geom.get("contype", "1")) or int(geom.get("conaffinity", "1")))
+    ]
+    if len(boxes) != 1:
+        raise ValueError(
+            f"Workspace support {support_name!r} must expose exactly one collision box"
+        )
+    geom = boxes[0]
+    size = _float_vector(geom.get("size"), 3)
+    position = _float_vector(geom.get("pos"), 3)
+    x_min, x_max, y_min, y_max = values
+    size[0] += 0.5 * (x_min + x_max)
+    size[1] += 0.5 * (y_min + y_max)
+    position[0] += 0.5 * (x_max - x_min)
+    position[1] += 0.5 * (y_max - y_min)
+    _set_float_vector(geom, "size", size)
+    _set_float_vector(geom, "pos", position)
+    tree.write(scene_path, encoding="unicode")
+
+
+def _replace_support_collision_with_thin_top(
+    scene_path: Path,
+    *,
+    support_name: str,
+    extensions_m: tuple[float, float, float, float],
+    half_height_m: float,
+) -> None:
+    """Keep the visual table while replacing its thick collision with a thin top."""
+
+    if not math.isfinite(half_height_m) or half_height_m <= 0.0:
+        raise ValueError("thin support half height must be positive and finite")
+    values = np.asarray(extensions_m, dtype=np.float64)
+    if values.shape != (4,) or not np.isfinite(values).all() or np.any(values < 0.0):
+        raise ValueError("support extensions must contain four finite non-negative values")
+    tree = ET.parse(scene_path)
+    support = _find_body(tree.getroot(), support_name)
+    boxes = [
+        geom
+        for geom in support.findall("geom")
+        if geom.get("type", "sphere") == "box"
+        and (int(geom.get("contype", "1")) or int(geom.get("conaffinity", "1")))
+    ]
+    if len(boxes) != 1:
+        raise ValueError(
+            f"Workspace support {support_name!r} must expose exactly one collision box"
+        )
+    visual = boxes[0]
+    size = _float_vector(visual.get("size"), 3)
+    if half_height_m >= size[2]:
+        raise ValueError("thin support must be thinner than the source collision box")
+    position = _float_vector(visual.get("pos"), 3)
+    x_min, x_max, y_min, y_max = values
+    top = deepcopy(visual)
+    base_name = visual.get("name", f"{support_name}_geom")
+    top.set("name", f"{base_name}_workspace_thin_top")
+    top_size = size.copy()
+    top_size[0] += 0.5 * (x_min + x_max)
+    top_size[1] += 0.5 * (y_min + y_max)
+    top_size[2] = half_height_m
+    top_position = position.copy()
+    top_position[0] += 0.5 * (x_max - x_min)
+    top_position[1] += 0.5 * (y_max - y_min)
+    top_position[2] += size[2] - half_height_m
+    _set_float_vector(top, "size", top_size)
+    _set_float_vector(top, "pos", top_position)
+    top.set("rgba", "0 0 0 0")
+    top.attrib.pop("material", None)
+    visual.set("contype", "0")
+    visual.set("conaffinity", "0")
+    support.append(top)
+    tree.write(scene_path, encoding="unicode")
+
+
+def _add_target_only_support_extension(
+    scene_path: Path,
+    *,
+    support_name: str,
+    target_name: str,
+    extensions_m: tuple[float, float, float, float],
+    half_height_m: float,
+) -> None:
+    """Extend support for the target without adding a robot collision barrier."""
+
+    if not math.isfinite(half_height_m) or half_height_m <= 0.0:
+        raise ValueError("target-only support half height must be positive and finite")
+    values = np.asarray(extensions_m, dtype=np.float64)
+    if values.shape != (4,) or not np.isfinite(values).all() or np.any(values < 0.0):
+        raise ValueError("support extensions must contain four finite non-negative values")
+    tree = ET.parse(scene_path)
+    root = tree.getroot()
+    support = _find_body(root, support_name)
+    target = _find_body(root, target_name)
+    boxes = [
+        geom
+        for geom in support.findall("geom")
+        if geom.get("type", "sphere") == "box"
+        and (int(geom.get("contype", "1")) or int(geom.get("conaffinity", "1")))
+    ]
+    if len(boxes) != 1:
+        raise ValueError(
+            f"Workspace support {support_name!r} must expose exactly one collision box"
+        )
+    source = boxes[0]
+    size = _float_vector(source.get("size"), 3)
+    if half_height_m >= size[2]:
+        raise ValueError("target-only support must be thinner than the source collision box")
+    position = _float_vector(source.get("pos"), 3)
+    x_min, x_max, y_min, y_max = values
+    extension = deepcopy(source)
+    base_name = source.get("name", f"{support_name}_geom")
+    extension.set("name", f"{base_name}_workspace_target_only_top")
+    extension_size = size.copy()
+    extension_size[0] += 0.5 * (x_min + x_max)
+    extension_size[1] += 0.5 * (y_min + y_max)
+    extension_size[2] = half_height_m
+    extension_position = position.copy()
+    extension_position[0] += 0.5 * (x_max - x_min)
+    extension_position[1] += 0.5 * (y_max - y_min)
+    extension_position[2] += size[2] - half_height_m
+    _set_float_vector(extension, "size", extension_size)
+    _set_float_vector(extension, "pos", extension_position)
+    extension.set("contype", "2")
+    extension.set("conaffinity", "0")
+    extension.set("rgba", "0 0 0 0")
+    extension.attrib.pop("material", None)
+
+    target_collision_geoms = [
+        geom
+        for geom in target.iter("geom")
+        if int(geom.get("contype", "1")) or int(geom.get("conaffinity", "1"))
+    ]
+    if not target_collision_geoms:
+        raise ValueError(f"Workspace target {target_name!r} has no collision geometry")
+    for geom in target_collision_geoms:
+        geom.set("conaffinity", str(int(geom.get("conaffinity", "1")) | 2))
+    support.append(extension)
+    tree.write(scene_path, encoding="unicode")
+
+
+def audit_target_workspace_support(
+    scene_path: str | Path,
+    manifest: dict[str, object],
+    *,
+    translation_bounds_xy_m: tuple[tuple[float, float], tuple[float, float]],
+    required_margin_m: float,
+) -> dict[str, object]:
+    """Prove that every translated target footprint remains on its support."""
+
+    if not math.isfinite(required_margin_m) or required_margin_m < 0.0:
+        raise ValueError("required support margin must be finite and non-negative")
+    bounds = np.asarray(translation_bounds_xy_m, dtype=np.float64)
+    if (
+        bounds.shape != (2, 2)
+        or not np.isfinite(bounds).all()
+        or np.any(bounds[:, 0] > bounds[:, 1])
+    ):
+        raise ValueError("target translation bounds must be two ordered XY ranges")
+    roles = manifest.get("roles")
+    contract = manifest.get("object_contract")
+    reset = manifest.get("reset")
+    if (
+        not isinstance(roles, dict)
+        or not isinstance(contract, dict)
+        or not isinstance(reset, dict)
+    ):
+        raise TypeError("workspace support audit requires a grasp-anything manifest")
+    support_name = roles.get("support") or roles.get("destination")
+    primary_name = roles.get("primary")
+    if not isinstance(support_name, str) or not isinstance(primary_name, str):
+        raise TypeError("workspace support audit requires primary and support roles")
+
+    model = mujoco.MjModel.from_xml_path(str(Path(scene_path).resolve()))
+    data = mujoco.MjData(model)
+    qpos = np.asarray(reset.get("qpos"), dtype=np.float64)
+    if qpos.shape != (model.nq,):
+        raise ValueError("workspace support audit reset qpos has the wrong shape")
+    data.qpos[:] = qpos
+    mujoco.mj_forward(model, data)
+    support_id = model.body(support_name).id
+    support_low, support_high = _world_bounds(
+        model, data, _collision_geoms(model, support_id)
+    )
+    initial = np.asarray(reset.get("initial_object_pos"), dtype=np.float64)
+    half_extents = np.asarray(contract.get("half_extents_m"), dtype=np.float64)
+    if initial.shape != (3,) or half_extents.shape != (3,):
+        raise ValueError("workspace support audit object geometry is malformed")
+    # A bounding sphere in the table plane remains conservative under target yaw.
+    footprint_radius = float(np.linalg.norm(half_extents))
+    target_low = initial[:2] + bounds[:, 0] - footprint_radius
+    target_high = initial[:2] + bounds[:, 1] + footprint_radius
+    margins = np.asarray(
+        (
+            target_low[0] - support_low[0],
+            support_high[0] - target_high[0],
+            target_low[1] - support_low[1],
+            support_high[1] - target_high[1],
+        )
+    )
+    minimum_margin = float(margins.min())
+    if minimum_margin + 1e-9 < required_margin_m:
+        raise ValueError(
+            "Target workspace leaves its support: minimum edge margin "
+            f"{minimum_margin:.6f} m is below required {required_margin_m:.6f} m"
+        )
+    return {
+        "translation_bounds_xy_m": bounds.tolist(),
+        "initial_target_position_xy_m": initial[:2].tolist(),
+        "support_bounds_xy_m": [support_low[:2].tolist(), support_high[:2].tolist()],
+        "target_footprint_radius_m": footprint_radius,
+        "edge_margins_m": {
+            "x_min": float(margins[0]),
+            "x_max": float(margins[1]),
+            "y_min": float(margins[2]),
+            "y_max": float(margins[3]),
+        },
+        "minimum_edge_margin_m": minimum_margin,
+        "required_margin_m": float(required_margin_m),
+    }
 
 
 def _copy_source_assets(
@@ -770,7 +1009,7 @@ def derive_grasp_anything_bundle(
     reference_task = base_manifest.get("task")
     if reference_task not in SUPPORTED_REFERENCE_TASKS:
         raise ValueError(
-            "V1 requires an audited V2 xmove base bundle; got "
+            "V1 requires an audited V2 grasp base bundle; got "
             f"{reference_task!r}"
         )
     output = Path(output_dir).resolve()
@@ -904,5 +1143,171 @@ def derive_grasp_anything_bundle(
         mass_kg=mass_kg,
         upright=upright,
     )
+    validate_grasp_anything_bundle(output)
+    return manifest
+
+
+def derive_grasp_anything_workspace_bundle(
+    base_bundle: str | Path,
+    output_dir: str | Path,
+    *,
+    support_extensions_m: tuple[float, float, float, float],
+    target_position_jitter_xy_m: tuple[float, float],
+    target_position_center_xy_m: tuple[float, float] = (0.0, 0.0),
+    required_support_margin_m: float = 0.03,
+    thin_support_half_height_m: float | None = None,
+    target_only_support_collision: bool = False,
+) -> dict[str, object]:
+    """Derive an isolated bundle with an explicitly larger support surface."""
+
+    base = Path(base_bundle).resolve()
+    validate_grasp_anything_bundle(base)
+    base_manifest = json.loads((base / "manifest.json").read_text())
+    output = Path(output_dir).resolve()
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError(f"Refusing to overwrite non-empty output {output}")
+    jitter = np.asarray(target_position_jitter_xy_m, dtype=np.float64)
+    center = np.asarray(target_position_center_xy_m, dtype=np.float64)
+    if (
+        jitter.shape != (2,)
+        or center.shape != (2,)
+        or not np.isfinite(jitter).all()
+        or not np.isfinite(center).all()
+        or np.any(jitter < 0.0)
+    ):
+        raise ValueError("workspace target center/jitter must be finite XY values")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(base, output, dirs_exist_ok=output.exists())
+    roles = base_manifest["roles"]
+    support_name = roles.get("support") or roles.get("destination")
+    target_name = roles.get("primary")
+    if not isinstance(support_name, str) or not isinstance(target_name, str):
+        raise TypeError("grasp-anything workspace requires a support role")
+    scene_path = output / base_manifest["scene_file"]
+    support_transform = _extend_support_box
+    support_kwargs: dict[str, object] = {}
+    if target_only_support_collision and thin_support_half_height_m is None:
+        raise ValueError("target-only support collision requires a thin support height")
+    if thin_support_half_height_m is not None:
+        support_transform = (
+            _add_target_only_support_extension
+            if target_only_support_collision
+            else _replace_support_collision_with_thin_top
+        )
+        support_kwargs["half_height_m"] = thin_support_half_height_m
+        if target_only_support_collision:
+            support_kwargs["target_name"] = target_name
+    support_transform(
+        scene_path,
+        support_name=support_name,
+        extensions_m=support_extensions_m,
+        **support_kwargs,
+    )
+    render_scene = output / "render_scene.xml"
+    if render_scene.is_file():
+        support_transform(
+            render_scene,
+            support_name=support_name,
+            extensions_m=support_extensions_m,
+            **support_kwargs,
+        )
+
+    translation_bounds = tuple(
+        (float(center[axis] - jitter[axis]), float(center[axis] + jitter[axis]))
+        for axis in range(2)
+    )
+    support_audit = audit_target_workspace_support(
+        scene_path,
+        base_manifest,
+        translation_bounds_xy_m=translation_bounds,
+        required_margin_m=required_support_margin_m,
+    )
+    model = mujoco.MjModel.from_xml_path(str(scene_path))
+    if thin_support_half_height_m is None and _topology(model) != base_manifest["model"]:
+        raise ValueError("Workspace support extension changed model topology")
+
+    manifest = deepcopy(base_manifest)
+    source_manifest_hash = str(manifest.pop("manifest_hash"))
+    parent_support_contract = manifest.get("workspace_support_contract")
+    if parent_support_contract is None:
+        root_source_manifest_hash = source_manifest_hash
+        parent_extensions = np.zeros(4, dtype=np.float64)
+    elif isinstance(parent_support_contract, dict):
+        root_source_manifest_hash = parent_support_contract.get(
+            "root_source_manifest_hash",
+            parent_support_contract.get("source_manifest_hash"),
+        )
+        parent_extensions = np.asarray(
+            parent_support_contract.get("support_extensions_m"), dtype=np.float64
+        )
+        if not isinstance(root_source_manifest_hash, str) or (
+            parent_extensions.shape != (4,)
+            or not np.isfinite(parent_extensions).all()
+            or np.any(parent_extensions < 0.0)
+        ):
+            raise ValueError("Parent workspace support contract is malformed")
+    else:
+        raise TypeError("Parent workspace support contract is malformed")
+    cumulative_extensions = parent_extensions + np.asarray(
+        support_extensions_m, dtype=np.float64
+    )
+    compatible = {
+        str(value)
+        for value in manifest.get("warm_start_compatible_manifest_hashes", [])
+    }
+    compatible.add(source_manifest_hash)
+    manifest.update(
+        {
+            "scene_sha256": _sha256(scene_path),
+            "model": _topology(model),
+            "warm_start_compatible_manifest_hashes": sorted(compatible),
+            "workspace_support_contract": {
+                "schema_version": WORKSPACE_SUPPORT_CONTRACT_VERSION,
+                "source_manifest_hash": source_manifest_hash,
+                "root_source_manifest_hash": root_source_manifest_hash,
+                "support_name": support_name,
+                "support_extensions_m": cumulative_extensions.tolist(),
+                "collision_profile": (
+                    "extended_source_box_v1"
+                    if thin_support_half_height_m is None
+                    else (
+                        "target_only_thin_top_overhang_v1"
+                        if target_only_support_collision
+                        else "thin_top_overhang_v1"
+                    )
+                ),
+                "thin_support_half_height_m": thin_support_half_height_m,
+                "target_only_support_collision": target_only_support_collision,
+                **support_audit,
+            },
+        }
+    )
+    manifest["manifest_hash"] = _json_hash(manifest)
+    temporary = output / ".manifest.tmp.json"
+    temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    temporary.replace(output / "manifest.json")
+
+    render_manifest_path = output / "render_manifest.json"
+    if render_manifest_path.is_file():
+        render_manifest = json.loads(render_manifest_path.read_text())
+        render_manifest.pop("manifest_hash", None)
+        render_model = mujoco.MjModel.from_xml_path(str(render_scene))
+        render_manifest.update(
+            {
+                "base_manifest_hash": manifest["manifest_hash"],
+                "scene_sha256": _sha256(render_scene),
+                "model": _topology(render_model),
+                "ncam": int(render_model.ncam),
+                "nlight": int(render_model.nlight),
+            }
+        )
+        render_manifest["manifest_hash"] = _json_hash(render_manifest)
+        temporary_render = output / ".render_manifest.tmp.json"
+        temporary_render.write_text(
+            json.dumps(render_manifest, indent=2, sort_keys=True)
+        )
+        temporary_render.replace(render_manifest_path)
+
     validate_grasp_anything_bundle(output)
     return manifest

@@ -24,7 +24,7 @@ from simple.grasp_rl.mjlab_gpu.sonic import BatchedSonicController
 from simple.grasp_rl.mjlab_gpu.state import GpuLegacyState
 from simple.grasp_rl.mjlab_gpu.state_v2 import GpuTaskStateExtractorV2
 from simple.grasp_rl.models import V2_RESIDUAL_LAST_ACTIVE_STAGE
-from simple.grasp_rl.schema import ACTION_DIM, ACTOR_OBS_V2_DIM
+from simple.grasp_rl.schema import ACTION_DIM, ACTOR_OBS_V2_DIM, action_group_mask
 
 
 def _nonfinite_output_rows(
@@ -51,6 +51,23 @@ def _lift_arm_residual_scale(
         return torch.ones_like(decay_step, dtype=torch.float32)
     progress = decay_step.to(torch.float32).div(float(decay_steps)).clamp(0.0, 1.0)
     return 1.0 - (1.0 - minimum_scale) * progress
+
+
+def _low_pass_complete_action(
+    action: torch.Tensor,
+    previous_action: torch.Tensor,
+    *,
+    alpha: float,
+) -> torch.Tensor:
+    """Smooth commands without correlating the PPO sampling distribution."""
+
+    if action.shape != previous_action.shape:
+        raise ValueError("policy and previous actions must have the same shape")
+    if not 0.0 < alpha <= 1.0:
+        raise ValueError("action filter alpha must be in (0, 1]")
+    if alpha == 1.0:
+        return action
+    return torch.lerp(previous_action, action, alpha)
 
 
 class GpuGraspVecEnv(VecEnv):
@@ -82,6 +99,11 @@ class GpuGraspVecEnv(VecEnv):
         self.device = config.device
         self.num_envs = config.num_envs
         self.num_actions = ACTION_DIM
+        self.residual_action_mask = torch.tensor(
+            action_group_mask(config.residual_action_groups),
+            dtype=torch.bool,
+            device=self.device,
+        )
         self.gpu = build_gpu_simulation(config)
         controller = self.gpu.bundle.manifest["controller"]
         if controller == "amo":
@@ -103,11 +125,15 @@ class GpuGraspVecEnv(VecEnv):
                         config.grasp_anything_goal_potential_negative_clip
                     ),
                     success_bonus=config.grasp_anything_success_bonus,
+                    overhead_approach_clearance_m=(
+                        config.grasp_anything_overhead_approach_clearance_m
+                    ),
+                    overhead_final_descent_weight=(
+                        config.grasp_anything_overhead_final_descent_weight
+                    ),
                 )
             else:
-                self.reward = GpuGoalGraphReward.from_frozen_bundle(
-                    self.state_reader
-                )
+                self.reward = GpuGoalGraphReward.from_frozen_bundle(self.state_reader)
         else:
             self.state_reader = GpuLegacyState(self.gpu)
             self.reward = GpuGraspReward.from_frozen_bundle(self.state_reader)
@@ -128,10 +154,14 @@ class GpuGraspVecEnv(VecEnv):
             source=config.reference_source,
             splits=("train", "val", "test"),
             target_x_arm_gains=config.reference_target_x_arm_gains,
-            target_y_arm_gains=config.reference_target_y_arm_gains,
-            target_positive_y_arm_gains=(
-                config.reference_target_positive_y_arm_gains
+            target_positive_x_arm_gains=(
+                config.reference_target_positive_x_arm_gains
             ),
+            target_x_arm_gain_y_bounds=(
+                config.reference_target_x_arm_gain_y_bounds
+            ),
+            target_y_arm_gains=config.reference_target_y_arm_gains,
+            target_positive_y_arm_gains=(config.reference_target_positive_y_arm_gains),
             target_yaw_arm_gains=config.reference_target_yaw_arm_gains,
             strict_episode=config.strict_reference_episode,
         )
@@ -142,9 +172,11 @@ class GpuGraspVecEnv(VecEnv):
                 dtype=torch.float32,
                 device=self.device,
             )
-            self.reference_alignment = self.reference.validate_initial_position_alignment(
-                frozen_observation,
-                config.max_reference_initial_position_offset,
+            self.reference_alignment = (
+                self.reference.validate_initial_position_alignment(
+                    frozen_observation,
+                    config.max_reference_initial_position_offset,
+                )
             )
         self.robometer_reward: RobometerTaskReward | None = None
         if robometer_reward_config is not None:
@@ -395,24 +427,29 @@ class GpuGraspVecEnv(VecEnv):
         correction = action - reference
         if self.reference.observation_dim == ACTOR_OBS_V2_DIM:
             stage = self.reward.stage_index
-            mask = torch.zeros_like(correction)
             active = stage <= V2_RESIDUAL_LAST_ACTIVE_STAGE
             if self.state_reader.spec.family == "handover":
                 active = active & (stage < 4)
-            mask[:, 7:14] = active[:, None]
-            mask[:, 21:28] = active[:, None]
-            correction = correction * mask
+            residual_mask = getattr(self, "residual_action_mask", None)
+            if residual_mask is None:
+                groups = getattr(
+                    self.config,
+                    "residual_action_groups",
+                    ("right_hand", "right_arm"),
+                )
+                residual_mask = torch.tensor(
+                    action_group_mask(groups),
+                    dtype=torch.bool,
+                    device=correction.device,
+                )
+            correction = correction * residual_mask * active[:, None]
         limit = self.config.max_reference_action_deviation
         correction = correction.clamp(-limit, limit)
         if self.config.grasp_anything_lift_arm_residual_min_scale < 1.0:
             arm_scale = _lift_arm_residual_scale(
                 self._lift_arm_decay_step,
-                minimum_scale=(
-                    self.config.grasp_anything_lift_arm_residual_min_scale
-                ),
-                decay_steps=(
-                    self.config.grasp_anything_lift_arm_residual_decay_steps
-                ),
+                minimum_scale=(self.config.grasp_anything_lift_arm_residual_min_scale),
+                decay_steps=(self.config.grasp_anything_lift_arm_residual_decay_steps),
             )
             correction[:, 21:28] *= arm_scale[:, None]
         return reference + correction
@@ -465,7 +502,13 @@ class GpuGraspVecEnv(VecEnv):
         self._last_base_observation = base_observation
         self._last_clean_context = clean_context
         return TensorDict(
-            {"policy": actor, "critic": critic},
+            {
+                "policy": actor,
+                "critic": critic,
+                "target_position_cell_id": (
+                    self.randomizer.target_position_cell_ids.clone()
+                ),
+            },
             batch_size=[self.num_envs],
             device=self.device,
         )
@@ -492,13 +535,23 @@ class GpuGraspVecEnv(VecEnv):
         self._last_reset_forward_repair_outside_requested.zero_()
         previous_action = self.action_transform.previous_action.clone()
         clean_reference_action = self.reference.current_action()
-        executed_action = self._bounded_reference_action(actions)
+        previous_normalized_action = self.action_transform.encode(previous_action)
+        filtered_action = _low_pass_complete_action(
+            actions,
+            previous_normalized_action,
+            alpha=self.config.policy_action_filter_alpha,
+        )
+        executed_action = self._bounded_reference_action(filtered_action)
         physical_action = self.action_transform.decode(
             executed_action, self.randomizer.action_delay_steps
         )
         # This is the clean replay label for the post-action state.  Policy
         # reference noise never enters reward or termination truth.
-        self.reward.set_reference_contact(self.reference.post_step_contact_label())
+        self.reward.set_reference_contact(
+            self.reference.post_step_contact_label()
+            if self.config.reference_contact_reward_gate
+            else None
+        )
         joint_target = self.controller.apply_physical_action(physical_action)
         self.state_reader.set_previous_action(physical_action)
         numerical_failure = self._numerically_invalid_worlds()
@@ -581,6 +634,9 @@ class GpuGraspVecEnv(VecEnv):
                 "/reference/executed_action_mse": (
                     (executed_action - clean_reference_action).square().mean()
                 ),
+                "/policy/action_filter_mse": (
+                    (filtered_action - actions).square().mean()
+                ),
                 "/reference/episode_row_mean": self.reference.episode_rows.float().mean(),
                 "/reference/episode_row_std": self.reference.episode_rows.float().std(
                     unbiased=False
@@ -614,25 +670,31 @@ class GpuGraspVecEnv(VecEnv):
         if object_contract is not None:
             log = extras["log"]
             assert isinstance(log, dict)
-            log["/task/squeeze_penalty"] = (
-                self.reward.last_squeeze_penalty.mean()
-            )
+            log["/task/squeeze_penalty"] = self.reward.last_squeeze_penalty.mean()
             log["/task/object_grip_width_m"] = torch.tensor(
                 float(object_contract["grip_width_m"]), device=self.device
             )
             if isinstance(self.reward, GpuObjectGraspReward):
-                log["/task/grasp_band_reach"] = (
-                    self.reward.last_grasp_band_reach.mean()
-                )
+                log["/task/grasp_band_reach"] = self.reward.last_grasp_band_reach.mean()
                 log["/task/finger_opposition"] = (
                     self.reward.last_finger_opposition.mean()
                 )
                 log["/task/closure"] = self.reward.last_closure.mean()
-                log["/task/contact_quality"] = (
-                    self.reward.last_contact_quality.mean()
-                )
+                log["/task/contact_quality"] = self.reward.last_contact_quality.mean()
                 log["/task/min_fingertip_distance"] = (
                     self.reward.last_min_fingertip_distance.mean()
+                )
+                log["/task/overhead_approach_progress"] = (
+                    self.reward.last_overhead_approach_progress.mean()
+                )
+                log["/task/approach_waypoint_distance"] = (
+                    self.reward.last_approach_waypoint_distance.mean()
+                )
+                log["/task/overhead_waypoint_reached"] = (
+                    self.reward.overhead_waypoint_reached.float().mean()
+                )
+                log["/task/right_arm_support_force"] = (
+                    state.arm_support_force[:, 1].mean()
                 )
         if robometer_snapshot is not None:
             inferred = robometer_snapshot["inferred"]
@@ -659,6 +721,8 @@ class GpuGraspVecEnv(VecEnv):
         if self.capture_step_data:
             stage_index = getattr(self.reward, "stage_index", None)
             extras["step_data"] = {
+                "policy_action": actions.clone(),
+                "filtered_action": filtered_action.clone(),
                 "executed_action": executed_action.clone(),
                 "physical_action": physical_action.clone(),
                 "joint_target": joint_target.clone(),

@@ -11,6 +11,7 @@ from simple.grasp_rl.schema import (
     ACTION_DIM,
     REFERENCE_ACTOR_OBS_DIM,
     REFERENCE_ACTOR_OBS_V2_DIM,
+    action_group_mask,
     base_observation_dim,
 )
 
@@ -84,7 +85,12 @@ class PlanConditionedMLPModel(ClippedMLPModel):
     trajectory generator; it is not an object ground-truth state.
     """
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        residual_action_groups: tuple[str, ...] = ("right_hand", "right_arm"),
+        **kwargs,
+    ) -> None:
         super().__init__(*args, **kwargs)
         if self.obs_dim not in (REFERENCE_ACTOR_OBS_DIM, REFERENCE_ACTOR_OBS_V2_DIM):
             raise ValueError(
@@ -94,6 +100,10 @@ class PlanConditionedMLPModel(ClippedMLPModel):
         self.base_observation_dim = base_observation_dim(self.obs_dim)
         # Persistent marker makes standalone RSL checkpoints self-describing.
         self.register_buffer("_plan_conditioned_actor", torch.ones(()))
+        self.register_buffer(
+            "_residual_action_mask",
+            torch.tensor(action_group_mask(residual_action_groups)),
+        )
 
     def forward(
         self,
@@ -105,7 +115,9 @@ class PlanConditionedMLPModel(ClippedMLPModel):
         if masks is not None:
             obs = unpad_trajectories(obs, masks)
         raw = torch.cat([obs[group] for group in self.obs_groups], dim=-1)
-        proposal = raw[..., self.base_observation_dim : self.base_observation_dim + ACTION_DIM]
+        proposal = raw[
+            ..., self.base_observation_dim : self.base_observation_dim + ACTION_DIM
+        ]
         latent = self.get_latent(obs, None, hidden_state)
         correction = self.mlp(latent)
         if self.obs_dim == REFERENCE_ACTOR_OBS_V2_DIM:
@@ -115,18 +127,19 @@ class PlanConditionedMLPModel(ClippedMLPModel):
             # already release/settle, so exclude that family/stage pair too.
             # The environment applies the same mask after sampling, so
             # exploration noise cannot bypass it.
-            active = raw[
-                ..., 322 : 323 + V2_RESIDUAL_LAST_ACTIVE_STAGE
-            ].sum(-1, keepdim=True).clamp(0.0, 1.0)
+            active = (
+                raw[..., 322 : 323 + V2_RESIDUAL_LAST_ACTIVE_STAGE]
+                .sum(-1, keepdim=True)
+                .clamp(0.0, 1.0)
+            )
             handover_release = (
-                raw[..., 316 + V2_HANDOVER_FAMILY_INDEX : 317 + V2_HANDOVER_FAMILY_INDEX]
+                raw[
+                    ..., 316 + V2_HANDOVER_FAMILY_INDEX : 317 + V2_HANDOVER_FAMILY_INDEX
+                ]
                 * raw[..., 326:327]
             )
             active = (active - handover_release).clamp(0.0, 1.0)
-            correction_mask = torch.zeros_like(correction)
-            correction_mask[..., 7:14] = active
-            correction_mask[..., 21:28] = active
-            correction = correction * correction_mask
+            correction = correction * self._residual_action_mask * active
         complete_command = proposal + correction
         if self.distribution is not None:
             if stochastic_output:

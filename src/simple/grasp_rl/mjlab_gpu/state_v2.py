@@ -6,7 +6,11 @@ from dataclasses import dataclass
 
 import torch
 
-from simple.grasp_rl.mjlab_gpu.simulation import GpuSimulation, GpuV2SensorLayout, _is_descendant
+from simple.grasp_rl.mjlab_gpu.simulation import (
+    GpuSimulation,
+    GpuV2SensorLayout,
+    _is_descendant,
+)
 from simple.grasp_rl.mjlab_gpu.state import _quat_to_matrix, _rotation_6d, _to_local
 from simple.grasp_rl.schema import ACTOR_OBS_V2_DIM, JOINT_NAMES
 from simple.grasp_rl.state_v2 import FAMILIES
@@ -46,6 +50,7 @@ class GpuTaskStateV2:
     distal_pos_w: torch.Tensor
     fingertip_distances: torch.Tensor
     predicates: torch.Tensor
+    arm_support_force: torch.Tensor
     articulation: torch.Tensor
     articulation_raw: torch.Tensor
     articulation_present: torch.Tensor
@@ -56,10 +61,10 @@ class GpuTaskStateV2:
 class GpuTaskStateExtractorV2:
     def __init__(self, gpu: GpuSimulation):
         if not isinstance(gpu.sensors, GpuV2SensorLayout):
-            raise ValueError("V2 state requires the v2 GPU sensor schema")
+            raise TypeError("V2 state requires the v2 GPU sensor schema")
         spec = get_task_spec(gpu.bundle.manifest["task"])
         if not isinstance(spec, TaskSpecV2):
-            raise ValueError("V2 state requires TaskSpecV2")
+            raise TypeError("V2 state requires TaskSpecV2")
         self.gpu = gpu
         self.sim = gpu.sim
         self.sensors = gpu.sensors
@@ -281,6 +286,17 @@ class GpuTaskStateExtractorV2:
                 ],
                 dim=-1,
             ).any(dim=-1)
+        arm_support_force = torch.zeros(
+            self.num_envs, 2, dtype=torch.float32, device=self.device
+        )
+        if self.sensors.arm_support_force is not None:
+            arm_support_force = torch.stack(
+                [
+                    self._sensor_vectors(arm).norm(dim=-1).amax(dim=-1)
+                    for arm in self.sensors.arm_support_force
+                ],
+                dim=-1,
+            )
         predicates = torch.stack(
             (
                 primary_contacts[:, 0], primary_contacts[:, 1],
@@ -296,7 +312,8 @@ class GpuTaskStateExtractorV2:
         state = GpuTaskStateV2(
             pelvis_pos, pelvis_rot, pelvis_pos[:, 2] - ankle_height, hands,
             primary, destination, auxiliary, contact_forces, distal_pos, distances,
-            predicates, articulation, articulation_raw, articulation_present,
+            predicates, arm_support_force, articulation, articulation_raw,
+            articulation_present,
             self.initial_primary_pos, self.initial_auxiliary_pos,
         )
         joint_pos = data.qpos[:, self.qpos_indices]

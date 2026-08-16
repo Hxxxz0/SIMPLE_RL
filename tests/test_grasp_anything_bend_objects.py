@@ -77,6 +77,19 @@ def test_pose_profiles_expand_target_then_robot_base_position_dr() -> None:
     ].robot_base_jitter_xy_m == pytest.approx((0.0025, 0.0025))
 
 
+def test_200mm_profile_uses_independent_extended_support_asset() -> None:
+    spec = RUNNER.OBJECTS["Apple_1"]
+    narrow = RUNNER.environment_args(spec, "target_xy_100mm", 123)
+    wide = RUNNER.environment_args(spec, "target_xy_200mm", 123)
+    narrow_asset = narrow[narrow.index("--asset-bundle") + 1]
+    wide_asset = wide[wide.index("--asset-bundle") + 1]
+
+    assert "workspace200" not in narrow_asset
+    assert "workspace200_targetsupport_v3" in wide_asset
+    assert RUNNER.WORKSPACE200_SUPPORT_EXTENSIONS_M == (0.25, 0.0, 0.05, 0.0)
+    assert RUNNER.WORKSPACE200_THIN_SUPPORT_HALF_HEIGHT_M == pytest.approx(0.005)
+
+
 def test_environment_uses_bend_reference_and_explicit_pose_dr() -> None:
     arguments = RUNNER.environment_args(
         RUNNER.OBJECTS["Apple_1"], "target_base_xy_2p5mm", 123
@@ -129,6 +142,13 @@ def test_train_cli_defaults_to_scratch_without_resume() -> None:
     assert args.num_envs == 8192
     assert args.iterations == 40
     assert args.exploration_std == pytest.approx(0.01)
+    assert args.exploration_group_std == []
+    assert args.residual_action_groups == ("right_hand", "right_arm")
+    assert not args.learn_exploration_std
+    assert args.ppo_entropy_coef == pytest.approx(0.0)
+    assert args.bootstrap_gate_episodes is None
+    assert args.bootstrap_gate_min_success_rate == pytest.approx(0.01)
+    assert args.bootstrap_gate_mode == "either"
     assert args.exploration_hold_steps == 1
     assert args.ppo_steps_per_env == 24
     assert not hasattr(args, "checkpoint")
@@ -142,7 +162,10 @@ def test_train_cli_defaults_to_scratch_without_resume() -> None:
     assert args.goal_potential_scale == pytest.approx(5.0)
     assert args.goal_potential_negative_clip == pytest.approx(0.25)
     assert args.success_bonus == pytest.approx(40.0)
+    assert args.overhead_approach_clearance_m == pytest.approx(0.0)
     assert args.reference_reward_weight == pytest.approx(0.005)
+    assert not args.disable_reference_contact_reward_gate
+    assert not args.keep_target_position_center_during_curriculum
     assert args.max_reference_action_deviation == pytest.approx(0.7)
     assert args.target_focus_probability == pytest.approx(0.0)
     assert args.target_focus_jitter_xy_m == pytest.approx((0.0, 0.0))
@@ -208,6 +231,64 @@ def test_train_forwards_long_rollout_and_legacy_default(monkeypatch, tmp_path) -
 
     arguments = calls[0]
     assert arguments[arguments.index("--ppo-steps-per-env") + 1] == "240"
+
+
+def test_workspace_train_uses_stratified_grouped_exploration(monkeypatch, tmp_path) -> None:
+    spec = RUNNER.OBJECTS["Apple_1"]
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.touch()
+    calls = []
+    monkeypatch.setattr(RUNNER, "run_root", lambda _object_id: tmp_path)
+    monkeypatch.setattr(
+        RUNNER, "_run_gpu", lambda arguments, **kwargs: calls.append(arguments)
+    )
+    monkeypatch.setattr(
+        RUNNER, "_latest_checkpoint", lambda output: output / "model_19.pt"
+    )
+
+    RUNNER.train(
+        spec,
+        profile="target_xy_200mm",
+        gpu=0,
+        seed=123,
+        num_envs=1024,
+        iterations=20,
+        exploration_std=0.01,
+        exploration_group_stds=(("right_hand", 0.08), ("right_arm", 0.12)),
+        reference_contact_reward_gate=False,
+        scale_target_center_with_dr_strength=False,
+        run_name="workspace",
+        reference_processed=reference,
+        warm_start=checkpoint,
+    )
+
+    arguments = calls[0]
+    assert arguments[arguments.index("--target-position-stratified-grid") + 1 :][
+        :2
+    ] == ["8", "8"]
+    assert arguments[arguments.index("--spatial-advantage-grid") + 1 :][:2] == [
+        "8",
+        "8",
+    ]
+    assert "--disable-reference-contact-reward-gate" in arguments
+    assert "--keep-target-position-center-during-curriculum" in arguments
+    assert arguments.count("--exploration-group-std") == 2
+    residual_start = arguments.index("--residual-action-groups") + 1
+    assert arguments[residual_start : arguments.index("--num-envs")] == [
+        "right_hand",
+        "right_arm",
+        "torso_rpy",
+        "base_height",
+        "torso_vx",
+        "torso_vy",
+    ]
+    assert arguments[arguments.index("--bootstrap-gate-episodes") + 1] == "1024"
+    assert (
+        arguments[arguments.index("--bootstrap-gate-min-success-rate") + 1]
+        == "0.01"
+    )
 
 
 def test_training_focus_mixture_is_explicit_and_keeps_legacy_args_unchanged() -> None:
@@ -313,6 +394,8 @@ def test_evaluate_cli_reward_alignment_is_explicit_and_defaults_stay_legacy() ->
             "1",
             "--success-bonus",
             "80",
+            "--overhead-approach-clearance-m",
+            "0.14",
             "--reference-reward-weight",
             "0",
             "--max-reference-action-deviation",
@@ -326,6 +409,7 @@ def test_evaluate_cli_reward_alignment_is_explicit_and_defaults_stay_legacy() ->
     assert aligned.goal_potential_scale == pytest.approx(20.0)
     assert aligned.goal_potential_negative_clip == pytest.approx(1.0)
     assert aligned.success_bonus == pytest.approx(80.0)
+    assert aligned.overhead_approach_clearance_m == pytest.approx(0.14)
     assert aligned.reference_reward_weight == pytest.approx(0.0)
     assert aligned.max_reference_action_deviation == pytest.approx(2.0)
 

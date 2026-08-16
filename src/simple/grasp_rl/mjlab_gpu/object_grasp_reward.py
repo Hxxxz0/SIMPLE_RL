@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 
 import torch
@@ -12,6 +13,52 @@ from simple.grasp_rl.mjlab_gpu.state_v2 import GpuTaskStateV2
 from simple.grasp_rl.task_spec import GoalStageSpec
 
 OBJECT_GRASP_REWARD_SCHEMA_VERSION = 1
+DEFAULT_OVERHEAD_FINAL_DESCENT_WEIGHT = 0.25
+
+
+def overhead_approach_progress(
+    distal_pos_w: torch.Tensor,
+    grasp_center_w: torch.Tensor,
+    *,
+    clearance_m: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Shape a collision-free approach toward a fixed overhead waypoint."""
+
+    if distal_pos_w.ndim != 3 or distal_pos_w.shape[-2:] != (3, 3):
+        raise ValueError("distal positions must have shape (N, 3, 3)")
+    if grasp_center_w.shape != (distal_pos_w.shape[0], 3):
+        raise ValueError("grasp centers must have shape (N, 3)")
+    if not math.isfinite(clearance_m) or clearance_m <= 0.0:
+        raise ValueError("overhead approach clearance must be positive and finite")
+
+    centroid = distal_pos_w.mean(dim=1)
+    horizontal_distance = (centroid[:, :2] - grasp_center_w[:, :2]).norm(dim=-1)
+    waypoint_height = grasp_center_w[:, 2] + clearance_m
+    waypoint_distance = torch.sqrt(
+        horizontal_distance.square()
+        + (centroid[:, 2] - waypoint_height).square()
+    )
+    progress = torch.exp(-4.0 * waypoint_distance)
+    return progress, waypoint_distance, waypoint_height
+
+
+def gated_overhead_approach_progress(
+    overhead_progress: torch.Tensor,
+    final_descent_progress: torch.Tensor,
+    waypoint_reached: torch.Tensor,
+    *,
+    final_descent_weight: float = DEFAULT_OVERHEAD_FINAL_DESCENT_WEIGHT,
+) -> torch.Tensor:
+    """Allocate approach potential between the overhead waypoint and descent."""
+
+    if not math.isfinite(final_descent_weight) or not 0.0 < final_descent_weight < 1.0:
+        raise ValueError("overhead final descent weight must be finite and in (0, 1)")
+    waypoint_weight = 1.0 - final_descent_weight
+    return torch.where(
+        waypoint_reached,
+        waypoint_weight + final_descent_weight * final_descent_progress,
+        waypoint_weight * overhead_progress,
+    )
 
 
 def object_grasp_geometry(
@@ -69,7 +116,13 @@ class GpuObjectGraspReward(GpuGoalGraphReward):
 
     profile = "object_grasp_v1"
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        overhead_approach_clearance_m: float = 0.0,
+        overhead_final_descent_weight: float = DEFAULT_OVERHEAD_FINAL_DESCENT_WEIGHT,
+        **kwargs,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.object_contract = self.state_reader.gpu.bundle.manifest.get(
             "object_contract"
@@ -92,6 +145,24 @@ class GpuObjectGraspReward(GpuGoalGraphReward):
         self.maximum_grip_force_newtons = float(
             self.object_contract["maximum_grip_force_newtons"]
         )
+        self.overhead_approach_clearance_m = float(
+            overhead_approach_clearance_m
+        )
+        self.overhead_final_descent_weight = float(overhead_final_descent_weight)
+        if not (
+            math.isfinite(self.overhead_approach_clearance_m)
+            and 0.0 <= self.overhead_approach_clearance_m <= 0.5
+        ):
+            raise ValueError(
+                "overhead approach clearance must be finite and in [0, 0.5]"
+            )
+        if not (
+            math.isfinite(self.overhead_final_descent_weight)
+            and 0.0 < self.overhead_final_descent_weight < 1.0
+        ):
+            raise ValueError(
+                "overhead final descent weight must be finite and in (0, 1)"
+            )
         self.last_grasp_band_reach = torch.zeros(
             self.num_envs, device=self.device
         )
@@ -105,6 +176,15 @@ class GpuObjectGraspReward(GpuGoalGraphReward):
         )
         self.last_squeeze_penalty = torch.zeros_like(
             self.last_grasp_band_reach
+        )
+        self.last_overhead_approach_progress = torch.zeros_like(
+            self.last_grasp_band_reach
+        )
+        self.last_approach_waypoint_distance = torch.zeros_like(
+            self.last_grasp_band_reach
+        )
+        self.overhead_waypoint_reached = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
         )
 
     def metadata(self) -> dict[str, object]:
@@ -120,6 +200,19 @@ class GpuObjectGraspReward(GpuGoalGraphReward):
             "maximum_grip_force_newtons": self.maximum_grip_force_newtons,
             "stable_lift_required": True,
         }
+        if self.overhead_approach_clearance_m > 0.0:
+            resolved["overhead_approach_clearance_m"] = (
+                self.overhead_approach_clearance_m
+            )
+            resolved["overhead_approach_profile"] = "fixed_clearance_gate_v2"
+            if (
+                self.overhead_final_descent_weight
+                != DEFAULT_OVERHEAD_FINAL_DESCENT_WEIGHT
+            ):
+                resolved["overhead_final_descent_weight"] = (
+                    self.overhead_final_descent_weight
+                )
+                resolved["overhead_approach_profile"] = "fixed_clearance_gate_v3"
         return {**resolved, "resolved_sha256": _json_hash(resolved)}
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
@@ -132,8 +225,49 @@ class GpuObjectGraspReward(GpuGoalGraphReward):
             self.last_contact_quality,
             self.last_min_fingertip_distance,
             self.last_squeeze_penalty,
+            self.last_overhead_approach_progress,
+            self.last_approach_waypoint_distance,
         ):
             value[indices] = 0.0
+        self.overhead_waypoint_reached[indices] = False
+
+    def _approach_reward_progress(
+        self,
+        state: GpuTaskStateV2,
+        fingertip_distances: torch.Tensor,
+    ) -> torch.Tensor:
+        legacy = super()._approach_reward_progress(state, fingertip_distances)
+        if self.overhead_approach_clearance_m <= 0.0:
+            return legacy
+        grasp_center = state.primary.pos_w + torch.einsum(
+            "bij,j->bi", state.primary.rot_w, self.grasp_frame_position
+        )
+        overhead, distance, _ = overhead_approach_progress(
+            state.distal_pos_w[:, 1],
+            grasp_center,
+            clearance_m=self.overhead_approach_clearance_m,
+        )
+        centroid = state.distal_pos_w[:, 1].mean(dim=1)
+        horizontal_distance = (centroid[:, :2] - grasp_center[:, :2]).norm(dim=-1)
+        clearance_height = grasp_center[:, 2] + self.overhead_approach_clearance_m
+        height_error = (centroid[:, 2] - clearance_height).abs()
+        reached = (
+            horizontal_distance <= max(0.5 * self.overhead_approach_clearance_m, 0.05)
+        ) & (
+            height_error <= max(0.35 * self.overhead_approach_clearance_m, 0.04)
+        )
+        self.overhead_waypoint_reached.logical_or_(reached)
+        self.last_overhead_approach_progress.copy_(overhead)
+        self.last_approach_waypoint_distance.copy_(distance)
+        # Before the hand has physically cleared the support, direct low-path
+        # proximity receives no credit. Once the fixed waypoint is reached,
+        # retain that progress floor and shape the final descent to the object.
+        return gated_overhead_approach_progress(
+            overhead,
+            legacy,
+            self.overhead_waypoint_reached,
+            final_descent_weight=self.overhead_final_descent_weight,
+        )
 
     def _hand_grasp(
         self, state: GpuTaskStateV2, hand_index: int

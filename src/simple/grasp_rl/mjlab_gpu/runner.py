@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import warnings
 from copy import deepcopy
 from pathlib import Path
@@ -13,9 +14,120 @@ from rsl_rl.runners import OnPolicyRunner
 from tensordict import TensorDictBase
 from torch import nn
 
+from simple.grasp_rl.mjlab_gpu.simulation import FrozenAssetBundle
 from simple.grasp_rl.mjlab_gpu.vec_env import GpuGraspVecEnv
 from simple.grasp_rl.ppo_integrity import PpoIntegrityAuditor
+from simple.grasp_rl.schema import ACTION_SLICES, action_group_mask
 from simple.grasp_rl.task_spec import validate_task_metadata
+
+
+class SpatialPolicyRouter(nn.Module):
+    """Execute a learned specialist only in explicitly selected spatial cells."""
+
+    def __init__(
+        self,
+        learner: nn.Module,
+        teacher: nn.Module,
+        *,
+        free_spatial_cell_ids: tuple[int, ...],
+        teacher_checkpoint: str | Path,
+    ) -> None:
+        super().__init__()
+        if not free_spatial_cell_ids:
+            raise ValueError("spatial policy router requires at least one free cell")
+        self.learner = learner
+        self.teacher = teacher
+        self.register_buffer(
+            "free_spatial_cell_ids",
+            torch.tensor(free_spatial_cell_ids, dtype=torch.long),
+        )
+        self.teacher_checkpoint = Path(teacher_checkpoint).resolve()
+
+    def forward(self, observations, *, stochastic_output: bool = False):
+        cell_ids = observations.get("target_position_cell_id")
+        if cell_ids is None:
+            raise RuntimeError(
+                "spatial policy router requires target-position cell IDs"
+            )
+        learner_actions = self.learner(
+            observations, stochastic_output=stochastic_output
+        )
+        teacher_actions = self.teacher(observations, stochastic_output=False)
+        use_learner = torch.isin(
+            cell_ids.flatten(), self.free_spatial_cell_ids
+        ).unsqueeze(-1)
+        return torch.where(use_learner, learner_actions, teacher_actions)
+
+    def metadata(self) -> dict[str, object]:
+        return {
+            "teacher_checkpoint": str(self.teacher_checkpoint),
+            "teacher_checkpoint_sha256": _sha256_file(self.teacher_checkpoint),
+            "free_spatial_cell_ids": self.free_spatial_cell_ids.tolist(),
+        }
+
+
+class SpatialCheckpointRouter(nn.Module):
+    """Route disjoint spatial cells to frozen checkpoint experts."""
+
+    def __init__(
+        self,
+        default_actor: nn.Module,
+        routes: tuple[tuple[str | Path, nn.Module, tuple[int, ...]], ...],
+    ) -> None:
+        super().__init__()
+        if not routes:
+            raise ValueError("spatial checkpoint router requires at least one route")
+        self.default_actor = default_actor
+        self.experts = nn.ModuleList()
+        self.expert_checkpoints: list[Path] = []
+        seen_cells: set[int] = set()
+        for index, (checkpoint, expert, cell_ids) in enumerate(routes):
+            if not cell_ids:
+                raise ValueError("spatial checkpoint expert requires at least one cell")
+            overlap = seen_cells.intersection(cell_ids)
+            if overlap:
+                raise ValueError(f"spatial checkpoint routes overlap: {sorted(overlap)}")
+            seen_cells.update(cell_ids)
+            self.experts.append(expert)
+            self.expert_checkpoints.append(Path(checkpoint).resolve())
+            self.register_buffer(
+                f"expert_cell_ids_{index}", torch.tensor(cell_ids, dtype=torch.long)
+            )
+
+    def _expert_cell_ids(self, index: int) -> torch.Tensor:
+        return getattr(self, f"expert_cell_ids_{index}")
+
+    def forward(self, observations, *, stochastic_output: bool = False):
+        cell_ids = observations.get("target_position_cell_id")
+        if cell_ids is None:
+            raise RuntimeError(
+                "spatial checkpoint router requires target-position cell IDs"
+            )
+        actions = self.default_actor(
+            observations, stochastic_output=stochastic_output
+        )
+        for index, expert in enumerate(self.experts):
+            expert_actions = expert(
+                observations, stochastic_output=stochastic_output
+            )
+            selected = torch.isin(
+                cell_ids.flatten(), self._expert_cell_ids(index)
+            ).unsqueeze(-1)
+            actions = torch.where(selected, expert_actions, actions)
+        return actions
+
+    def metadata(self) -> dict[str, object]:
+        return {
+            "type": "cell_checkpoint_experts",
+            "experts": [
+                {
+                    "checkpoint": str(checkpoint),
+                    "checkpoint_sha256": _sha256_file(checkpoint),
+                    "spatial_cell_ids": self._expert_cell_ids(index).tolist(),
+                }
+                for index, checkpoint in enumerate(self.expert_checkpoints)
+            ],
+        }
 
 
 def ppo_train_config(
@@ -24,19 +136,40 @@ def ppo_train_config(
     plan_conditioned_actor: bool = False,
     exploration_std: float | None = None,
     exploration_hold_steps: int = 1,
+    learn_exploration_std: bool = False,
+    entropy_coef: float = 0.0,
+    residual_action_groups: tuple[str, ...] = ("right_hand", "right_arm"),
+    exploration_group_stds: tuple[tuple[str, float], ...] = (),
 ) -> dict:
     """Return the reviewed PPO hyperparameters for the reference actor."""
 
-    if exploration_hold_steps < 1:
-        raise ValueError("exploration_hold_steps must be at least 1")
+    if exploration_hold_steps != 1:
+        raise ValueError(
+            "PPO exploration_hold_steps must be 1: reusing Gaussian noise "
+            "across actions does not match the per-step likelihood ratios "
+            "used by PPO"
+        )
+    if exploration_std is not None and exploration_std <= 0.0:
+        raise ValueError("exploration_std must be positive")
+    if entropy_coef < 0.0:
+        raise ValueError("entropy_coef must be non-negative")
+    grouped_stds: list[tuple[str, float]] = []
+    seen_groups: set[str] = set()
+    for group, raw_std in exploration_group_stds:
+        if group not in ACTION_SLICES:
+            raise ValueError(f"Unknown exploration action group: {group}")
+        if group in seen_groups:
+            raise ValueError(f"Duplicate exploration action group: {group}")
+        std = float(raw_std)
+        if not math.isfinite(std) or std <= 0.0:
+            raise ValueError("Action-group exploration std must be positive")
+        grouped_stds.append((group, std))
+        seen_groups.add(group)
     distribution_cfg: dict[str, object] = {
         "class_name": (
-            "GaussianDistribution"
-            if exploration_hold_steps == 1
-            else (
-                "simple.grasp_rl.distribution."
-                "TemporallyCorrelatedGaussianDistribution"
-            )
+            "simple.grasp_rl.distribution.ActionGroupedGaussianDistribution"
+            if grouped_stds
+            else "GaussianDistribution"
         ),
         "init_std": (
             exploration_std
@@ -44,10 +177,10 @@ def ppo_train_config(
             else (0.05 if smoke else 0.02)
         ),
         "std_type": "scalar",
-        "learn_std": False,
+        "learn_std": bool(learn_exploration_std),
     }
-    if exploration_hold_steps > 1:
-        distribution_cfg["hold_steps"] = exploration_hold_steps
+    if grouped_stds:
+        distribution_cfg["action_group_stds"] = tuple(grouped_stds)
 
     return {
         "seed": 42,
@@ -70,6 +203,11 @@ def ppo_train_config(
             "hidden_dims": (512, 256, 128),
             "activation": "elu",
             "obs_normalization": True,
+            **(
+                {"residual_action_groups": residual_action_groups}
+                if plan_conditioned_actor
+                else {}
+            ),
             "distribution_cfg": distribution_cfg,
         },
         "critic": {
@@ -86,7 +224,7 @@ def ppo_train_config(
             "gamma": 0.99,
             "lam": 0.95,
             "value_loss_coef": 1.0,
-            "entropy_coef": 0.0,
+            "entropy_coef": float(entropy_coef),
             "learning_rate": 3.0e-4 if smoke else 1.0e-4,
             "max_grad_norm": 1.0,
             "use_clipped_value_loss": True,
@@ -98,6 +236,46 @@ def ppo_train_config(
         "multi_gpu": None,
         "check_for_nan": True,
     }
+
+
+def _spatially_balance_advantages(
+    advantages: torch.Tensor,
+    cell_ids: torch.Tensor,
+    *,
+    num_cells: int,
+    require_all_cells: bool = True,
+    weighting: str = "cell",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Normalize advantages per workspace cell with explicit sample weighting."""
+
+    if advantages.shape[:-1] != cell_ids.shape or advantages.shape[-1] != 1:
+        raise ValueError("advantages and spatial cell IDs have incompatible shapes")
+    if weighting not in ("cell", "sample"):
+        raise ValueError("spatial advantage weighting must be 'cell' or 'sample'")
+    flat_advantages = advantages.reshape(-1)
+    flat_cells = cell_ids.reshape(-1).to(torch.long)
+    if torch.any((flat_cells < 0) | (flat_cells >= num_cells)):
+        raise ValueError("spatial cell IDs are outside the configured grid")
+    counts = torch.bincount(flat_cells, minlength=num_cells)
+    missing = (counts == 0).nonzero(as_tuple=False).flatten()
+    if require_all_cells and len(missing):
+        raise RuntimeError(
+            "PPO rollout missed required workspace cells: "
+            + ", ".join(str(int(value)) for value in missing)
+        )
+
+    balanced = torch.zeros_like(flat_advantages)
+    target_count = flat_advantages.numel() / float(num_cells)
+    for cell in range(num_cells):
+        mask = flat_cells == cell
+        count = int(counts[cell])
+        if count == 0:
+            continue
+        values = flat_advantages[mask]
+        normalized = (values - values.mean()) / (values.std(unbiased=False) + 1e-8)
+        scale = target_count / count if weighting == "cell" else 1.0
+        balanced[mask] = normalized * scale
+    return balanced.reshape_as(advantages), counts
 
 
 def _make_optimizer_capturable(optimizer: torch.optim.Optimizer) -> None:
@@ -120,6 +298,87 @@ def _sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def _asset_allows_policy_warm_start(
+    bundle_manifest: dict[str, object],
+    source_manifest_hash: object,
+    source_bundle_manifest: dict[str, object] | None = None,
+) -> bool:
+    """Accept exact, declared-parent or audited workspace-family assets."""
+
+    if source_manifest_hash == bundle_manifest.get("manifest_hash"):
+        return True
+    compatible = bundle_manifest.get(
+        "warm_start_compatible_manifest_hashes", []
+    )
+    if isinstance(source_manifest_hash, str) and source_manifest_hash in compatible:
+        return True
+    if (
+        not isinstance(source_manifest_hash, str)
+        or not isinstance(source_bundle_manifest, dict)
+        or source_bundle_manifest.get("manifest_hash") != source_manifest_hash
+    ):
+        return False
+
+    target_contract = bundle_manifest.get("workspace_support_contract")
+    source_contract = source_bundle_manifest.get("workspace_support_contract")
+    if not isinstance(target_contract, dict) or not isinstance(source_contract, dict):
+        return False
+
+    def root_source_hash(contract: dict[str, object]) -> object:
+        return contract.get(
+            "root_source_manifest_hash", contract.get("source_manifest_hash")
+        )
+
+    family_hash = root_source_hash(target_contract)
+    if not isinstance(family_hash, str) or family_hash != root_source_hash(
+        source_contract
+    ):
+        return False
+
+    # Scene geometry and the audited support envelope may differ. Everything
+    # consumed by the policy/controller contract must remain byte-for-byte equal.
+    invariant_fields = (
+        "format_version",
+        "task",
+        "controller",
+        "controller_bundle",
+        "model",
+        "roles",
+        "reset",
+        "action_transform_sha256",
+        "reward_hash",
+        "object_contract",
+        "task_metadata",
+    )
+    return all(
+        bundle_manifest.get(field) == source_bundle_manifest.get(field)
+        for field in invariant_fields
+    )
+
+
+def _checkpoint_asset_allows_policy_warm_start(
+    bundle_manifest: dict[str, object], metadata: dict[str, object]
+) -> bool:
+    """Resolve and verify a sibling workspace asset only when needed."""
+
+    source_manifest_hash = metadata.get("asset_manifest_hash")
+    if _asset_allows_policy_warm_start(bundle_manifest, source_manifest_hash):
+        return True
+    config = metadata.get("config")
+    resolved = config.get("resolved") if isinstance(config, dict) else None
+    asset_bundle = resolved.get("asset_bundle") if isinstance(resolved, dict) else None
+    task = resolved.get("task") if isinstance(resolved, dict) else None
+    if not isinstance(asset_bundle, str) or not isinstance(task, str):
+        return False
+    try:
+        source_bundle = FrozenAssetBundle.load(asset_bundle, expected_task=task)
+    except (FileNotFoundError, KeyError, TypeError, ValueError):
+        return False
+    return _asset_allows_policy_warm_start(
+        bundle_manifest, source_manifest_hash, source_bundle.manifest
+    )
+
+
 def _load_policy_warm_start(
     policy: torch.nn.Module, state: dict[str, torch.Tensor]
 ) -> None:
@@ -131,10 +390,34 @@ def _load_policy_warm_start(
     # buffer.  RSL-RL 5.2 no longer owns it; it is metadata, not a weight.
     policy_keys = policy.state_dict().keys()
     compatible_state = dict(state)
+    target_residual_mask = policy.state_dict().get("_residual_action_mask")
+    source_residual_mask = state.get("_residual_action_mask")
+    if target_residual_mask is not None and source_residual_mask is None:
+        source_residual_mask = torch.tensor(
+            action_group_mask(("right_hand", "right_arm"))
+        )
     if "_plan_conditioned_actor" not in policy_keys:
         compatible_state.pop("_plan_conditioned_actor", None)
+    if "_residual_action_mask" in policy_keys:
+        compatible_state["_residual_action_mask"] = policy.state_dict()[
+            "_residual_action_mask"
+        ].clone()
+    else:
+        compatible_state.pop("_residual_action_mask", None)
     policy.load_state_dict(compatible_state, strict=True)
     distribution.load_state_dict(distribution_state, strict=True)
+    if target_residual_mask is not None and source_residual_mask is not None:
+        newly_enabled = target_residual_mask.bool() & ~source_residual_mask.bool().to(
+            target_residual_mask.device
+        )
+        if torch.any(newly_enabled):
+            head = policy.mlp[-1]
+            if not isinstance(head, nn.Linear):
+                raise TypeError("plan-conditioned actor output head must be linear")
+            with torch.no_grad():
+                head.weight[newly_enabled] = 0.0
+                if head.bias is not None:
+                    head.bias[newly_enabled] = 0.0
 
 
 def checkpoint_uses_plan_conditioned_actor(checkpoint: str | Path) -> bool:
@@ -157,6 +440,8 @@ def _reference_metadata_matches(actual: object, expected: dict[str, object]) -> 
     normalized = dict(actual)
     for name in (
         "target_x_arm_gains",
+        "target_positive_x_arm_gains",
+        "target_x_arm_gain_y_bounds",
         "target_y_arm_gains",
         "target_positive_y_arm_gains",
         "target_yaw_arm_gains",
@@ -169,9 +454,7 @@ def _reference_metadata_matches(actual: object, expected: dict[str, object]) -> 
     if "strict_episode" not in normalized and expected.get("strict_episode") is None:
         normalized["strict_episode"] = None
     if "action_transform_sha256" not in normalized:
-        normalized["action_transform_sha256"] = expected.get(
-            "action_transform_sha256"
-        )
+        normalized["action_transform_sha256"] = expected.get("action_transform_sha256")
     return normalized == expected
 
 
@@ -181,6 +464,20 @@ def _controller_metadata_matches(actual: object, expected: dict[str, object]) ->
     if actual == expected:
         return True
     return actual is None and expected.get("backend") == "amo"
+
+
+def _spatial_advantage_metadata_matches(
+    actual: object, expected: dict[str, object] | None
+) -> bool:
+    """Treat checkpoints without a weighting field as legacy cell weighting."""
+
+    if actual == expected:
+        return True
+    if not isinstance(actual, dict) or not isinstance(expected, dict):
+        return False
+    normalized = dict(actual)
+    normalized.setdefault("weighting", "cell")
+    return normalized == expected
 
 
 class GpuPpoRunner(OnPolicyRunner):
@@ -198,6 +495,9 @@ class GpuPpoRunner(OnPolicyRunner):
         actor_learning_rate_scale: float = 1.0,
         actor_anchor_checkpoint: str | Path | None = None,
         actor_anchor_weight: float = 0.0,
+        actor_anchor_free_spatial_cell_ids: tuple[int, ...] = (),
+        spatial_advantage_grid: tuple[int, int] | None = None,
+        spatial_advantage_weighting: str = "cell",
     ):
         super().__init__(env, deepcopy(train_cfg), log_dir, env.device)
         self.actor_learning_rate_scale = float(actor_learning_rate_scale)
@@ -226,10 +526,35 @@ class GpuPpoRunner(OnPolicyRunner):
             raise ValueError(
                 "actor anchor checkpoint and positive weight must be set together"
             )
+        if actor_anchor_free_spatial_cell_ids:
+            if actor_anchor_checkpoint is None or spatial_advantage_grid is None:
+                raise ValueError(
+                    "free actor-anchor cells require an anchor and spatial grid"
+                )
+            cell_count = int(spatial_advantage_grid[0] * spatial_advantage_grid[1])
+            if len(set(actor_anchor_free_spatial_cell_ids)) != len(
+                actor_anchor_free_spatial_cell_ids
+            ) or any(
+                cell_id < 0 or cell_id >= cell_count
+                for cell_id in actor_anchor_free_spatial_cell_ids
+            ):
+                raise ValueError("free actor-anchor cell IDs must be unique and in-grid")
         if actor_anchor_checkpoint is not None:
             self._install_actor_anchor(
                 actor_anchor_checkpoint,
                 weight=float(actor_anchor_weight),
+                free_spatial_cell_ids=actor_anchor_free_spatial_cell_ids,
+            )
+        self.spatial_advantage_grid = spatial_advantage_grid
+        self.spatial_advantage_weighting = spatial_advantage_weighting
+        self.spatial_advantage_metrics: dict[str, float] = {}
+        if spatial_advantage_grid is not None:
+            self._install_spatial_advantage_balancing(
+                spatial_advantage_grid, weighting=spatial_advantage_weighting
+            )
+        elif spatial_advantage_weighting != "cell":
+            raise ValueError(
+                "spatial advantage weighting requires a spatial advantage grid"
             )
         self.integrity_auditor = (
             PpoIntegrityAuditor(self, integrity_path)
@@ -237,25 +562,81 @@ class GpuPpoRunner(OnPolicyRunner):
             else None
         )
 
+    def _install_spatial_advantage_balancing(
+        self, grid: tuple[int, int], *, weighting: str
+    ) -> None:
+        if len(grid) != 2 or any(
+            int(value) != value or int(value) < 1 for value in grid
+        ):
+            raise ValueError("spatial_advantage_grid must contain positive integers")
+        grid = (int(grid[0]), int(grid[1]))
+        if weighting not in ("cell", "sample"):
+            raise ValueError("spatial advantage weighting must be 'cell' or 'sample'")
+        self.spatial_advantage_grid = grid
+        self.spatial_advantage_weighting = weighting
+        if self.env.config.domain_randomization.target_position_stratified_grid != grid:
+            raise ValueError(
+                "spatial advantage balancing requires the same stratified DR grid"
+            )
+        storage = self.alg.storage
+        if storage.num_envs < grid[0] * grid[1]:
+            raise ValueError(
+                "spatial advantage balancing requires at least one env per cell"
+            )
+        rollout_cells = torch.empty(
+            storage.num_transitions_per_env,
+            storage.num_envs,
+            dtype=torch.long,
+            device=self.device,
+        )
+        base_act = self.alg.act
+        base_compute_returns = self.alg.compute_returns
+        base_update = self.alg.update
+        num_cells = grid[0] * grid[1]
+
+        def spatial_act(observations):
+            step = int(storage.step)
+            if not 0 <= step < storage.num_transitions_per_env:
+                raise RuntimeError("spatial rollout capture is out of bounds")
+            rollout_cells[step].copy_(self.env.randomizer.target_position_cell_ids)
+            return base_act(observations)
+
+        def spatial_compute_returns(observations):
+            result = base_compute_returns(observations)
+            balanced, counts = _spatially_balance_advantages(
+                storage.advantages,
+                rollout_cells,
+                num_cells=num_cells,
+                weighting=weighting,
+            )
+            storage.advantages.copy_(balanced)
+            self.spatial_advantage_metrics = {
+                "spatial_coverage": float((counts > 0).float().mean()),
+                "spatial_min_samples": float(counts.min()),
+                "spatial_max_samples": float(counts.max()),
+            }
+            return result
+
+        def spatial_update():
+            metrics = base_update()
+            return {**metrics, **self.spatial_advantage_metrics}
+
+        self.alg.act = spatial_act
+        self.alg.compute_returns = spatial_compute_returns
+        self.alg.update = spatial_update
+
     def _install_actor_anchor(
         self,
         checkpoint: str | Path,
         *,
         weight: float,
+        free_spatial_cell_ids: tuple[int, ...] = (),
     ) -> None:
         """Keep focused PPO close to a frozen, validated teacher actor."""
 
         checkpoint = Path(checkpoint).resolve()
-        payload = torch.load(
-            checkpoint, map_location=self.device, weights_only=False
-        )
-        state = self._validated_actor_state(payload, checkpoint=checkpoint)
-
         actor = self.alg.get_policy()
-        teacher = deepcopy(actor)
-        _load_policy_warm_start(teacher, state)
-        teacher.eval()
-        teacher.requires_grad_(False)
+        teacher = self.frozen_actor_copy(checkpoint)
 
         optimizer = self.alg.optimizer
         base_step = optimizer.step
@@ -270,6 +651,9 @@ class GpuPpoRunner(OnPolicyRunner):
         # corrections in the manipulation joints.
         dimension_weights[7:14] = 10.0
         dimension_weights[21:28] = 5.0
+        free_cell_ids = torch.tensor(
+            free_spatial_cell_ids, dtype=torch.long, device=self.device
+        )
 
         def capturing_forward(observations, *args, **kwargs):
             nonlocal captured_observations
@@ -284,18 +668,26 @@ class GpuPpoRunner(OnPolicyRunner):
             if captured_observations is None:
                 raise RuntimeError("PPO actor observations were not captured")
             with torch.no_grad():
-                targets = teacher(
-                    captured_observations, stochastic_output=False
+                targets = teacher(captured_observations, stochastic_output=False)
+            prediction = actor(captured_observations, stochastic_output=False)
+            element_loss = F.smooth_l1_loss(prediction, targets, reduction="none")
+            sample_loss = (element_loss * dimension_weights).sum(
+                -1
+            ) / dimension_weights.sum()
+            if free_cell_ids.numel():
+                cell_ids = captured_observations.get("target_position_cell_id")
+                if cell_ids is None:
+                    raise RuntimeError(
+                        "selective actor anchor requires target-position cell IDs"
+                    )
+                anchored = ~torch.isin(cell_ids.flatten(), free_cell_ids)
+                anchor_loss = (
+                    sample_loss[anchored].mean()
+                    if torch.any(anchored)
+                    else prediction.sum() * 0.0
                 )
-            prediction = actor(
-                captured_observations, stochastic_output=False
-            )
-            element_loss = F.smooth_l1_loss(
-                prediction, targets, reduction="none"
-            )
-            anchor_loss = (
-                element_loss * dimension_weights
-            ).sum(-1).mean() / dimension_weights.sum()
+            else:
+                anchor_loss = sample_loss.mean()
             (weight * anchor_loss).backward()
             nn.utils.clip_grad_norm_(actor.parameters(), self.alg.max_grad_norm)
             anchor_losses.append(float(anchor_loss.detach()))
@@ -308,9 +700,7 @@ class GpuPpoRunner(OnPolicyRunner):
             metrics = base_update()
             if not anchor_losses:
                 raise RuntimeError("PPO actor anchor did not run an optimizer step")
-            metrics["actor_anchor"] = float(
-                sum(anchor_losses) / len(anchor_losses)
-            )
+            metrics["actor_anchor"] = float(sum(anchor_losses) / len(anchor_losses))
             return metrics
 
         self.alg.update = anchored_update
@@ -318,7 +708,20 @@ class GpuPpoRunner(OnPolicyRunner):
         self.actor_anchor_metadata = {
             "weight": weight,
             "checkpoint_sha256": _sha256_file(checkpoint),
+            "free_spatial_cell_ids": list(free_spatial_cell_ids),
         }
+
+    def frozen_actor_copy(self, checkpoint: str | Path) -> nn.Module:
+        """Load a validated frozen actor with the current architecture."""
+
+        checkpoint = Path(checkpoint).resolve()
+        payload = torch.load(checkpoint, map_location=self.device, weights_only=False)
+        state = self._validated_actor_state(payload, checkpoint=checkpoint)
+        actor = deepcopy(self.alg.get_policy())
+        _load_policy_warm_start(actor, state)
+        actor.eval()
+        actor.requires_grad_(False)
+        return actor
 
     def _validated_actor_state(
         self,
@@ -332,9 +735,9 @@ class GpuPpoRunner(OnPolicyRunner):
             resolved = gpu_metadata.get("config", {}).get("resolved", {})
             if resolved.get("task") != self.env.config.task:
                 raise ValueError("GPU checkpoint task does not match this environment")
-            if gpu_metadata.get("asset_manifest_hash") != bundle.manifest[
-                "manifest_hash"
-            ]:
+            if not _checkpoint_asset_allows_policy_warm_start(
+                bundle.manifest, gpu_metadata
+            ):
                 raise ValueError("GPU checkpoint asset bundle does not match")
         else:
             validate_task_metadata(
@@ -392,7 +795,9 @@ class GpuPpoRunner(OnPolicyRunner):
         resolved = metadata.get("config", {}).get("resolved", {})
         if resolved.get("task") != self.env.config.task:
             raise ValueError("GPU checkpoint task does not match this environment")
-        if metadata.get("asset_manifest_hash") != bundle.manifest["manifest_hash"]:
+        if not _checkpoint_asset_allows_policy_warm_start(
+            bundle.manifest, metadata
+        ):
             raise ValueError("GPU checkpoint asset bundle does not match")
         state = payload.get("critic_state_dict")
         if not isinstance(state, dict):
@@ -450,6 +855,14 @@ class GpuPpoRunner(OnPolicyRunner):
                 "actor_learning_rate_scale": self.actor_learning_rate_scale,
             },
             "actor_anchor": getattr(self, "actor_anchor_metadata", None),
+            "spatial_advantages": (
+                None
+                if self.spatial_advantage_grid is None
+                else {
+                    "grid": list(self.spatial_advantage_grid),
+                    "weighting": self.spatial_advantage_weighting,
+                }
+            ),
         }
         reward_override = self.env.robometer_reward_metadata()
         if reward_override is not None:
@@ -509,6 +922,7 @@ class GpuPpoRunner(OnPolicyRunner):
                 "reference",
                 "optimizer",
                 "actor_anchor",
+                "spatial_advantages",
             ):
                 actual = metadata.get(key)
                 if key == "optimizer" and actual is None:
@@ -518,6 +932,8 @@ class GpuPpoRunner(OnPolicyRunner):
                     if key == "reference"
                     else _controller_metadata_matches(actual, expected[key])
                     if key == "controller"
+                    else _spatial_advantage_metadata_matches(actual, expected[key])
+                    if key == "spatial_advantages"
                     else actual == expected[key]
                 )
                 if not matches:
@@ -528,6 +944,16 @@ class GpuPpoRunner(OnPolicyRunner):
                 expected_override is not None or actual_override is not None
             ) and actual_override != expected_override:
                 raise ValueError("Checkpoint task reward override metadata mismatch")
+        actor_state = payload.get("actor_state_dict")
+        actor = self.alg.get_policy()
+        if (
+            isinstance(actor_state, dict)
+            and "_residual_action_mask" in actor.state_dict()
+            and "_residual_action_mask" not in actor_state
+        ):
+            actor_state["_residual_action_mask"] = actor.state_dict()[
+                "_residual_action_mask"
+            ].clone()
         load_iteration = self.alg.load(payload, load_cfg, strict)
         _move_optimizer_state(self.alg.optimizer, self.device)
         _make_optimizer_capturable(self.alg.optimizer)

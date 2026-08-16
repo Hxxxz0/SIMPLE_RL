@@ -982,6 +982,261 @@
       "videos/tomato_1_xmove_bend_target_xy_200mm_sparse_v5"
     ]
   },
+  "apple_spatial_coverage_v12": {
+    "status": "experimental_partial_spatial_coverage_not_uniform_workspace",
+    "documentation": "SPATIAL_COVERAGE_V12.md",
+    "route": "xmove_bend_ep11_v1",
+    "existing_defaults_changed": false,
+    "compatibility": {
+      "legacy_spatial_advantage_weighting": "cell",
+      "new_training_weighting": "sample",
+      "legacy_bootstrap_gate_spatial_scope": "all",
+      "legacy_maximum_precontact_target_motion_m": 0.003,
+      "v12_video_maximum_precontact_target_motion_m": 0.0001,
+      "old_checkpoints_require_conversion": false
+    },
+    "grid": {
+      "x_bins": 32,
+      "y_bins": 32,
+      "target_position_offset_center_xy_m": [0.0, -0.09],
+      "target_position_jitter_xy_m": [0.05, 0.05],
+      "sampled_x_bounds_m": [-0.05, 0.05],
+      "sampled_y_bounds_m": [-0.14, -0.04],
+      "cell_id_formula": "x_index * 32 + y_index"
+    },
+    "router_manifest": {
+      "path": "checkpoints/apple_1_xmove_bend_spatial_v12_router.json",
+      "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/apple_1_xmove_bend_spatial_v12_router.json",
+      "sha256": "3a8456a5ad6561f8db7ed9c6845925a965533ea647e980162110e9cbdf8e3fa2",
+      "bytes": 4774,
+      "routed_cell_count": 13,
+      "fallback_outside_routed_cells": true
+    },
+    "checkpoints": [
+      {
+        "role": "default_coarse",
+        "path": "checkpoints/apple_1_xmove_bend_spatial_v12_coarse_model_50.pt",
+        "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/apple_1_xmove_bend_spatial_v12_coarse_model_50.pt",
+        "sha256": "c3271159e3c889ecf8477ef10f70390a8cb5f2ebf802c37d053006dd1a52d945",
+        "bytes": 14916700,
+        "selected_update": 50,
+        "fresh_on_policy_transitions": 6266880
+      },
+      {
+        "role": "shared_frontier_expert",
+        "path": "checkpoints/apple_1_xmove_bend_spatial_v12_four_cell_model_99.pt",
+        "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/apple_1_xmove_bend_spatial_v12_four_cell_model_99.pt",
+        "sha256": "0a69cd6b6ab2cc3fdc6ac241fa7e64c686a1a192cefe46747eaf19bf555467e5",
+        "bytes": 14916764,
+        "selected_update": 99,
+        "fresh_on_policy_transitions": 12288000
+      },
+      {
+        "role": "cell_29_31_expert",
+        "path": "checkpoints/apple_1_xmove_bend_spatial_v12_cell29_31_model_5.pt",
+        "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/apple_1_xmove_bend_spatial_v12_cell29_31_model_5.pt",
+        "sha256": "32086364c1e7d3fad6a5dcf782a11ce47da833fe1d1798a52ec73c4245fdc428",
+        "bytes": 15408045,
+        "selected_update": 5,
+        "fresh_on_policy_transitions": 1474560,
+        "cell": {"x_index": 29, "y_index": 31, "cell_id": 959}
+      },
+      {
+        "role": "cell_30_30_expert",
+        "path": "checkpoints/apple_1_xmove_bend_spatial_v12_cell30_30_model_5.pt",
+        "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/apple_1_xmove_bend_spatial_v12_cell30_30_model_5.pt",
+        "sha256": "186c3ca0acfb02b3c3d01d1d714306cbeebdf3afc0d3e809be7c24b362150c2c",
+        "bytes": 15408045,
+        "selected_update": 5,
+        "fresh_on_policy_transitions": 1474560,
+        "cell": {"x_index": 30, "y_index": 30, "cell_id": 990}
+      },
+      {
+        "role": "cell_31_29_expert",
+        "path": "checkpoints/apple_1_xmove_bend_spatial_v12_cell31_29_model_5.pt",
+        "local_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/checkpoints/apple_1_xmove_bend_spatial_v12_cell31_29_model_5.pt",
+        "sha256": "eb01842c284b2dd81851e431e70c20554b6d5d44ea6b9673e58b5dea1420c383",
+        "bytes": 15408045,
+        "selected_update": 5,
+        "fresh_on_policy_transitions": 1474560,
+        "cell": {"x_index": 31, "y_index": 29, "cell_id": 1021}
+      }
+    ],
+    "training": {
+      "reference_conditioned_observation": true,
+      "reference_reward_weight": 0.0,
+      "reference_contact_reward_gate": false,
+      "max_reference_action_deviation": 2.0,
+      "steps_per_env_per_update": 120,
+      "ppo_learning_epochs": 3,
+      "ppo_mini_batches": 4,
+      "optimizer_steps_per_update": 12,
+      "spatial_advantage_weighting": "sample",
+      "selected_artifact_transition_sum": 22978560,
+      "complete_training_transition_sum": 98304000,
+      "complete_lines": [
+        {
+          "role": "coarse",
+          "num_envs": 1024,
+          "updates": 100,
+          "fresh_on_policy_transitions": 12288000
+        },
+        {
+          "role": "shared_four_cell",
+          "num_envs": 1024,
+          "updates": 100,
+          "fresh_on_policy_transitions": 12288000
+        },
+        {
+          "role": "cell_29_31_specialist",
+          "num_envs": 2048,
+          "updates": 100,
+          "fresh_on_policy_transitions": 24576000,
+          "final_checkpoint": "model_99.pt",
+          "final_global_successes": [748, 763],
+          "final_exact_cell_results": [
+            {"seed": 20261634, "episodes_in_cell": 1025, "successes": 0, "initial_world_sha256": "b3d717a70a2f6e13c6ba867631ff5101c16737da5010413d8a3d41b7b80bb90e"},
+            {"seed": 20261635, "episodes_in_cell": 1025, "successes": 0, "initial_world_sha256": "0c2ddcba94c4db8e2bd8876ff1080f6c2672da056b0bf3c811c4c5615c7b5215"}
+          ],
+          "selected_early_checkpoint": "model_5.pt"
+        },
+        {
+          "role": "cell_30_30_specialist",
+          "num_envs": 2048,
+          "updates": 100,
+          "fresh_on_policy_transitions": 24576000,
+          "final_checkpoint": "model_99.pt",
+          "final_global_successes": [721, 734],
+          "final_exact_cell_results": [
+            {"seed": 20261634, "episodes_in_cell": 1025, "successes": 0},
+            {"seed": 20261635, "episodes_in_cell": 1025, "successes": 0}
+          ],
+          "selected_early_checkpoint": "model_5.pt"
+        },
+        {
+          "role": "cell_31_29_specialist",
+          "num_envs": 2048,
+          "updates": 100,
+          "fresh_on_policy_transitions": 24576000,
+          "final_checkpoint": "model_99.pt",
+          "final_global_successes": [735, 742],
+          "final_exact_cell_results": [
+            {"seed": 20261634, "episodes_in_cell": 1025, "successes": 0, "initial_world_sha256": "9c807679eca80320fcf38ea25446d3c1150dbfd864dbd7eacc95ee96d9beddfd"},
+            {"seed": 20261635, "episodes_in_cell": 1025, "successes": 0, "initial_world_sha256": "1d0e7a7f806cb05acd4c0345410b6b438ed390842c7481783f9899ddb29137a8"}
+          ],
+          "selected_early_checkpoint": "model_5.pt"
+        }
+      ]
+    },
+    "exact_cell_evaluations": [
+      {
+        "cell": [29, 31],
+        "cell_id": 959,
+        "checkpoint": "checkpoints/apple_1_xmove_bend_spatial_v12_cell29_31_model_5.pt",
+        "evaluations": [
+          {"seed": 20261634, "cell_episodes": 1025, "successes": 5, "success_rate": 0.004878048780487805, "initial_world_sha256": "b3d717a70a2f6e13c6ba867631ff5101c16737da5010413d8a3d41b7b80bb90e"},
+          {"seed": 20261635, "cell_episodes": 1025, "successes": 3, "success_rate": 0.002926829268292683, "initial_world_sha256": "0c2ddcba94c4db8e2bd8876ff1080f6c2672da056b0bf3c811c4c5615c7b5215"}
+        ],
+        "claim": "new_sparse_reachability_not_stable_support"
+      },
+      {
+        "cell": [30, 30],
+        "cell_id": 990,
+        "checkpoint": "checkpoints/apple_1_xmove_bend_spatial_v12_cell30_30_model_5.pt",
+        "evaluations": [
+          {"seed": 20261634, "cell_episodes": 1025, "successes": 32, "success_rate": 0.03121951219512195, "initial_world_sha256": "24d6afcc3e5e857c5cd52abc78a03a0237472ad664b9e8dc6d6e4cf87f6306a8"},
+          {"seed": 20261635, "cell_episodes": 1025, "successes": 36, "success_rate": 0.0351219512195122, "initial_world_sha256": "8bb4737ac3569dc0d8d31d48cebd4599ce15a0da7c10c768d95d931cb14c0f99"}
+        ],
+        "strict_repeat_successes": [40, 41],
+        "strict_repeat_minimum_rate": 0.03902439024390244,
+        "claim": "repeatable_low_rate_reachability_above_3_percent"
+      },
+      {
+        "cell": [31, 29],
+        "cell_id": 1021,
+        "checkpoint": "checkpoints/apple_1_xmove_bend_spatial_v12_cell31_29_model_5.pt",
+        "evaluations": [
+          {"seed": 20261634, "cell_episodes": 1025, "successes": 22, "success_rate": 0.021463414634146343, "initial_world_sha256": "9c807679eca80320fcf38ea25446d3c1150dbfd864dbd7eacc95ee96d9beddfd"},
+          {"seed": 20261635, "cell_episodes": 1025, "successes": 22, "success_rate": 0.021463414634146343, "initial_world_sha256": "1d0e7a7f806cb05acd4c0345410b6b438ed390842c7481783f9899ddb29137a8"}
+        ],
+        "strict_repeat_successes": [20, 23],
+        "strict_repeat_minimum_rate": 0.01951219512195122,
+        "claim": "new_reachability_but_2_percent_threshold_unstable"
+      }
+    ],
+    "paired_routed_focus13": {
+      "same_physical_worlds_required": true,
+      "minimum_focus_cell_success_rate": 0.0,
+      "evaluations": [
+        {
+          "seed": 20261634,
+          "episodes": 2048,
+          "initial_world_sha256": "18e9de5db2e324e68131742ff524b3cd08a1907a751d1c054cfd587e1ff00df7",
+          "coarse_successes": 1070,
+          "routed_successes": 1256,
+          "coarse_success_rate": 0.5224609375,
+          "routed_success_rate": 0.61328125
+        },
+        {
+          "seed": 20261635,
+          "episodes": 2048,
+          "initial_world_sha256": "0b42cc02ab98263514082fbf1663c85284d37612a68ac70a0f711d33929062fc",
+          "coarse_successes": 1088,
+          "routed_successes": 1278,
+          "coarse_success_rate": 0.53125,
+          "routed_success_rate": 0.6240234375
+        }
+      ],
+      "aggregate": {
+        "episodes": 4096,
+        "coarse_successes": 2158,
+        "routed_successes": 2534,
+        "coarse_success_rate": 0.52685546875,
+        "routed_success_rate": 0.61865234375,
+        "additional_successes": 376,
+        "percentage_point_gain": 9.1796875
+      },
+      "claim": "aggregate_frontier_improvement_but_not_stable_per_cell"
+    },
+    "videos": [
+      {
+        "cell": [29, 31],
+        "target_xy_m": [0.04138226434588432, -0.04238315671682358],
+        "max_lift_m": 0.23753246665000916,
+        "path": "videos/apple_1_xmove_bend_spatial_v12/cell_29_31/gpu_ppo_success_full_dr_01.mp4",
+        "sha256": "eb75b765aab1679485494658ed92294c8be954f7dcf47c39a4c3d5b4fda00e8d",
+        "bytes": 661057,
+        "precontact_target_motion_m": 0.0,
+        "first_hand_contact_step": 221,
+        "audit_passed": true
+      },
+      {
+        "cell": [30, 30],
+        "target_xy_m": [0.04391457885503769, -0.04606782644987106],
+        "max_lift_m": 0.23426154255867004,
+        "path": "videos/apple_1_xmove_bend_spatial_v12/cell_30_30/gpu_ppo_success_full_dr_01.mp4",
+        "sha256": "7668d26fcbfab5008f9d7bac0b32f2146b115ac4b094ff79f1e3002e9501f654",
+        "bytes": 658799,
+        "precontact_target_motion_m": 0.0,
+        "first_hand_contact_step": 220,
+        "audit_passed": true
+      },
+      {
+        "cell": [31, 29],
+        "target_xy_m": [0.047665972262620926, -0.0488828606903553],
+        "max_lift_m": 0.23852220177650452,
+        "path": "videos/apple_1_xmove_bend_spatial_v12/cell_31_29/gpu_ppo_success_full_dr_01.mp4",
+        "sha256": "70a778b6351112b3c75f99b603eb73f41708044b9d2dab4f4b8ad607e60f0a2d",
+        "bytes": 660142,
+        "precontact_target_motion_m": 0.0,
+        "first_hand_contact_step": 220,
+        "audit_passed": true
+      }
+    ],
+    "video_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/releases/grasp_rl/mjlab_gpu/grasp_anything/v1/videos/apple_1_xmove_bend_spatial_v12",
+    "review_directory_absolute": "/mnt/workspace/Jensen/project/g1datagen/SIMPLE/outputs/grasp_rl/video_review/apple_spatial_v12_positions",
+    "scope_limit": "not stable full 32x32 grid and not robust +/-5 cm, +/-10 cm, or +/-20 cm support"
+  },
   "compatibility": {
     "default_reference_task": "xmove_pick",
     "supported_v2_reference_tasks": ["xmove_pick", "xmove_bend_pick"],

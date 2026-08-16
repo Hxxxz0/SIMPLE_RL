@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass
 import hashlib
 import json
+from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -71,7 +71,7 @@ class FrozenAssetBundle:
     model: mujoco.MjModel
 
     @classmethod
-    def load(cls, path: str | Path, *, expected_task: str) -> "FrozenAssetBundle":
+    def load(cls, path: str | Path, *, expected_task: str) -> FrozenAssetBundle:
         root = Path(path).resolve()
         manifest_path = root / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
@@ -126,7 +126,7 @@ class FrozenAssetBundle:
 class GpuSimulation:
     bundle: FrozenAssetBundle
     sim: Simulation
-    sensors: "GpuSensorLayout | GpuV2SensorLayout | None"
+    sensors: GpuSensorLayout | GpuV2SensorLayout | None
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """Restore the frozen warm state for all or a CUDA subset of worlds."""
@@ -154,6 +154,9 @@ class GpuV2SensorLayout:
     primary_force: tuple[tuple[slice, ...], tuple[slice, ...]]
     auxiliary_force: tuple[tuple[slice, ...], tuple[slice, ...]] | None
     hand_support_force: tuple[
+        tuple[slice, ...], tuple[slice, ...]
+    ] | None
+    arm_support_force: tuple[
         tuple[slice, ...], tuple[slice, ...]
     ] | None
     primary_destination_force: slice | None
@@ -383,6 +386,7 @@ def _augment_v2_sensors(
 
     support_name = roles.get("support") or destination
     hand_support_names: list[list[str]] | None = None
+    arm_support_names: list[list[str]] | None = None
     if support_name:
         hand_support_names = [[], []]
         for hand_index, links in enumerate(
@@ -392,6 +396,22 @@ def _augment_v2_sensors(
                 hand_support_names[hand_index].append(
                     add_contact(
                         f"gpu_v2_support_{hand_index}_{link_index}",
+                        link,
+                        support_name,
+                    )
+                )
+        arm_support_names = [[], []]
+        for hand_index, side in enumerate(("left", "right")):
+            for link_index, link in enumerate(
+                (
+                    f"{side}_elbow_link",
+                    f"{side}_wrist_roll_link",
+                    f"{side}_wrist_pitch_link",
+                )
+            ):
+                arm_support_names[hand_index].append(
+                    add_contact(
+                        f"gpu_v2_arm_support_{hand_index}_{link_index}",
                         link,
                         support_name,
                     )
@@ -475,6 +495,10 @@ def _augment_v2_sensors(
         hand_support_force=(
             tuple(contact_slices(names) for names in hand_support_names)
             if hand_support_names is not None else None
+        ),
+        arm_support_force=(
+            tuple(contact_slices(names) for names in arm_support_names)
+            if arm_support_names is not None else None
         ),
         primary_destination_force=(
             _sensor_slice(model, primary_destination_name)

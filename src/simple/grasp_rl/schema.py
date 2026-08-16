@@ -14,9 +14,7 @@ REFERENCE_FUTURE_OFFSETS: Final[tuple[int, ...]] = tuple(range(0, 50, 5))
 # Per future frame: complete normalized tracker command, object-position delta,
 # and the reference bilateral-contact label.  A final scalar stores phase.
 REFERENCE_FRAME_DIM: Final = ACTION_DIM + 3 + 1
-REFERENCE_CONTEXT_DIM: Final = (
-    len(REFERENCE_FUTURE_OFFSETS) * REFERENCE_FRAME_DIM + 1
-)
+REFERENCE_CONTEXT_DIM: Final = len(REFERENCE_FUTURE_OFFSETS) * REFERENCE_FRAME_DIM + 1
 REFERENCE_ACTOR_OBS_DIM: Final = ACTOR_OBS_DIM + REFERENCE_CONTEXT_DIM
 
 # Role-based task schema used by manipulation, transport, handover and
@@ -139,6 +137,16 @@ ACTION_SLICES: Final[dict[str, SliceSpec]] = {
 }
 
 
+def action_group_mask(groups: tuple[str, ...]) -> tuple[bool, ...]:
+    """Return the fixed 36-D mask represented by named action groups."""
+
+    mask = [False] * ACTION_DIM
+    for group in groups:
+        spec = ACTION_SLICES[group]
+        mask[spec.start : spec.stop] = [True] * (spec.stop - spec.start)
+    return tuple(mask)
+
+
 def schema_dict() -> dict:
     return {
         "action_dim": ACTION_DIM,
@@ -174,8 +182,14 @@ def validate_schema() -> None:
     assert REFERENCE_ACTOR_OBS_DIM == 593
     assert REFERENCE_CONTEXT_V2_DIM == 511
     assert REFERENCE_ACTOR_OBS_V2_DIM == 842
-    assert 3 + 4 + 3 + 3 + len(JOINT_NAMES) + 3 * len(MOTION_LINK_NAMES) == MOTION_FRAME_DIM
-    assert 3 + 6 + len(JOINT_NAMES) + 3 * len(MOTION_LINK_NAMES) + 3 + 3 == MOTION_FEATURE_DIM
+    assert (
+        3 + 4 + 3 + 3 + len(JOINT_NAMES) + 3 * len(MOTION_LINK_NAMES)
+        == MOTION_FRAME_DIM
+    )
+    assert (
+        3 + 6 + len(JOINT_NAMES) + 3 * len(MOTION_LINK_NAMES) + 3 + 3
+        == MOTION_FEATURE_DIM
+    )
 
 
 validate_schema()

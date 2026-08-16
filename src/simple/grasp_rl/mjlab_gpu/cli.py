@@ -18,7 +18,10 @@ from simple.grasp_rl.mjlab_gpu.collect import collect_successful_trajectories
 from simple.grasp_rl.mjlab_gpu.config import MjlabPpoConfig
 from simple.grasp_rl.mjlab_gpu.dataset_audit import audit_ppo_dataset
 from simple.grasp_rl.mjlab_gpu.dataset_export import export_dual_dataset
-from simple.grasp_rl.mjlab_gpu.recording import record_success_videos
+from simple.grasp_rl.mjlab_gpu.recording import (
+    MAX_PRECONTACT_TARGET_DISPLACEMENT_M,
+    record_success_videos,
+)
 from simple.grasp_rl.mjlab_gpu.release import sha256_file, verify_release
 from simple.grasp_rl.mjlab_gpu.robometer_reward import (
     ROBOMETER_REPLACE_TASKS,
@@ -26,11 +29,13 @@ from simple.grasp_rl.mjlab_gpu.robometer_reward import (
 )
 from simple.grasp_rl.mjlab_gpu.runner import (
     GpuPpoRunner,
+    SpatialCheckpointRouter,
+    SpatialPolicyRouter,
     checkpoint_uses_plan_conditioned_actor,
     ppo_train_config,
 )
 from simple.grasp_rl.mjlab_gpu.vec_env import GpuGraspVecEnv
-from simple.grasp_rl.schema import ACTION_DIM
+from simple.grasp_rl.schema import ACTION_DIM, ACTION_SLICES
 
 
 def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
@@ -72,6 +77,16 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
             "default is 0.05"
         ),
     )
+    parser.add_argument(
+        "--disable-reference-contact-reward-gate",
+        dest="reference_contact_reward_gate",
+        action="store_false",
+        default=True,
+        help=(
+            "Use physical grasp contact instead of reference contact timing for "
+            "dense grasp rewards; omitted preserves legacy reward behavior"
+        ),
+    )
     parser.add_argument("--num-envs", type=int, default=num_envs)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--seed", type=int, default=42)
@@ -83,6 +98,23 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
         help=(
             "Maximum normalized residual action around the replay reference; "
             "the legacy default is 0.35"
+        ),
+    )
+    parser.add_argument(
+        "--policy-action-filter-alpha",
+        type=float,
+        help=(
+            "Opt-in low-pass coefficient for complete policy commands; one "
+            "preserves direct execution and values below one smooth exploration"
+        ),
+    )
+    parser.add_argument(
+        "--residual-action-groups",
+        nargs="+",
+        choices=tuple(ACTION_SLICES),
+        help=(
+            "Action groups PPO may correct around the reference; omitted uses "
+            "checkpoint metadata or the legacy right-hand/right-arm mask"
         ),
     )
     parser.add_argument(
@@ -131,6 +163,24 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
         help="Opt-in terminal success bonus; forty preserves existing behavior",
     )
     parser.add_argument(
+        "--grasp-anything-overhead-approach-clearance-m",
+        type=float,
+        default=0.0,
+        help=(
+            "Opt-in adaptive overhead approach waypoint clearance for wide "
+            "workspaces; zero preserves existing reward behavior"
+        ),
+    )
+    parser.add_argument(
+        "--grasp-anything-overhead-final-descent-weight",
+        type=float,
+        default=0.25,
+        help=(
+            "Fraction of overhead approach potential reserved for descending to "
+            "the object after reaching the waypoint; 0.25 preserves behavior"
+        ),
+    )
+    parser.add_argument(
         "--reference-target-x-arm-gains",
         type=float,
         nargs=2,
@@ -139,6 +189,26 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
         help=(
             "Retarget normalized right shoulder-pitch/elbow reference actions "
             "per metre of observed target-X offset; default keeps legacy replay"
+        ),
+    )
+    parser.add_argument(
+        "--reference-target-positive-x-arm-gains",
+        type=float,
+        nargs=2,
+        metavar=("SHOULDER", "ELBOW"),
+        help=(
+            "Opt-in gains used only for positive observed target-X offsets; "
+            "omitted preserves symmetric X retargeting"
+        ),
+    )
+    parser.add_argument(
+        "--reference-target-x-arm-gain-y-bounds",
+        type=float,
+        nargs=2,
+        metavar=("MIN_Y", "MAX_Y"),
+        help=(
+            "Optional observed target-Y offset interval where X arm retargeting "
+            "is active; omitted preserves unbounded X retargeting"
         ),
     )
     parser.add_argument(
@@ -200,6 +270,16 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
         help="Center of the staged target-position DR distribution in metres",
     )
     parser.add_argument(
+        "--keep-target-position-center-during-curriculum",
+        dest="target_position_scale_offset_center",
+        action="store_false",
+        default=True,
+        help=(
+            "Keep the target DR center fixed while curriculum strength expands "
+            "only its jitter; omitted preserves legacy center scaling"
+        ),
+    )
+    parser.add_argument(
         "--target-position-focus-probability",
         type=float,
         help=(
@@ -230,6 +310,24 @@ def _common(parser: argparse.ArgumentParser, *, num_envs: int = 4096) -> None:
         help=(
             "Repeatable target-position sampling region in metres; the five "
             "values are center X/Y, symmetric jitter X/Y and batch probability"
+        ),
+    )
+    parser.add_argument(
+        "--target-position-stratified-grid",
+        type=int,
+        nargs=2,
+        metavar=("X_BINS", "Y_BINS"),
+        help="Round-robin target-position sampling over a full workspace grid",
+    )
+    parser.add_argument(
+        "--target-position-stratified-focus-cell",
+        type=int,
+        nargs=2,
+        action="append",
+        metavar=("X_INDEX", "Y_INDEX"),
+        help=(
+            "Repeatable cell to oversample after retaining one environment "
+            "for every cell in the stratified grid"
         ),
     )
     parser.add_argument(
@@ -353,6 +451,32 @@ def _robometer_options(
     parser.add_argument("--robometer-progress-scale", type=float, default=1.0)
 
 
+def _spatial_policy_router_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--spatial-router-teacher-checkpoint",
+        type=Path,
+        help="Frozen PPO teacher used outside the explicitly routed free cells",
+    )
+    parser.add_argument(
+        "--spatial-router-free-cell",
+        type=int,
+        nargs=2,
+        action="append",
+        metavar=("X_INDEX", "Y_INDEX"),
+        help="Repeatable grid cell routed to the learner checkpoint",
+    )
+    parser.add_argument(
+        "--spatial-router-cell-checkpoint",
+        nargs=3,
+        action="append",
+        metavar=("CHECKPOINT", "X_INDEX", "Y_INDEX"),
+        help=(
+            "Repeatable checkpoint expert and grid cell; the main checkpoint "
+            "remains the default actor outside routed cells"
+        ),
+    )
+
+
 def _robometer_config(
     args: argparse.Namespace, *, mode: str | None = None
 ) -> RobometerTaskRewardConfig | None:
@@ -470,6 +594,17 @@ def _parser() -> argparse.ArgumentParser:
         help="Weight of the opt-in teacher action loss",
     )
     train.add_argument(
+        "--actor-anchor-free-spatial-cell",
+        type=int,
+        nargs=2,
+        action="append",
+        metavar=("X_INDEX", "Y_INDEX"),
+        help=(
+            "Repeatable spatial cell where PPO is exempt from the actor anchor; "
+            "requires --spatial-advantage-grid"
+        ),
+    )
+    train.add_argument(
         "--schedule",
         choices=("adaptive", "fixed"),
         help="Override the PPO learning-rate schedule",
@@ -480,12 +615,49 @@ def _parser() -> argparse.ArgumentParser:
         help="Override the fixed Gaussian PPO action standard deviation",
     )
     train.add_argument(
+        "--exploration-group-std",
+        nargs=2,
+        action="append",
+        metavar=("ACTION_GROUP", "STD"),
+        help=(
+            "Repeatable per-action-group exploration std override; unspecified "
+            "groups retain --exploration-std or the legacy default"
+        ),
+    )
+    train.add_argument(
         "--exploration-hold-steps",
         type=int,
         default=1,
         help=(
-            "Hold each standardized exploration sample for this many policy "
-            "steps; one preserves legacy independent Gaussian sampling"
+            "PPO-safe exploration cadence; must be one because PPO uses "
+            "independent per-step Gaussian likelihood ratios"
+        ),
+    )
+    train.add_argument(
+        "--learn-exploration-std",
+        action="store_true",
+        help="Allow PPO to learn its Gaussian exploration standard deviation",
+    )
+    train.add_argument(
+        "--ppo-entropy-coef",
+        type=float,
+        default=0.0,
+        help="PPO entropy coefficient; zero preserves legacy behavior",
+    )
+    train.add_argument(
+        "--spatial-advantage-grid",
+        type=int,
+        nargs=2,
+        metavar=("X_BINS", "Y_BINS"),
+        help="Normalize PPO advantages independently per spatial cell",
+    )
+    train.add_argument(
+        "--spatial-advantage-weighting",
+        choices=("cell", "sample"),
+        default="cell",
+        help=(
+            "Weight normalized spatial advantages equally per cell (legacy) or "
+            "per sampled transition so focused-cell oversampling affects PPO"
         ),
     )
     train.add_argument(
@@ -518,6 +690,39 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep warm-start actor observation statistics fixed during PPO",
     )
+    train.add_argument(
+        "--bootstrap-gate-episodes",
+        type=int,
+        default=0,
+        help=(
+            "Opt-in deterministic rollout count required before PPO updates; "
+            "zero preserves legacy training behavior"
+        ),
+    )
+    train.add_argument(
+        "--bootstrap-gate-min-success-rate",
+        type=float,
+        default=0.0,
+        help="Minimum success rate for the opt-in pre-PPO bootstrap gate",
+    )
+    train.add_argument(
+        "--bootstrap-gate-mode",
+        choices=("reference", "policy", "either"),
+        default="either",
+        help=(
+            "Evaluate the replay reference, deterministic initialized policy, "
+            "or accept either one for the opt-in bootstrap gate"
+        ),
+    )
+    train.add_argument(
+        "--bootstrap-gate-spatial-scope",
+        choices=("all", "focus"),
+        default="all",
+        help=(
+            "Gate on all bootstrap worlds (legacy) or on the minimum success "
+            "rate across explicitly focused stratified target-position cells"
+        ),
+    )
     _robometer_options(train, include_source=True)
 
     shadow = commands.add_parser("shadow-reward")
@@ -536,6 +741,10 @@ def _parser() -> argparse.ArgumentParser:
 
     evaluate = commands.add_parser("evaluate")
     _common(evaluate)
+    # Evaluation is already bounded by --episodes.  Mark it as a validation
+    # run so deterministic checkpoint screening can use fewer than 1024 worlds
+    # without weakening the minimum-environment guard on actual training.
+    evaluate.set_defaults(smoke=True)
     evaluate.add_argument("--checkpoint", type=Path)
     evaluate.add_argument(
         "--reference-only",
@@ -557,6 +766,22 @@ def _parser() -> argparse.ArgumentParser:
         help="Fail the evaluation when success rate is below this threshold",
     )
     evaluate.add_argument(
+        "--minimum-spatial-cell-success-rate",
+        type=float,
+        help=(
+            "Fail when any sampled cell in the 8x8 target-XY diagnostic grid "
+            "has a lower success rate"
+        ),
+    )
+    evaluate.add_argument(
+        "--minimum-focus-cell-success-rate",
+        type=float,
+        help=(
+            "Fail when any explicitly focused stratified target-position cell "
+            "has a lower exact-cell success rate"
+        ),
+    )
+    evaluate.add_argument(
         "--stress-domain-randomization",
         action="store_true",
         help="Evaluate deterministic policy under full physics/reference DR",
@@ -571,9 +796,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Sample the checkpoint's learned PPO Gaussian policy",
     )
+    _spatial_policy_router_options(evaluate)
 
     benchmark = commands.add_parser("benchmark")
     _common(benchmark, num_envs=128)
+    benchmark.set_defaults(smoke=True)
     benchmark.add_argument("--checkpoint", type=Path, required=True)
     benchmark.add_argument("--episodes", type=int, default=128)
     benchmark.add_argument("--output", type=Path, required=True)
@@ -590,7 +817,10 @@ def _parser() -> argparse.ArgumentParser:
     benchmark.set_defaults(
         stochastic_policy=False,
         minimum_success_rate=None,
+        minimum_spatial_cell_success_rate=None,
+        minimum_focus_cell_success_rate=None,
     )
+    _spatial_policy_router_options(benchmark)
 
     record = commands.add_parser("record")
     _common(record, num_envs=32)
@@ -637,6 +867,16 @@ def _parser() -> argparse.ArgumentParser:
             "episodes with success=false and diagnostic provenance"
         ),
     )
+    record.add_argument(
+        "--maximum-precontact-target-motion-m",
+        type=float,
+        default=MAX_PRECONTACT_TARGET_DISPLACEMENT_M,
+        help=(
+            "Reject recorded successes whose target moves farther than this "
+            "before first hand contact; the legacy default is 0.003 m"
+        ),
+    )
+    _spatial_policy_router_options(record)
 
     collect = commands.add_parser("collect")
     _common(collect, num_envs=64)
@@ -660,6 +900,7 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Sample the checkpoint's learned PPO Gaussian policy",
     )
+    _spatial_policy_router_options(collect)
 
     collect_dataset = commands.add_parser("collect-dataset")
     _common(collect_dataset, num_envs=64)
@@ -689,6 +930,7 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Sample the checkpoint policy instead of using its deterministic mean",
     )
+    _spatial_policy_router_options(collect_dataset)
 
     verify = commands.add_parser("verify-release")
     verify.add_argument("--release-dir", type=Path, required=True)
@@ -700,6 +942,60 @@ def _parser() -> argparse.ArgumentParser:
     audit_dataset.add_argument("--expected-dr-strength", type=float)
     audit_dataset.add_argument("--require-full-dr-coverage", action="store_true")
     return parser
+
+
+def _checkpoint_residual_action_groups(args: argparse.Namespace) -> tuple[str, ...]:
+    explicit = getattr(args, "residual_action_groups", None)
+    if explicit is not None:
+        return tuple(explicit)
+    checkpoint = next(
+        (
+            value
+            for value in (
+                getattr(args, "resume", None),
+                getattr(args, "warm_start", None),
+                getattr(args, "checkpoint", None),
+            )
+            if value is not None
+        ),
+        None,
+    )
+    if checkpoint is not None and Path(checkpoint).is_file():
+        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        resolved = (
+            payload.get("mjlab_gpu_metadata", {}).get("config", {}).get("resolved", {})
+        )
+        groups = resolved.get("residual_action_groups")
+        if groups is not None:
+            return tuple(groups)
+    return ("right_hand", "right_arm")
+
+
+def _checkpoint_policy_action_filter_alpha(args: argparse.Namespace) -> float:
+    explicit = getattr(args, "policy_action_filter_alpha", None)
+    if explicit is not None:
+        return float(explicit)
+    checkpoint = next(
+        (
+            value
+            for value in (
+                getattr(args, "resume", None),
+                getattr(args, "warm_start", None),
+                getattr(args, "checkpoint", None),
+            )
+            if value is not None
+        ),
+        None,
+    )
+    if checkpoint is not None and Path(checkpoint).is_file():
+        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        resolved = (
+            payload.get("mjlab_gpu_metadata", {}).get("config", {}).get("resolved", {})
+        )
+        value = resolved.get("policy_action_filter_alpha")
+        if value is not None:
+            return float(value)
+    return 1.0
 
 
 def _config(args: argparse.Namespace) -> MjlabPpoConfig:
@@ -722,7 +1018,10 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
             args.max_reference_initial_position_offset
         ),
         reference_reward_weight=args.reference_reward_weight,
+        reference_contact_reward_gate=args.reference_contact_reward_gate,
         max_reference_action_deviation=args.max_reference_action_deviation,
+        policy_action_filter_alpha=_checkpoint_policy_action_filter_alpha(args),
+        residual_action_groups=_checkpoint_residual_action_groups(args),
         grasp_anything_lift_arm_residual_min_scale=(
             args.grasp_anything_lift_arm_residual_min_scale
         ),
@@ -737,7 +1036,23 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
             args.grasp_anything_goal_potential_negative_clip
         ),
         grasp_anything_success_bonus=args.grasp_anything_success_bonus,
+        grasp_anything_overhead_approach_clearance_m=(
+            args.grasp_anything_overhead_approach_clearance_m
+        ),
+        grasp_anything_overhead_final_descent_weight=(
+            args.grasp_anything_overhead_final_descent_weight
+        ),
         reference_target_x_arm_gains=tuple(args.reference_target_x_arm_gains),
+        reference_target_positive_x_arm_gains=(
+            None
+            if args.reference_target_positive_x_arm_gains is None
+            else tuple(args.reference_target_positive_x_arm_gains)
+        ),
+        reference_target_x_arm_gain_y_bounds=(
+            None
+            if args.reference_target_x_arm_gain_y_bounds is None
+            else tuple(args.reference_target_x_arm_gain_y_bounds)
+        ),
         reference_target_y_arm_gains=tuple(args.reference_target_y_arm_gains),
         reference_target_positive_y_arm_gains=(
             None
@@ -746,6 +1061,23 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
         ),
         reference_target_yaw_arm_gains=tuple(args.reference_target_yaw_arm_gains),
     )
+    stratified_focus_cell_ids: list[int] = []
+    if args.target_position_stratified_focus_cell:
+        if args.target_position_stratified_grid is None:
+            raise ValueError("stratified focus cells require a stratified grid")
+        x_bins, y_bins = args.target_position_stratified_grid
+        for x_index, y_index in args.target_position_stratified_focus_cell:
+            if not (0 <= x_index < x_bins and 0 <= y_index < y_bins):
+                raise ValueError("stratified focus cell index is outside the grid")
+            cell_id = x_index * y_bins + y_index
+            if cell_id in stratified_focus_cell_ids:
+                raise ValueError("duplicate stratified focus cell")
+            stratified_focus_cell_ids.append(cell_id)
+        if args.num_envs <= x_bins * y_bins:
+            raise ValueError(
+                "stratified focus cells require num-envs greater than the "
+                "stratified grid cell count"
+            )
     dr_overrides = {
         name: value
         for name, value in (
@@ -763,6 +1095,10 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
                 None
                 if args.target_position_offset_center_xy is None
                 else tuple(args.target_position_offset_center_xy),
+            ),
+            (
+                "target_position_scale_offset_center",
+                args.target_position_scale_offset_center,
             ),
             (
                 "target_position_focus_probability",
@@ -787,6 +1123,16 @@ def _config(args: argparse.Namespace) -> MjlabPpoConfig:
                 else tuple(
                     tuple(region) for region in args.target_position_focus_region
                 ),
+            ),
+            (
+                "target_position_stratified_grid",
+                None
+                if args.target_position_stratified_grid is None
+                else tuple(args.target_position_stratified_grid),
+            ),
+            (
+                "target_position_stratified_focus_cell_ids",
+                tuple(stratified_focus_cell_ids),
             ),
             ("target_yaw_jitter", args.target_yaw_jitter),
             (
@@ -951,6 +1297,159 @@ def _validate_robometer_run(
         raise ValueError("Robometer reward supports at most eight environments")
 
 
+@torch.no_grad()
+def _bootstrap_gate_rollout(
+    env: GpuGraspVecEnv,
+    *,
+    actor: torch.nn.Module | None,
+    episodes: int,
+    spatial_cell_ids: tuple[int, ...] = (),
+) -> dict[str, object]:
+    """Measure a deterministic reference or policy before allowing PPO updates."""
+
+    if episodes < 1:
+        raise ValueError("bootstrap rollout episodes must be positive")
+    if episodes > env.num_envs:
+        raise ValueError(
+            "bootstrap rollout episodes must not exceed num_envs so every "
+            "outcome comes from one unique initial world"
+        )
+    if len(set(spatial_cell_ids)) != len(spatial_cell_ids) or any(
+        cell_id < 0 for cell_id in spatial_cell_ids
+    ):
+        raise ValueError("bootstrap spatial cell IDs must be unique and non-negative")
+    observations = env.get_observations()
+    evaluation_world = (
+        torch.arange(env.num_envs, device=getattr(env, "device", None)) < episodes
+    )
+    initial_spatial_cells: torch.Tensor | None = None
+    spatial_outcomes = {
+        cell_id: {"successes": 0, "failures": 0, "timeouts": 0}
+        for cell_id in spatial_cell_ids
+    }
+    if spatial_cell_ids:
+        observed_cells = observations.get("target_position_cell_id")
+        if observed_cells is None:
+            raise RuntimeError("spatial bootstrap gate requires target-position cell IDs")
+        initial_spatial_cells = observed_cells.flatten().to(torch.long).clone()
+        requested = torch.tensor(
+            spatial_cell_ids, dtype=torch.long, device=initial_spatial_cells.device
+        )
+        matching = torch.isin(initial_spatial_cells, requested)
+        candidates_by_cell = {}
+        for cell_id in spatial_cell_ids:
+            candidates = (initial_spatial_cells == cell_id).nonzero(
+                as_tuple=False
+            ).flatten()
+            if not len(candidates):
+                raise ValueError(
+                    f"bootstrap spatial cell {cell_id} has no assigned worlds"
+                )
+            candidates_by_cell[cell_id] = candidates
+        available = int(matching.sum().item())
+        if episodes > available:
+            raise ValueError(
+                "bootstrap rollout episodes exceed the number of worlds in "
+                f"the requested spatial cells: {episodes} > {available}"
+            )
+        if episodes < len(spatial_cell_ids):
+            raise ValueError(
+                "bootstrap rollout episodes must include every requested spatial cell"
+            )
+        selected_indices: list[torch.Tensor] = []
+        selected_mask = torch.zeros_like(matching)
+        for cell_id in spatial_cell_ids:
+            candidates = candidates_by_cell[cell_id]
+            selected_indices.append(candidates[:1])
+            selected_mask[candidates[0]] = True
+        remaining = matching & ~selected_mask
+        remaining_indices = remaining.nonzero(as_tuple=False).flatten()
+        selected_indices.append(remaining_indices[: episodes - len(spatial_cell_ids)])
+        evaluation_world = torch.zeros_like(matching)
+        evaluation_world[torch.cat(selected_indices)] = True
+    completed = 0
+    successes = 0
+    failures = 0
+    timeouts = 0
+    vector_steps = 0
+    maximum_vector_steps = (env.max_episode_length + 1) * 2
+    completed_world: torch.Tensor | None = None
+    was_training = actor.training if actor is not None else None
+    if actor is not None:
+        actor.eval()
+    try:
+        while completed < episodes:
+            if vector_steps >= maximum_vector_steps:
+                raise RuntimeError("bootstrap rollout did not complete enough episodes")
+            actions = (
+                env.reference.current_action().clone()
+                if actor is None
+                else actor(observations, stochastic_output=False)
+            )
+            observations, _, dones, _ = env.step(actions)
+            vector_steps += 1
+            if completed_world is None:
+                completed_world = torch.zeros_like(dones)
+            finished = (
+                dones & evaluation_world & ~completed_world
+            ).nonzero(as_tuple=False).flatten()
+            if not len(finished):
+                continue
+            assert env.last_terms is not None
+            completed_world[finished] = True
+            successes += int(env.last_terms.success[finished].sum().item())
+            failures += int(env.last_terms.failure[finished].sum().item())
+            timeouts += int(env.last_terms.timeout[finished].sum().item())
+            if initial_spatial_cells is not None:
+                for cell_id in spatial_cell_ids:
+                    cell_finished = finished[
+                        initial_spatial_cells[finished] == cell_id
+                    ]
+                    if not len(cell_finished):
+                        continue
+                    spatial_outcomes[cell_id]["successes"] += int(
+                        env.last_terms.success[cell_finished].sum().item()
+                    )
+                    spatial_outcomes[cell_id]["failures"] += int(
+                        env.last_terms.failure[cell_finished].sum().item()
+                    )
+                    spatial_outcomes[cell_id]["timeouts"] += int(
+                        env.last_terms.timeout[cell_finished].sum().item()
+                    )
+            completed += len(finished)
+    finally:
+        if actor is not None:
+            actor.train(bool(was_training))
+    result: dict[str, object] = {
+        "episodes": completed,
+        "successes": successes,
+        "failures": failures,
+        "timeouts": timeouts,
+        "success_rate": successes / completed,
+        "vector_steps": vector_steps,
+    }
+    if initial_spatial_cells is not None:
+        spatial_cells = []
+        for cell_id in spatial_cell_ids:
+            cell_world = evaluation_world & (initial_spatial_cells == cell_id)
+            cell_episodes = int(cell_world.sum().item())
+            outcome = spatial_outcomes[cell_id]
+            spatial_cells.append(
+                {
+                    "cell_id": cell_id,
+                    "episodes": cell_episodes,
+                    **outcome,
+                    "success_rate": outcome["successes"] / cell_episodes,
+                }
+            )
+        result["spatial_cell_ids"] = list(spatial_cell_ids)
+        result["spatial_cells"] = spatial_cells
+        result["minimum_spatial_cell_success_rate"] = min(
+            cell["success_rate"] for cell in spatial_cells
+        )
+    return result
+
+
 def _train(args: argparse.Namespace) -> dict[str, object]:
     if args.iterations < 1:
         raise ValueError("iterations must be positive")
@@ -964,15 +1463,56 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("actor-learning-rate-scale must be positive")
     if args.actor_anchor_weight < 0.0:
         raise ValueError("actor-anchor-weight must be non-negative")
+    if (
+        args.spatial_advantage_weighting != "cell"
+        and args.spatial_advantage_grid is None
+    ):
+        raise ValueError(
+            "non-default spatial-advantage-weighting requires "
+            "--spatial-advantage-grid"
+        )
     if (args.actor_anchor_checkpoint is None) != (args.actor_anchor_weight == 0.0):
         raise ValueError(
             "actor-anchor-checkpoint and positive actor-anchor-weight "
             "must be set together"
         )
+    free_anchor_cell_ids: list[int] = []
+    if args.actor_anchor_free_spatial_cell:
+        if args.actor_anchor_checkpoint is None:
+            raise ValueError("free actor-anchor cells require an actor anchor")
+        if args.spatial_advantage_grid is None:
+            raise ValueError(
+                "free actor-anchor cells require --spatial-advantage-grid"
+            )
+        x_bins, y_bins = args.spatial_advantage_grid
+        for x_index, y_index in args.actor_anchor_free_spatial_cell:
+            if not (0 <= x_index < x_bins and 0 <= y_index < y_bins):
+                raise ValueError("free actor-anchor cell index is outside the grid")
+            cell_id = x_index * y_bins + y_index
+            if cell_id in free_anchor_cell_ids:
+                raise ValueError("duplicate free actor-anchor spatial cell")
+            free_anchor_cell_ids.append(cell_id)
     if args.exploration_std is not None and args.exploration_std <= 0.0:
         raise ValueError("exploration-std must be positive")
-    if args.exploration_hold_steps < 1:
-        raise ValueError("exploration-hold-steps must be at least 1")
+    exploration_group_stds: list[tuple[str, float]] = []
+    seen_exploration_groups: set[str] = set()
+    for group, raw_std in args.exploration_group_std or ():
+        if group not in ACTION_SLICES:
+            raise ValueError(f"Unknown exploration action group: {group}")
+        if group in seen_exploration_groups:
+            raise ValueError(f"Duplicate exploration action group: {group}")
+        try:
+            std = float(raw_std)
+        except ValueError as error:
+            raise ValueError("Action-group exploration std must be numeric") from error
+        if not math.isfinite(std) or std <= 0.0:
+            raise ValueError("Action-group exploration std must be positive")
+        exploration_group_stds.append((group, std))
+        seen_exploration_groups.add(group)
+    if args.exploration_hold_steps != 1:
+        raise ValueError(
+            "exploration-hold-steps must be 1 for valid PPO likelihood ratios"
+        )
     if args.ppo_clip_param is not None and not 0.0 < args.ppo_clip_param <= 1.0:
         raise ValueError("ppo-clip-param must be in (0, 1]")
     if args.ppo_learning_epochs is not None and args.ppo_learning_epochs < 1:
@@ -983,6 +1523,15 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("ppo-steps-per-env must be positive")
     if args.save_interval is not None and args.save_interval < 1:
         raise ValueError("save-interval must be positive")
+    if args.bootstrap_gate_episodes < 0:
+        raise ValueError("bootstrap-gate-episodes must be non-negative")
+    if not 0.0 <= args.bootstrap_gate_min_success_rate <= 1.0:
+        raise ValueError("bootstrap-gate-min-success-rate must be in [0, 1]")
+    if args.bootstrap_gate_episodes == 0 and args.bootstrap_gate_min_success_rate:
+        raise ValueError(
+            "positive bootstrap-gate-min-success-rate requires "
+            "--bootstrap-gate-episodes"
+        )
     if (
         args.scratch_actor_output_scale is not None
         and args.scratch_actor_output_scale <= 0.0
@@ -999,6 +1548,20 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
     if args.warm_start_critic and args.warm_start is None:
         raise ValueError("warm-start-critic requires --warm-start")
     config = _config(args)
+    bootstrap_spatial_cell_ids = (
+        config.domain_randomization.target_position_stratified_focus_cell_ids
+        if args.bootstrap_gate_spatial_scope == "focus"
+        else ()
+    )
+    if (
+        args.bootstrap_gate_episodes
+        and args.bootstrap_gate_spatial_scope == "focus"
+        and not bootstrap_spatial_cell_ids
+    ):
+        raise ValueError(
+            "focus bootstrap gate requires explicitly focused stratified "
+            "target-position cells"
+        )
     hand_correction = args.scratch_right_hand_correction
     arm_correction = args.scratch_right_arm_correction
     if (hand_correction is None) != (arm_correction is None):
@@ -1065,6 +1628,10 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         plan_conditioned_actor=plan_conditioned_actor,
         exploration_std=args.exploration_std,
         exploration_hold_steps=args.exploration_hold_steps,
+        learn_exploration_std=args.learn_exploration_std,
+        entropy_coef=args.ppo_entropy_coef,
+        residual_action_groups=config.residual_action_groups,
+        exploration_group_stds=tuple(exploration_group_stds),
     )
     train_config["seed"] = config.seed
     if args.learning_rate is not None:
@@ -1105,6 +1672,8 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
             else str(args.actor_anchor_checkpoint.resolve())
         ),
         "actor_anchor_weight": args.actor_anchor_weight,
+        "actor_anchor_free_spatial_cell_ids": free_anchor_cell_ids,
+        "spatial_advantage_weighting": args.spatial_advantage_weighting,
         "plan_conditioned_actor": plan_conditioned_actor,
         "scratch_actor_output_scale": args.scratch_actor_output_scale,
         "scratch_right_hand_correction": hand_correction,
@@ -1128,6 +1697,13 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
         actor_learning_rate_scale=args.actor_learning_rate_scale,
         actor_anchor_checkpoint=args.actor_anchor_checkpoint,
         actor_anchor_weight=args.actor_anchor_weight,
+        actor_anchor_free_spatial_cell_ids=tuple(free_anchor_cell_ids),
+        spatial_advantage_grid=(
+            None
+            if args.spatial_advantage_grid is None
+            else tuple(args.spatial_advantage_grid)
+        ),
+        spatial_advantage_weighting=args.spatial_advantage_weighting,
     )
     initial_checkpoint: Path | None = None
     if args.resume is None and args.warm_start is None:
@@ -1157,13 +1733,17 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
             runner.alg.optimizer.state.clear()
         if args.learning_rate is not None:
             runner.set_learning_rate(args.learning_rate)
-        if args.exploration_std is not None:
+        if args.exploration_std is not None or exploration_group_stds:
             distribution = runner.alg.get_policy().distribution
             std_param = getattr(distribution, "std_param", None)
             if std_param is None:
-                raise ValueError("exploration-std requires scalar Gaussian std")
+                raise ValueError("exploration std overrides require scalar Gaussian std")
             with torch.no_grad():
-                std_param.fill_(args.exploration_std)
+                if args.exploration_std is not None:
+                    std_param.fill_(args.exploration_std)
+                for group, std in exploration_group_stds:
+                    spec = ACTION_SLICES[group]
+                    std_param[spec.start : spec.stop] = std
         if args.resume_vector_step is not None:
             env.common_step_counter = args.resume_vector_step
             env._reset(torch.arange(env.num_envs, device=env.device))
@@ -1173,6 +1753,58 @@ def _train(args: argparse.Namespace) -> dict[str, object]:
             runner.load_critic_warm_start(args.warm_start.resolve())
     if args.freeze_actor_normalizer:
         runner.freeze_actor_normalizer()
+    if args.bootstrap_gate_episodes:
+        gate_modes = (
+            ("reference", "policy")
+            if args.bootstrap_gate_mode == "either"
+            else (args.bootstrap_gate_mode,)
+        )
+        original_vector_step = env.common_step_counter
+        gate_results = []
+        for mode in gate_modes:
+            result = _bootstrap_gate_rollout(
+                env,
+                actor=(None if mode == "reference" else runner.alg.get_policy()),
+                episodes=args.bootstrap_gate_episodes,
+                spatial_cell_ids=bootstrap_spatial_cell_ids,
+            )
+            gate_success_rate = (
+                result["minimum_spatial_cell_success_rate"]
+                if bootstrap_spatial_cell_ids
+                else result["success_rate"]
+            )
+            gate_results.append(
+                {"mode": mode, "gate_success_rate": gate_success_rate, **result}
+            )
+            env.common_step_counter = original_vector_step
+            env._reset(torch.arange(env.num_envs, device=env.device))
+            if gate_success_rate >= args.bootstrap_gate_min_success_rate:
+                break
+        run_metadata["bootstrap_gate"] = {
+            "episodes": args.bootstrap_gate_episodes,
+            "minimum_success_rate": args.bootstrap_gate_min_success_rate,
+            "requested_mode": args.bootstrap_gate_mode,
+            "spatial_scope": args.bootstrap_gate_spatial_scope,
+            "spatial_cell_ids": list(bootstrap_spatial_cell_ids),
+            "attempts": gate_results,
+            "passed": bool(
+                gate_results[-1]["gate_success_rate"]
+                >= args.bootstrap_gate_min_success_rate
+            ),
+        }
+        (output / "config.json").write_text(
+            json.dumps(run_metadata, indent=2, default=list)
+        )
+        if not run_metadata["bootstrap_gate"]["passed"]:
+            rates = ", ".join(
+                f"{item['mode']}={item['successes']}/{item['episodes']}"
+                for item in gate_results
+            )
+            raise RuntimeError(
+                "PPO bootstrap gate rejected an infeasible initialization: "
+                f"{rates}; required success rate "
+                f">= {args.bootstrap_gate_min_success_rate:.4f}"
+            )
     runner.assert_cuda_integrity(
         require_optimizer_state=bool(runner.alg.optimizer.state)
     )
@@ -1239,6 +1871,102 @@ def _checkpoint_training_dr_strength(checkpoint: Path) -> float | None:
     scheduled = min(max((step - warmup) / float(ramp), 0.0), 1.0)
     initial = float(randomization.get("curriculum_initial_strength", 0.0))
     return max(initial, scheduled)
+
+
+def _spatial_router_cell_ids(args: argparse.Namespace) -> tuple[int, ...]:
+    teacher = getattr(args, "spatial_router_teacher_checkpoint", None)
+    cells = getattr(args, "spatial_router_free_cell", None)
+    if (teacher is None) != (not cells):
+        raise ValueError(
+            "spatial router teacher checkpoint and free cells must be set together"
+        )
+    if teacher is None:
+        return ()
+    grid = args.target_position_stratified_grid
+    if grid is None:
+        raise ValueError("spatial policy router requires a stratified target grid")
+    x_bins, y_bins = grid
+    cell_ids: list[int] = []
+    for x_index, y_index in cells:
+        if not (0 <= x_index < x_bins and 0 <= y_index < y_bins):
+            raise ValueError("spatial router cell index is outside the target grid")
+        cell_id = x_index * y_bins + y_index
+        if cell_id in cell_ids:
+            raise ValueError("duplicate spatial router cell")
+        cell_ids.append(cell_id)
+    return tuple(cell_ids)
+
+
+def _spatial_checkpoint_routes(
+    args: argparse.Namespace,
+) -> tuple[tuple[Path, tuple[int, ...]], ...]:
+    raw_routes = getattr(args, "spatial_router_cell_checkpoint", None)
+    if not raw_routes:
+        return ()
+    if getattr(args, "spatial_router_teacher_checkpoint", None) is not None or getattr(
+        args, "spatial_router_free_cell", None
+    ):
+        raise ValueError(
+            "cell-checkpoint routes and teacher/learner spatial routing are "
+            "mutually exclusive"
+        )
+    grid = args.target_position_stratified_grid
+    if grid is None:
+        raise ValueError("spatial checkpoint routes require a stratified target grid")
+    x_bins, y_bins = grid
+    routes: dict[Path, list[int]] = {}
+    routed_cells: set[int] = set()
+    for raw_checkpoint, raw_x_index, raw_y_index in raw_routes:
+        try:
+            x_index = int(raw_x_index)
+            y_index = int(raw_y_index)
+        except ValueError as error:
+            raise ValueError("spatial checkpoint cell indices must be integers") from error
+        if not (0 <= x_index < x_bins and 0 <= y_index < y_bins):
+            raise ValueError("spatial checkpoint cell index is outside the target grid")
+        cell_id = x_index * y_bins + y_index
+        if cell_id in routed_cells:
+            raise ValueError("duplicate spatial checkpoint cell")
+        routed_cells.add(cell_id)
+        checkpoint = Path(raw_checkpoint).expanduser().resolve()
+        routes.setdefault(checkpoint, []).append(cell_id)
+    return tuple((path, tuple(cell_ids)) for path, cell_ids in routes.items())
+
+
+def _load_evaluation_actor(
+    env: GpuGraspVecEnv,
+    config: MjlabPpoConfig,
+    checkpoint: Path,
+    args: argparse.Namespace,
+) -> torch.nn.Module:
+    train_config = ppo_train_config(
+        smoke=True,
+        plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(checkpoint),
+        residual_action_groups=getattr(
+            config, "residual_action_groups", ("right_hand", "right_arm")
+        ),
+    )
+    runner = GpuPpoRunner(env, train_config, log_dir=None)
+    runner.load_actor_warm_start(checkpoint)
+    learner = runner.alg.get_policy().eval()
+    checkpoint_routes = _spatial_checkpoint_routes(args)
+    if checkpoint_routes:
+        routes = tuple(
+            (path, runner.frozen_actor_copy(path), cell_ids)
+            for path, cell_ids in checkpoint_routes
+        )
+        return SpatialCheckpointRouter(learner, routes).to(config.device).eval()
+    free_cell_ids = _spatial_router_cell_ids(args)
+    if not free_cell_ids:
+        return learner
+    teacher_checkpoint = args.spatial_router_teacher_checkpoint.resolve()
+    teacher = runner.frozen_actor_copy(teacher_checkpoint)
+    return SpatialPolicyRouter(
+        learner,
+        teacher,
+        free_spatial_cell_ids=free_cell_ids,
+        teacher_checkpoint=teacher_checkpoint,
+    ).to(config.device).eval()
 
 
 def _tensor_collection_sha256(tensors: dict[str, torch.Tensor]) -> str:
@@ -1391,7 +2119,7 @@ def _pose_xy_diagnostics(
     values: torch.Tensor,
     outcome_codes: torch.Tensor,
     *,
-    bin_count: int = 8,
+    bin_count: int | tuple[int, int] = 8,
 ) -> dict[str, object]:
     """Summarize spatial success coverage on an initial target XY grid."""
 
@@ -1399,8 +2127,14 @@ def _pose_xy_diagnostics(
     outcome_codes = outcome_codes.detach().flatten().to(device="cpu")
     if tuple(values.shape) != (outcome_codes.numel(), 2) or not values.numel():
         raise ValueError("pose XY values must be a non-empty Nx2 tensor")
-    if bin_count < 1:
-        raise ValueError("pose diagnostic bin count must be positive")
+    if isinstance(bin_count, int):
+        bin_counts = (bin_count, bin_count)
+    else:
+        bin_counts = tuple(bin_count)
+        if len(bin_counts) != 2:
+            raise ValueError("pose diagnostic bin count must contain X/Y counts")
+    if any(not isinstance(count, int) or count < 1 for count in bin_counts):
+        raise ValueError("pose diagnostic bin counts must be positive integers")
     if not torch.isfinite(values).all():
         raise ValueError("initial pose diagnostics require finite values")
     if not torch.isin(outcome_codes, torch.tensor([0, 1, 2])).all():
@@ -1417,7 +2151,7 @@ def _pose_xy_diagnostics(
             axis_bin_ids = torch.zeros_like(outcome_codes, dtype=torch.long)
         else:
             axis_edges = torch.linspace(
-                lower, upper, bin_count + 1, dtype=torch.float64
+                lower, upper, bin_counts[axis] + 1, dtype=torch.float64
             )
             axis_bin_ids = torch.bucketize(axis_values, axis_edges[1:-1])
         edges.append(axis_edges)
@@ -1463,8 +2197,63 @@ def _pose_xy_diagnostics(
     }
 
 
+def _stratified_cell_diagnostics(
+    cell_ids: torch.Tensor,
+    outcome_codes: torch.Tensor,
+    *,
+    grid: tuple[int, int],
+) -> dict[str, object]:
+    """Summarize outcomes using the randomizer's exact stratified cell IDs."""
+
+    cell_ids = cell_ids.detach().flatten().to(dtype=torch.long, device="cpu")
+    outcome_codes = outcome_codes.detach().flatten().to(device="cpu")
+    if cell_ids.shape != outcome_codes.shape or not cell_ids.numel():
+        raise ValueError("stratified cell IDs and outcomes must be non-empty peers")
+    x_bins, y_bins = grid
+    if any(not isinstance(count, int) or count < 1 for count in grid):
+        raise ValueError("stratified diagnostic grid counts must be positive integers")
+    cell_count = x_bins * y_bins
+    if torch.any((cell_ids < 0) | (cell_ids >= cell_count)):
+        raise ValueError("stratified cell IDs are outside the diagnostic grid")
+    if not torch.isin(outcome_codes, torch.tensor([0, 1, 2])).all():
+        raise ValueError("outcome codes must be 0=failure, 1=success or 2=timeout")
+
+    cells = []
+    for x_index in range(x_bins):
+        for y_index in range(y_bins):
+            cell_id = x_index * y_bins + y_index
+            selected = cell_ids == cell_id
+            samples = int(selected.sum().item())
+            successes = int(((outcome_codes == 1) & selected).sum().item())
+            physical_failures = int(
+                ((outcome_codes == 0) & selected).sum().item()
+            )
+            timeouts = int(((outcome_codes == 2) & selected).sum().item())
+            cells.append(
+                {
+                    "cell_id": cell_id,
+                    "x_index": x_index,
+                    "y_index": y_index,
+                    "samples": samples,
+                    "successes": successes,
+                    "physical_failures": physical_failures,
+                    "timeouts": timeouts,
+                    "success_rate": successes / samples if samples else None,
+                }
+            )
+    return {
+        "shape_yx": [y_bins, x_bins],
+        "sampled_cells": sum(cell["samples"] > 0 for cell in cells),
+        "successful_cells": sum(cell["successes"] > 0 for cell in cells),
+        "cells": cells,
+    }
+
+
 def _initial_pose_diagnostics(
-    initial_poses: dict[str, torch.Tensor], outcome_codes: torch.Tensor
+    initial_poses: dict[str, torch.Tensor],
+    outcome_codes: torch.Tensor,
+    *,
+    target_xy_bin_count: int | tuple[int, int] = 8,
 ) -> dict[str, object]:
     required = {
         "target_translation_xy": 2,
@@ -1503,7 +2292,9 @@ def _initial_pose_diagnostics(
                 values["target_translation_xy_y"], outcome_codes
             ),
             "grid": _pose_xy_diagnostics(
-                initial_poses["target_translation_xy"], outcome_codes
+                initial_poses["target_translation_xy"],
+                outcome_codes,
+                bin_count=target_xy_bin_count,
             ),
         },
         "target_yaw": _pose_axis_diagnostics(values["target_yaw"], outcome_codes),
@@ -1529,6 +2320,14 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         0.0 <= args.minimum_success_rate <= 1.0
     ):
         raise ValueError("minimum-success-rate must be in [0, 1]")
+    if args.minimum_spatial_cell_success_rate is not None and not (
+        0.0 <= args.minimum_spatial_cell_success_rate <= 1.0
+    ):
+        raise ValueError("minimum-spatial-cell-success-rate must be in [0, 1]")
+    if args.minimum_focus_cell_success_rate is not None and not (
+        0.0 <= args.minimum_focus_cell_success_rate <= 1.0
+    ):
+        raise ValueError("minimum-focus-cell-success-rate must be in [0, 1]")
     if args.reference_only and args.proposal_only:
         raise ValueError("reference-only and proposal-only are mutually exclusive")
     baseline_only = args.reference_only or args.proposal_only
@@ -1537,6 +2336,14 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
     if not baseline_only and args.checkpoint is None:
         raise ValueError("policy evaluation requires --checkpoint")
     config = _config(args)
+    focus_cell_ids = (
+        config.domain_randomization.target_position_stratified_focus_cell_ids
+    )
+    if args.minimum_focus_cell_success_rate is not None and not focus_cell_ids:
+        raise ValueError(
+            "minimum-focus-cell-success-rate requires explicitly focused "
+            "stratified target-position cells"
+        )
     _seed_torch(config.seed)
     if args.episodes > config.num_envs:
         raise ValueError(
@@ -1549,26 +2356,22 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         training=False,
         randomization_enabled=dr_strength > 0.0,
     )
-    if dr_strength > 0.0:
-        _set_evaluation_dr_strength(env, dr_strength)
     actor = None
     if not baseline_only:
         assert args.checkpoint is not None
-        train_config = ppo_train_config(
-            smoke=True,
-            plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(
-                args.checkpoint
-            ),
+        actor = _load_evaluation_actor(
+            env, config, args.checkpoint.resolve(), args
         )
-        runner = GpuPpoRunner(env, train_config, log_dir=None)
-        runner.load_actor_warm_start(args.checkpoint.resolve())
-        actor = runner.alg.get_policy().eval()
     elif baseline_only:
         # Runner construction queries observations once before PPO evaluation.
         # Consume the same state extraction/noise draw so both baselines and
         # PPO start from identical policy state.  Proposal-only additionally
         # uses the resulting noise-matched reference command.
         env.get_observations()
+    # Construct every routed expert before the evaluation reset.  Actor loading
+    # must not perturb the physical worlds used for same-seed comparisons.
+    if dr_strength > 0.0:
+        _set_evaluation_dr_strength(env, dr_strength)
     observations = env.get_observations()
     (
         initial_world_sha256,
@@ -1589,6 +2392,9 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         .detach()
         .clone(),
     }
+    initial_target_position_cell_ids = env.randomizer.target_position_cell_ids[
+        : args.episodes
+    ].detach().clone()
     checkpoint_training_dr_strength = (
         None
         if args.checkpoint is None
@@ -1738,6 +2544,50 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         for value, success in zip(completed_task_return, completed_success, strict=True)
         if not success
     ]
+    initial_pose_diagnostics = _initial_pose_diagnostics(
+        initial_poses,
+        terminal_outcomes[: args.episodes],
+        target_xy_bin_count=(
+            config.domain_randomization.target_position_stratified_grid or 8
+        ),
+    )
+    stratified_spatial_grid = (
+        None
+        if (
+            dr_strength <= 0.0
+            or config.domain_randomization.target_position_stratified_grid is None
+        )
+        else _stratified_cell_diagnostics(
+            initial_target_position_cell_ids,
+            terminal_outcomes[: args.episodes],
+            grid=config.domain_randomization.target_position_stratified_grid,
+        )
+    )
+    spatial_grid = (
+        stratified_spatial_grid
+        if stratified_spatial_grid is not None
+        else initial_pose_diagnostics["target_translation_xy"]["grid"]
+    )
+    sampled_cell_rates = [
+        cell["success_rate"]
+        for cell in spatial_grid["cells"]
+        if cell["samples"] > 0
+    ]
+    minimum_spatial_cell_success_rate = (
+        min(sampled_cell_rates) if sampled_cell_rates else None
+    )
+    focus_cell_rates: list[float] = []
+    if stratified_spatial_grid is not None and focus_cell_ids:
+        cells_by_id = {
+            cell["cell_id"]: cell for cell in stratified_spatial_grid["cells"]
+        }
+        if all(cells_by_id[cell_id]["samples"] > 0 for cell_id in focus_cell_ids):
+            focus_cell_rates = [
+                cells_by_id[cell_id]["success_rate"] for cell_id in focus_cell_ids
+            ]
+    minimum_focus_cell_success_rate = (
+        min(focus_cell_rates) if focus_cell_rates else None
+    )
     result = {
         "mode": (
             "reference_only"
@@ -1792,6 +2642,11 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         "deterministic_actor": not args.stochastic_policy,
         "policy_sampling": "ppo_gaussian" if args.stochastic_policy else "mean",
         "policy_seed": config.seed,
+        "spatial_policy_router": (
+            actor.metadata()
+            if isinstance(actor, (SpatialPolicyRouter, SpatialCheckpointRouter))
+            else None
+        ),
         "mean_absolute_action_delta": action_delta_sum / action_delta_count,
         "max_absolute_action_delta": max_action_delta,
         "mean_absolute_effective_action_delta": (
@@ -1804,9 +2659,10 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         "failed_world_ids": (
             (outcomes == 0).nonzero(as_tuple=False).flatten().cpu().tolist()
         ),
-        "initial_pose_diagnostics": _initial_pose_diagnostics(
-            initial_poses, terminal_outcomes[: args.episodes]
-        ),
+        "minimum_spatial_cell_success_rate": minimum_spatial_cell_success_rate,
+        "minimum_focus_cell_success_rate": minimum_focus_cell_success_rate,
+        "stratified_target_position_grid": stratified_spatial_grid,
+        "initial_pose_diagnostics": initial_pose_diagnostics,
     }
     if (
         args.minimum_success_rate is not None
@@ -1815,6 +2671,32 @@ def _evaluate(args: argparse.Namespace) -> dict[str, object]:
         raise RuntimeError(
             "Evaluation success-rate gate failed: "
             f"{result['success_rate']:.6f} < {args.minimum_success_rate:.6f}"
+        )
+    if (
+        args.minimum_spatial_cell_success_rate is not None
+        and (
+            minimum_spatial_cell_success_rate is None
+            or minimum_spatial_cell_success_rate
+            < args.minimum_spatial_cell_success_rate
+        )
+    ):
+        raise RuntimeError(
+            "Evaluation spatial-cell gate failed: "
+            f"{minimum_spatial_cell_success_rate} < "
+            f"{args.minimum_spatial_cell_success_rate:.6f}"
+        )
+    if (
+        args.minimum_focus_cell_success_rate is not None
+        and (
+            minimum_focus_cell_success_rate is None
+            or minimum_focus_cell_success_rate
+            < args.minimum_focus_cell_success_rate
+        )
+    ):
+        raise RuntimeError(
+            "Evaluation focus-cell gate failed: "
+            f"{minimum_focus_cell_success_rate} < "
+            f"{args.minimum_focus_cell_success_rate:.6f}"
         )
     return result
 
@@ -1851,6 +2733,9 @@ def _shadow_reward(args: argparse.Namespace) -> dict[str, object]:
                 smoke=True,
                 plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(
                     args.checkpoint
+                ),
+                residual_action_groups=getattr(
+                    config, "residual_action_groups", ("right_hand", "right_arm")
                 ),
             )
             runner = GpuPpoRunner(env, train_config, log_dir=None)
@@ -2108,19 +2993,14 @@ def _collect(args: argparse.Namespace) -> dict[str, object]:
         capture_step_data=True,
     )
     try:
+        actor = _load_evaluation_actor(
+            env, config, args.checkpoint.resolve(), args
+        )
         if dr_strength > 0.0:
             _set_evaluation_dr_strength(env, dr_strength)
-        train_config = ppo_train_config(
-            smoke=True,
-            plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(
-                args.checkpoint
-            ),
-        )
-        runner = GpuPpoRunner(env, train_config, log_dir=None)
-        runner.load_actor_warm_start(args.checkpoint.resolve())
         return collect_successful_trajectories(
             env,
-            runner.alg.get_policy().eval(),
+            actor,
             args.checkpoint.resolve(),
             args.output_dir.resolve(),
             successes=args.successes,
@@ -2168,6 +3048,11 @@ def _record(args: argparse.Namespace) -> dict[str, object]:
             raise ValueError(f"{name.replace('_', '-')} must be positive")
     if args.reference_only and args.stochastic_policy:
         raise ValueError("stochastic-policy is only valid for a PPO checkpoint")
+    if (
+        not math.isfinite(args.maximum_precontact_target_motion_m)
+        or args.maximum_precontact_target_motion_m < 0.0
+    ):
+        raise ValueError("maximum-precontact-target-motion-m must be non-negative")
     config = _config(args)
     _seed_torch(config.seed)
     dr_strength = _evaluation_dr_strength(args)
@@ -2177,20 +3062,14 @@ def _record(args: argparse.Namespace) -> dict[str, object]:
         randomization_enabled=dr_strength > 0.0,
         capture_terminal_qpos=True,
     )
-    if dr_strength > 0.0:
-        _set_evaluation_dr_strength(env, dr_strength)
     actor = None
     checkpoint = None
     if not args.reference_only:
         assert args.checkpoint is not None
         checkpoint = args.checkpoint.resolve()
-        train_config = ppo_train_config(
-            smoke=True,
-            plan_conditioned_actor=checkpoint_uses_plan_conditioned_actor(checkpoint),
-        )
-        runner = GpuPpoRunner(env, train_config, log_dir=None)
-        runner.load_actor_warm_start(checkpoint)
-        actor = runner.alg.get_policy().eval()
+        actor = _load_evaluation_actor(env, config, checkpoint, args)
+    if dr_strength > 0.0:
+        _set_evaluation_dr_strength(env, dr_strength)
     return record_success_videos(
         env,
         actor,
@@ -2206,6 +3085,14 @@ def _record(args: argparse.Namespace) -> dict[str, object]:
         camera_view=args.camera_view,
         stochastic_policy=args.stochastic_policy,
         reference_only=args.reference_only,
+        policy_provenance=(
+            {"spatial_policy_router": actor.metadata()}
+            if isinstance(actor, (SpatialPolicyRouter, SpatialCheckpointRouter))
+            else None
+        ),
+        maximum_precontact_target_displacement_m=(
+            args.maximum_precontact_target_motion_m
+        ),
     )
 
 

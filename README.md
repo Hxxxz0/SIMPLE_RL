@@ -26,10 +26,10 @@ Contributors: [Songlin Wei](https://songlin.github.io/)\*, [Zhenhao Ni](https://
 + [2026-07-14] We released support for World Action Models: [Cosmos3](https://github.com/songlin/cosmos-framework/blob/main/docs/action_policy_simple_posttrain.md) and [DreamZero](https://github.com/physical-superintelligence-lab/Psi0/blob/main/baselines/dreamzero/README.md). 
 + [ ] Integrate SONIC whole-body controller.
 
-## grasp_anything 物体抓取发布（2026-08-14）
+## grasp_anything 物体抓取发布（2026-08-16）
 
-`grasp_anything` 当前保留 6 个独立 RL checkpoint：`Soap_Bottle_1`、
-`Bottle_1`、两个互不替换的 `Apple_1` 路线、`Bowl_1` 和 `Cup_6`。另外，低矮物体的 opt-in
+`grasp_anything` 当前保留 9 个独立验收的 RL checkpoint，另有一个包含 5 个权重的
+实验性 `Apple_1` 空间路由包；旧权重、旧命令和默认行为均未替换。低矮物体的 opt-in
 `xmove_bend_pick` episode-11 路线实证支持 `Apple_1`、`Bowl_1`、`Potato_1`
 和 `Tomato_1`，因此共有 7 种不重复物体通过了物理抓取验收。选定权重、reference、
 SHA256、验收数据、适用边界和本机视频绝对路径已归档到
@@ -41,6 +41,15 @@ SHA256、验收数据、适用边界和本机视频绝对路径已归档到
 pose DR，但需要 lift-arm-decay 运行时变体。新 bend reference 在目标 X/Y 各
 `+/-2.5 mm` 下，`Potato_1` 为 490/512、`Tomato_1` 为 496/512、`Bowl_1`
 为 270/512；所有 bend 支持物体都有全身和近景成功视频。
+
+新的 Apple v12 修复了 focus 过采样被逐格 advantage 权重抵消、评测格子边界漂移、
+focus 静默失效和 bootstrap 只看全局平均等问题。32 x 32 精确格子的同世界跨 seed
+评测中，13 个右前沿格子的路由总成功率从 coarse 的 2158/4096（52.69%）提高到
+2534/4096（61.87%）；但最弱格仍可能是 0%，所以只发布为实验性局部覆盖，不能称为
+完整 `+/-5 cm`、`+/-10 cm` 或 `+/-20 cm` 稳定支持。三个新位置视频在第一次手部接触前
+目标位移均为 0 m。五条 v12 训练线均完成 100 updates，合计 98,304,000 条 fresh
+on-policy transitions；最终 specialist 均发生目标格退化，因此按跨 seed 精确格子结果
+保留早期权重。绝对路径和长训练记录见 release 中的 `SPATIAL_COVERAGE_V12.md`。
 
 Apple 的固定 bend reference 在精确 512-world Warp 合同下为 512/512，但位置
 DR 揭示其泛化不足。新 reward-aligned PPO 使用 1024 env、400 updates 可用训练、

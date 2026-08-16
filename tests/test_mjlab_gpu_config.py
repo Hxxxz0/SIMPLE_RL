@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from simple.grasp_rl.mjlab_gpu.cli import (
+    _checkpoint_policy_action_filter_alpha,
     _checkpoint_training_dr_strength,
     _config,
     _evaluate,
@@ -27,6 +28,7 @@ from simple.grasp_rl.mjlab_gpu.reference_noise import (
 from simple.grasp_rl.mjlab_gpu.vec_env import (
     GpuGraspVecEnv,
     _lift_arm_residual_scale,
+    _low_pass_complete_action,
 )
 from simple.grasp_rl.schema import REFERENCE_CONTEXT_DIM, REFERENCE_FRAME_DIM
 
@@ -38,6 +40,8 @@ def test_gpu_ppo_config_rejects_cpu_and_small_long_runs(tmp_path) -> None:
         MjlabPpoConfig("tabletop_grasp", str(tmp_path), num_envs=512)
     long_run = MjlabPpoConfig("tabletop_grasp", str(tmp_path), num_envs=1024)
     assert long_run.num_envs == 1024
+    with pytest.raises(ValueError, match="policy_action_filter_alpha"):
+        replace(long_run, policy_action_filter_alpha=0.0)
     smoke = MjlabPpoConfig(
         "tabletop_grasp", str(tmp_path), num_envs=16, smoke_mode=True
     )
@@ -64,6 +68,8 @@ def test_goal_reward_alignment_is_opt_in_and_grasp_anything_only(tmp_path) -> No
     assert default.grasp_anything_goal_potential_scale == pytest.approx(5.0)
     assert default.grasp_anything_goal_potential_negative_clip == pytest.approx(0.25)
     assert default.grasp_anything_success_bonus == pytest.approx(40.0)
+    assert default.grasp_anything_overhead_approach_clearance_m == pytest.approx(0.0)
+    assert default.grasp_anything_overhead_final_descent_weight == pytest.approx(0.25)
 
     aligned = MjlabPpoConfig(
         "grasp_anything",
@@ -71,8 +77,12 @@ def test_goal_reward_alignment_is_opt_in_and_grasp_anything_only(tmp_path) -> No
         grasp_anything_goal_potential_scale=20.0,
         grasp_anything_goal_potential_negative_clip=1.0,
         grasp_anything_success_bonus=80.0,
+        grasp_anything_overhead_approach_clearance_m=0.14,
+        grasp_anything_overhead_final_descent_weight=0.70,
     )
     assert aligned.grasp_anything_goal_potential_scale == pytest.approx(20.0)
+    assert aligned.grasp_anything_overhead_approach_clearance_m == pytest.approx(0.14)
+    assert aligned.grasp_anything_overhead_final_descent_weight == pytest.approx(0.70)
 
     with pytest.raises(ValueError, match="reward shaping overrides"):
         MjlabPpoConfig(
@@ -80,12 +90,76 @@ def test_goal_reward_alignment_is_opt_in_and_grasp_anything_only(tmp_path) -> No
             str(tmp_path),
             grasp_anything_goal_potential_scale=20.0,
         )
+    with pytest.raises(ValueError, match="reward shaping overrides"):
+        replace(
+            default,
+            grasp_anything_overhead_approach_clearance_m=0.14,
+            grasp_anything_overhead_final_descent_weight=0.70,
+        )
+    with pytest.raises(ValueError, match="clearance"):
+        MjlabPpoConfig(
+            "grasp_anything",
+            str(tmp_path),
+            grasp_anything_overhead_approach_clearance_m=0.6,
+        )
+    with pytest.raises(ValueError, match="descent weight"):
+        MjlabPpoConfig(
+            "grasp_anything",
+            str(tmp_path),
+            grasp_anything_overhead_approach_clearance_m=0.14,
+            grasp_anything_overhead_final_descent_weight=1.0,
+        )
+    with pytest.raises(ValueError, match="requires positive approach clearance"):
+        MjlabPpoConfig(
+            "grasp_anything",
+            str(tmp_path),
+            grasp_anything_overhead_final_descent_weight=0.70,
+        )
 
 
 def test_lift_arm_residual_scale_decays_linearly_to_floor() -> None:
     steps = torch.tensor([0, 5, 10, 20])
     scale = _lift_arm_residual_scale(steps, minimum_scale=0.2, decay_steps=10)
     assert scale.tolist() == pytest.approx([1.0, 0.6, 0.2, 0.2])
+
+
+def test_policy_action_filter_is_opt_in_and_uses_previous_complete_command() -> None:
+    previous = torch.tensor([[0.0, 0.5, -0.5]])
+    action = torch.tensor([[1.0, -0.5, 0.5]])
+
+    assert _low_pass_complete_action(
+        action, previous, alpha=1.0
+    ).data_ptr() == action.data_ptr()
+    torch.testing.assert_close(
+        _low_pass_complete_action(action, previous, alpha=0.25),
+        torch.tensor([[0.25, 0.25, -0.25]]),
+    )
+    with pytest.raises(ValueError, match="alpha"):
+        _low_pass_complete_action(action, previous, alpha=0.0)
+
+
+def test_policy_action_filter_defaults_or_inherits_checkpoint(tmp_path) -> None:
+    args = SimpleNamespace(
+        policy_action_filter_alpha=None,
+        resume=None,
+        warm_start=None,
+        checkpoint=None,
+    )
+    assert _checkpoint_policy_action_filter_alpha(args) == pytest.approx(1.0)
+
+    checkpoint = tmp_path / "filtered.pt"
+    torch.save(
+        {
+            "mjlab_gpu_metadata": {
+                "config": {"resolved": {"policy_action_filter_alpha": 0.4}}
+            }
+        },
+        checkpoint,
+    )
+    args.checkpoint = checkpoint
+    assert _checkpoint_policy_action_filter_alpha(args) == pytest.approx(0.4)
+    args.policy_action_filter_alpha = 0.7
+    assert _checkpoint_policy_action_filter_alpha(args) == pytest.approx(0.7)
 
 
 def test_lift_arm_residual_decay_keeps_right_hand_correction() -> None:
@@ -146,6 +220,116 @@ def test_train_cli_accepts_full_trajectory_rollout_override() -> None:
     assert args.ppo_steps_per_env == 240
 
 
+def test_train_cli_accepts_stratified_spatial_ppo_options(monkeypatch) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    args = _parser().parse_args(
+        [
+            "train",
+            "--asset-bundle",
+            "assets",
+            "--reference-processed",
+            "reference",
+            "--output",
+            "output",
+            "--target-position-stratified-grid",
+            "8",
+            "8",
+            "--target-position-stratified-focus-cell",
+            "0",
+            "7",
+            "--keep-target-position-center-during-curriculum",
+            "--spatial-advantage-grid",
+            "8",
+            "8",
+            "--residual-action-groups",
+            "right_hand",
+            "right_arm",
+            "torso_rpy",
+            "--learn-exploration-std",
+            "--exploration-group-std",
+            "right_arm",
+            "0.12",
+            "--ppo-entropy-coef",
+            "0.01",
+            "--policy-action-filter-alpha",
+            "0.4",
+            "--bootstrap-gate-episodes",
+            "32",
+            "--bootstrap-gate-spatial-scope",
+            "focus",
+        ]
+    )
+    assert args.target_position_stratified_grid == [8, 8]
+    assert args.target_position_stratified_focus_cell == [[0, 7]]
+    assert args.bootstrap_gate_spatial_scope == "focus"
+    assert (
+        _config(args).domain_randomization.target_position_stratified_focus_cell_ids
+        == (7,)
+    )
+    assert not args.target_position_scale_offset_center
+    assert args.spatial_advantage_grid == [8, 8]
+    assert args.spatial_advantage_weighting == "cell"
+    assert args.residual_action_groups[-1] == "torso_rpy"
+    assert args.learn_exploration_std
+    assert args.exploration_group_std == [["right_arm", "0.12"]]
+    assert args.ppo_entropy_coef == pytest.approx(0.01)
+    assert args.policy_action_filter_alpha == pytest.approx(0.4)
+
+
+def test_stratified_position_sampling_rejects_focus_mixtures() -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        DomainRandomizationConfig(
+            target_position_jitter_xy=(0.2, 0.2),
+            target_position_stratified_grid=(8, 8),
+            target_position_focus_regions=((0.0, 0.0, 0.1, 0.1, 0.5),),
+        )
+
+
+def test_stratified_focus_cells_require_valid_unique_grid_cells() -> None:
+    with pytest.raises(ValueError, match="require a stratified grid"):
+        DomainRandomizationConfig(target_position_stratified_focus_cell_ids=(0,))
+    with pytest.raises(ValueError, match="must be unique"):
+        DomainRandomizationConfig(
+            target_position_jitter_xy=(0.2, 0.2),
+            target_position_stratified_grid=(8, 8),
+            target_position_stratified_focus_cell_ids=(0, 0),
+        )
+    with pytest.raises(ValueError, match="outside the grid"):
+        DomainRandomizationConfig(
+            target_position_jitter_xy=(0.2, 0.2),
+            target_position_stratified_grid=(8, 8),
+            target_position_stratified_focus_cell_ids=(64,),
+        )
+
+
+def test_stratified_focus_cli_requires_surplus_environments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    args = _parser().parse_args(
+        [
+            "train",
+            "--asset-bundle",
+            "assets",
+            "--reference-processed",
+            "reference",
+            "--output",
+            "output",
+            "--num-envs",
+            "1024",
+            "--target-position-stratified-grid",
+            "32",
+            "32",
+            "--target-position-stratified-focus-cell",
+            "30",
+            "30",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="num-envs greater"):
+        _config(args)
+
+
 def test_train_cli_defaults_to_legacy_independent_exploration() -> None:
     args = _parser().parse_args(
         [
@@ -197,6 +381,8 @@ def test_reproduction_cli_exposes_paired_benchmark_and_collection() -> None:
     assert benchmark.episodes == 128
     assert benchmark.output.name == "paired.json"
     assert benchmark.minimum_success_rate is None
+    assert benchmark.minimum_spatial_cell_success_rate is None
+    assert benchmark.minimum_focus_cell_success_rate is None
 
     collect = _parser().parse_args(
         [
@@ -244,6 +430,13 @@ def test_record_cli_diagnostic_fallback_is_explicit() -> None:
     ]
     assert not _parser().parse_args(common).allow_diagnostic_fallback
     assert not _parser().parse_args(common).stochastic_policy
+    assert _parser().parse_args(common).maximum_precontact_target_motion_m == 0.003
+    assert (
+        _parser()
+        .parse_args([*common, "--maximum-precontact-target-motion-m", "0.0001"])
+        .maximum_precontact_target_motion_m
+        == 0.0001
+    )
     assert (
         _parser()
         .parse_args([*common, "--allow-diagnostic-fallback"])
@@ -420,6 +613,12 @@ def test_train_cli_accepts_reference_target_pose_retarget_gains() -> None:
             "--reference-target-x-arm-gains",
             "-10",
             "2",
+            "--reference-target-positive-x-arm-gains",
+            "0",
+            "0",
+            "--reference-target-x-arm-gain-y-bounds",
+            "-0.05",
+            "0.025",
             "--reference-target-y-arm-gains",
             "5",
             "-3.5",
@@ -432,6 +631,8 @@ def test_train_cli_accepts_reference_target_pose_retarget_gains() -> None:
         ]
     )
     assert args.reference_target_x_arm_gains == [-10.0, 2.0]
+    assert args.reference_target_positive_x_arm_gains == [0.0, 0.0]
+    assert args.reference_target_x_arm_gain_y_bounds == [-0.05, 0.025]
     assert args.reference_target_y_arm_gains == [5.0, -3.5]
     assert args.reference_target_positive_y_arm_gains == [8.0, -1.5]
     assert args.reference_target_yaw_arm_gains == [1.0, -2.0]
@@ -489,6 +690,53 @@ def test_cli_accepts_guarded_balanced_reference_selection(
     assert config.max_reference_initial_position_offset == 0.05
     with pytest.raises(ValueError, match="alignment limit"):
         replace(config, max_reference_initial_position_offset=None)
+
+
+def test_bounded_evaluation_allows_fewer_than_long_training_minimum(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    args = _parser().parse_args(
+        [
+            "evaluate",
+            "--asset-bundle",
+            str(tmp_path / "assets"),
+            "--reference-processed",
+            str(tmp_path / "reference"),
+            "--reference-only",
+            "--num-envs",
+            "256",
+            "--episodes",
+            "256",
+        ]
+    )
+
+    config = _config(args)
+
+    assert config.num_envs == 256
+    assert config.smoke_mode is True
+
+
+def test_train_still_rejects_fewer_than_long_training_minimum(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    args = _parser().parse_args(
+        [
+            "train",
+            "--asset-bundle",
+            str(tmp_path / "assets"),
+            "--reference-processed",
+            str(tmp_path / "reference"),
+            "--output",
+            str(tmp_path / "output"),
+            "--num-envs",
+            "256",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="at least 1024 envs"):
+        _config(args)
 
 
 def test_strict_reference_rejects_non_asset_selection(tmp_path) -> None:
@@ -683,9 +931,12 @@ def test_cli_exposes_backward_compatible_reference_residual_limit(
     )
     assert args.max_reference_action_deviation == 0.35
     assert args.reference_reward_weight == 0.05
+    assert args.reference_contact_reward_gate
     default_config = _config(args)
     assert default_config.max_reference_action_deviation == 0.35
     assert default_config.reference_reward_weight == 0.05
+    assert default_config.reference_contact_reward_gate
+    assert default_config.policy_action_filter_alpha == pytest.approx(1.0)
     assert default_config.domain_randomization.target_position_jitter_xy == (
         0.025,
         0.03,
@@ -694,6 +945,8 @@ def test_cli_exposes_backward_compatible_reference_residual_limit(
 
     args.max_reference_action_deviation = 0.7
     assert _config(args).max_reference_action_deviation == 0.7
+    args.policy_action_filter_alpha = 0.4
+    assert _config(args).policy_action_filter_alpha == pytest.approx(0.4)
     args.reference_reward_weight = 0.5
     assert _config(args).reference_reward_weight == 0.5
 
@@ -734,6 +987,8 @@ def test_zero_retarget_accepts_legacy_checkpoint_metadata(tmp_path) -> None:
     metadata = config.checkpoint_metadata()
     legacy_resolved = dict(metadata["resolved"])
     legacy_resolved.pop("reference_target_x_arm_gains")
+    legacy_resolved.pop("reference_target_positive_x_arm_gains")
+    legacy_resolved.pop("reference_target_x_arm_gain_y_bounds")
     legacy_resolved.pop("reference_target_y_arm_gains")
     legacy_resolved.pop("reference_target_positive_y_arm_gains")
     legacy_resolved.pop("reference_target_yaw_arm_gains")
@@ -746,6 +1001,9 @@ def test_zero_retarget_accepts_legacy_checkpoint_metadata(tmp_path) -> None:
     legacy_resolved.pop("grasp_anything_goal_potential_scale")
     legacy_resolved.pop("grasp_anything_goal_potential_negative_clip")
     legacy_resolved.pop("grasp_anything_success_bonus")
+    legacy_resolved.pop("grasp_anything_overhead_approach_clearance_m")
+    legacy_resolved.pop("grasp_anything_overhead_final_descent_weight")
+    legacy_resolved.pop("policy_action_filter_alpha")
     legacy_resolved["domain_randomization"] = dict(
         legacy_resolved["domain_randomization"]
     )
@@ -765,6 +1023,17 @@ def test_zero_retarget_accepts_legacy_checkpoint_metadata(tmp_path) -> None:
     with pytest.raises(ValueError, match="hash mismatch"):
         replace(
             config, reference_target_x_arm_gains=(-10.0, 2.0)
+        ).assert_resume_compatible(metadata)
+    replace(
+        config, reference_target_positive_x_arm_gains=(0.0, 0.0)
+    ).assert_resume_compatible(metadata)
+    with pytest.raises(ValueError, match="hash mismatch"):
+        replace(
+            config, reference_target_positive_x_arm_gains=(1.0, 0.0)
+        ).assert_resume_compatible(metadata)
+    with pytest.raises(ValueError, match="hash mismatch"):
+        replace(
+            config, reference_target_x_arm_gain_y_bounds=(-0.05, 0.025)
         ).assert_resume_compatible(metadata)
     with pytest.raises(ValueError, match="hash mismatch"):
         replace(

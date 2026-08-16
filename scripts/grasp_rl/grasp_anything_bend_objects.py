@@ -110,15 +110,21 @@ PROFILES = {
     "target_base_xy_2p5mm": PoseProfile((0.0025, 0.0025), (0.0025, 0.0025)),
 }
 TARGET_CENTER_XY_M = (0.0, -0.09)
+WORKSPACE200_SUPPORT_EXTENSIONS_M = (0.25, 0.0, 0.05, 0.0)
+WORKSPACE200_SUPPORT_MARGIN_M = 0.03
+WORKSPACE200_THIN_SUPPORT_HALF_HEIGHT_M = 0.005
 
 
-def asset_path(object_id: str, *, stable_physics: bool = False) -> Path:
+def asset_path(
+    object_id: str, *, stable_physics: bool = False, workspace200: bool = False
+) -> Path:
     spec = OBJECTS[object_id]
     version = spec.stable_asset_version if stable_physics else spec.asset_version
+    workspace_suffix = "_workspace200_targetsupport_v3" if workspace200 else ""
     return (
         REPO_ROOT
         / "outputs/grasp_rl/other/assets/mjlab_assets/grasp_anything"
-        / f"{object_id}_{version}_xmove_bend_ep11"
+        / f"{object_id}_{version}{workspace_suffix}_xmove_bend_ep11"
     )
 
 
@@ -221,6 +227,24 @@ def derive(
     )
 
 
+def derive_workspace200(spec: BendObjectSpec) -> dict[str, object]:
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+    from simple.grasp_rl.grasp_anything import (
+        derive_grasp_anything_workspace_bundle,
+    )
+
+    return derive_grasp_anything_workspace_bundle(
+        asset_path(spec.object_id, stable_physics=True),
+        asset_path(spec.object_id, stable_physics=True, workspace200=True),
+        support_extensions_m=WORKSPACE200_SUPPORT_EXTENSIONS_M,
+        target_position_jitter_xy_m=PROFILES["target_xy_200mm"].target_jitter_xy_m,
+        target_position_center_xy_m=TARGET_CENTER_XY_M,
+        required_support_margin_m=WORKSPACE200_SUPPORT_MARGIN_M,
+        thin_support_half_height_m=WORKSPACE200_THIN_SUPPORT_HALF_HEIGHT_M,
+        target_only_support_collision=True,
+    )
+
+
 def verify(
     spec: BendObjectSpec, molmo_root: Path, *, stable_physics: bool = False
 ) -> dict[str, object]:
@@ -264,6 +288,7 @@ def environment_args(
     goal_potential_scale: float = 5.0,
     goal_potential_negative_clip: float = 0.25,
     success_bonus: float = 40.0,
+    overhead_approach_clearance_m: float = 0.0,
     reference_reward_weight: float = 0.005,
     max_reference_action_deviation: float = 0.7,
     stable_physics: bool = False,
@@ -271,6 +296,9 @@ def environment_args(
     target_focus_jitter_xy_m: tuple[float, float] = (0.0, 0.0),
     target_focus_center_xy_m: tuple[float, float] = TARGET_CENTER_XY_M,
     target_focus_regions: tuple[tuple[float, float, float, float, float], ...] = (),
+    target_position_stratified_grid: tuple[int, int] | None = None,
+    reference_contact_reward_gate: bool = True,
+    scale_target_center_with_dr_strength: bool = True,
 ) -> list[str]:
     pose = PROFILES[profile]
     reference = reference_processed or staged_reference_path(spec.object_id)
@@ -294,11 +322,35 @@ def environment_args(
             *(str(value) for value in region),
         )
     ]
+    stratified = (
+        []
+        if target_position_stratified_grid is None
+        else [
+            "--target-position-stratified-grid",
+            *(str(value) for value in target_position_stratified_grid),
+        ]
+    )
+    reference_contact_gate = (
+        []
+        if reference_contact_reward_gate
+        else ["--disable-reference-contact-reward-gate"]
+    )
+    target_center_curriculum = (
+        []
+        if scale_target_center_with_dr_strength
+        else ["--keep-target-position-center-during-curriculum"]
+    )
     return [
         "--task",
         "grasp_anything",
         "--asset-bundle",
-        str(asset_path(spec.object_id, stable_physics=stable_physics)),
+        str(
+            asset_path(
+                spec.object_id,
+                stable_physics=(stable_physics or profile == "target_xy_200mm"),
+                workspace200=profile == "target_xy_200mm",
+            )
+        ),
         "--reference-processed",
         str(reference),
         "--strict-reference-episode",
@@ -311,6 +363,7 @@ def environment_args(
         "0.12",
         "--reference-reward-weight",
         str(reference_reward_weight),
+        *reference_contact_gate,
         "--max-reference-action-deviation",
         str(max_reference_action_deviation),
         "--grasp-anything-goal-potential-scale",
@@ -319,6 +372,8 @@ def environment_args(
         str(goal_potential_negative_clip),
         "--grasp-anything-success-bonus",
         str(success_bonus),
+        "--grasp-anything-overhead-approach-clearance-m",
+        str(overhead_approach_clearance_m),
         "--reference-target-x-arm-gains",
         "-10",
         "4",
@@ -341,8 +396,10 @@ def environment_args(
         *(str(value) for value in pose.target_jitter_xy_m),
         "--target-position-offset-center-xy",
         *(str(value) for value in TARGET_CENTER_XY_M),
+        *target_center_curriculum,
         *focus,
         *focus_regions,
+        *stratified,
         "--target-yaw-jitter",
         str(pose.target_yaw_jitter_rad),
         "--destination-position-jitter-xy",
@@ -440,10 +497,13 @@ def evaluate(
     goal_potential_scale: float = 5.0,
     goal_potential_negative_clip: float = 0.25,
     success_bonus: float = 40.0,
+    overhead_approach_clearance_m: float = 0.0,
     reference_reward_weight: float = 0.005,
     max_reference_action_deviation: float = 0.7,
     stable_physics: bool = False,
     target_focus_regions: tuple[tuple[float, float, float, float, float], ...] = (),
+    reference_contact_reward_gate: bool = True,
+    scale_target_center_with_dr_strength: bool = True,
 ) -> Path:
     mode = "reference" if checkpoint is None else "ppo"
     reference_suffix = _reference_output_suffix(reference_processed)
@@ -475,10 +535,20 @@ def evaluate(
                 goal_potential_scale=goal_potential_scale,
                 goal_potential_negative_clip=goal_potential_negative_clip,
                 success_bonus=success_bonus,
+                overhead_approach_clearance_m=overhead_approach_clearance_m,
                 reference_reward_weight=reference_reward_weight,
                 max_reference_action_deviation=max_reference_action_deviation,
                 stable_physics=stable_physics,
                 target_focus_regions=target_focus_regions,
+                target_position_stratified_grid=(
+                    (8, 8)
+                    if profile == "target_xy_200mm" and not target_focus_regions
+                    else None
+                ),
+                reference_contact_reward_gate=reference_contact_reward_gate,
+                scale_target_center_with_dr_strength=(
+                    scale_target_center_with_dr_strength
+                ),
             ),
             *policy,
             "--num-envs",
@@ -521,12 +591,22 @@ def train(
     goal_potential_scale: float = 5.0,
     goal_potential_negative_clip: float = 0.25,
     success_bonus: float = 40.0,
+    overhead_approach_clearance_m: float = 0.0,
     reference_reward_weight: float = 0.005,
     max_reference_action_deviation: float = 0.7,
     stable_physics: bool = False,
     target_focus_probability: float = 0.0,
     target_focus_jitter_xy_m: tuple[float, float] = (0.0, 0.0),
     target_focus_regions: tuple[tuple[float, float, float, float, float], ...] = (),
+    exploration_group_stds: tuple[tuple[str, float], ...] = (),
+    residual_action_groups: tuple[str, ...] = ("right_hand", "right_arm"),
+    learn_exploration_std: bool = False,
+    ppo_entropy_coef: float = 0.0,
+    reference_contact_reward_gate: bool = True,
+    scale_target_center_with_dr_strength: bool = True,
+    bootstrap_gate_episodes: int | None = None,
+    bootstrap_gate_min_success_rate: float = 0.01,
+    bootstrap_gate_mode: str = "either",
 ) -> Path:
     output = run_root(spec.object_id) / run_name
     if output.exists() and any(output.iterdir()):
@@ -570,6 +650,35 @@ def train(
         ]
     )
     normalizer = ["--freeze-actor-normalizer"] if freeze_actor_normalizer else []
+    effective_residual_action_groups = residual_action_groups
+    if profile == "target_xy_200mm" and residual_action_groups == (
+        "right_hand",
+        "right_arm",
+    ):
+        effective_residual_action_groups = (
+            *residual_action_groups,
+            "torso_rpy",
+            "base_height",
+            "torso_vx",
+            "torso_vy",
+        )
+    effective_gate_episodes = (
+        min(num_envs, 1024)
+        if bootstrap_gate_episodes is None and profile == "target_xy_200mm"
+        else int(bootstrap_gate_episodes or 0)
+    )
+    bootstrap_gate = (
+        []
+        if effective_gate_episodes == 0
+        else [
+            "--bootstrap-gate-episodes",
+            str(effective_gate_episodes),
+            "--bootstrap-gate-min-success-rate",
+            str(bootstrap_gate_min_success_rate),
+            "--bootstrap-gate-mode",
+            bootstrap_gate_mode,
+        ]
+    )
     _run_gpu(
         [
             "train",
@@ -583,13 +692,27 @@ def train(
                 goal_potential_scale=goal_potential_scale,
                 goal_potential_negative_clip=goal_potential_negative_clip,
                 success_bonus=success_bonus,
+                overhead_approach_clearance_m=overhead_approach_clearance_m,
                 reference_reward_weight=reference_reward_weight,
                 max_reference_action_deviation=max_reference_action_deviation,
                 stable_physics=stable_physics,
                 target_focus_probability=target_focus_probability,
                 target_focus_jitter_xy_m=target_focus_jitter_xy_m,
                 target_focus_regions=target_focus_regions,
+                target_position_stratified_grid=(
+                    (8, 8)
+                    if profile == "target_xy_200mm"
+                    and target_focus_probability == 0.0
+                    and not target_focus_regions
+                    else None
+                ),
+                reference_contact_reward_gate=reference_contact_reward_gate,
+                scale_target_center_with_dr_strength=(
+                    scale_target_center_with_dr_strength
+                ),
             ),
+            "--residual-action-groups",
+            *effective_residual_action_groups,
             "--num-envs",
             str(num_envs),
             "--iterations",
@@ -599,10 +722,26 @@ def train(
             *initialization,
             *anchor,
             *normalizer,
+            *bootstrap_gate,
             "--exploration-std",
             str(exploration_std),
             "--exploration-hold-steps",
             str(exploration_hold_steps),
+            *[
+                argument
+                for group, std in exploration_group_stds
+                for argument in ("--exploration-group-std", group, str(std))
+            ],
+            *(["--learn-exploration-std"] if learn_exploration_std else []),
+            "--ppo-entropy-coef",
+            str(ppo_entropy_coef),
+            *(
+                ["--spatial-advantage-grid", "8", "8"]
+                if profile == "target_xy_200mm"
+                and target_focus_probability == 0.0
+                and not target_focus_regions
+                else []
+            ),
             "--learning-rate",
             "0.00005",
             "--schedule",
@@ -630,6 +769,7 @@ def record(
     goal_potential_scale: float = 5.0,
     goal_potential_negative_clip: float = 0.25,
     success_bonus: float = 40.0,
+    overhead_approach_clearance_m: float = 0.0,
     reference_reward_weight: float = 0.005,
     max_reference_action_deviation: float = 0.7,
     stable_physics: bool = False,
@@ -665,6 +805,7 @@ def record(
                 goal_potential_scale=goal_potential_scale,
                 goal_potential_negative_clip=goal_potential_negative_clip,
                 success_bonus=success_bonus,
+                overhead_approach_clearance_m=overhead_approach_clearance_m,
                 reference_reward_weight=reference_reward_weight,
                 max_reference_action_deviation=max_reference_action_deviation,
                 stable_physics=stable_physics,
@@ -699,7 +840,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list")
-    for name in ("derive", "verify"):
+    for name in ("derive", "derive-workspace200", "verify"):
         child = commands.add_parser(name)
         child.add_argument("object", choices=OBJECTS)
         child.add_argument("--stable-physics", action="store_true")
@@ -714,7 +855,16 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--goal-potential-scale", type=float, default=5.0)
     child.add_argument("--goal-potential-negative-clip", type=float, default=0.25)
     child.add_argument("--success-bonus", type=float, default=40.0)
+    child.add_argument(
+        "--overhead-approach-clearance-m", type=float, default=0.0
+    )
     child.add_argument("--reference-reward-weight", type=float, default=0.005)
+    child.add_argument(
+        "--disable-reference-contact-reward-gate", action="store_true"
+    )
+    child.add_argument(
+        "--keep-target-position-center-during-curriculum", action="store_true"
+    )
     child.add_argument("--max-reference-action-deviation", type=float, default=0.7)
     child.add_argument(
         "--target-focus-region",
@@ -733,7 +883,37 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--num-envs", type=int, default=8192)
     child.add_argument("--iterations", type=int, default=40)
     child.add_argument("--exploration-std", type=float, default=0.01)
+    child.add_argument(
+        "--exploration-group-std",
+        nargs=2,
+        action="append",
+        default=[],
+        metavar=("ACTION_GROUP", "STD"),
+    )
     child.add_argument("--exploration-hold-steps", type=int, default=1)
+    child.add_argument(
+        "--residual-action-groups",
+        nargs="+",
+        default=("right_hand", "right_arm"),
+    )
+    child.add_argument("--learn-exploration-std", action="store_true")
+    child.add_argument("--ppo-entropy-coef", type=float, default=0.0)
+    child.add_argument(
+        "--bootstrap-gate-episodes",
+        type=int,
+        help=(
+            "Pre-PPO deterministic rollout count; target_xy_200mm defaults to "
+            "min(num_envs, 1024), zero disables it explicitly"
+        ),
+    )
+    child.add_argument(
+        "--bootstrap-gate-min-success-rate", type=float, default=0.01
+    )
+    child.add_argument(
+        "--bootstrap-gate-mode",
+        choices=("reference", "policy", "either"),
+        default="either",
+    )
     child.add_argument("--ppo-steps-per-env", type=int, default=24)
     child.add_argument("--run-name", required=True)
     child.add_argument("--reference-processed", type=Path)
@@ -748,7 +928,16 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--goal-potential-scale", type=float, default=5.0)
     child.add_argument("--goal-potential-negative-clip", type=float, default=0.25)
     child.add_argument("--success-bonus", type=float, default=40.0)
+    child.add_argument(
+        "--overhead-approach-clearance-m", type=float, default=0.0
+    )
     child.add_argument("--reference-reward-weight", type=float, default=0.005)
+    child.add_argument(
+        "--disable-reference-contact-reward-gate", action="store_true"
+    )
+    child.add_argument(
+        "--keep-target-position-center-during-curriculum", action="store_true"
+    )
     child.add_argument("--max-reference-action-deviation", type=float, default=0.7)
     child.add_argument("--target-focus-probability", type=float, default=0.0)
     child.add_argument(
@@ -781,6 +970,9 @@ def _parser() -> argparse.ArgumentParser:
     child.add_argument("--goal-potential-scale", type=float, default=5.0)
     child.add_argument("--goal-potential-negative-clip", type=float, default=0.25)
     child.add_argument("--success-bonus", type=float, default=40.0)
+    child.add_argument(
+        "--overhead-approach-clearance-m", type=float, default=0.0
+    )
     child.add_argument("--reference-reward-weight", type=float, default=0.005)
     child.add_argument("--max-reference-action-deviation", type=float, default=0.7)
     child.add_argument(
@@ -814,6 +1006,12 @@ def main(argv: list[str] | None = None) -> int:
     spec = OBJECTS[args.object]
     if args.command == "derive":
         result = derive(spec, args.molmo_root, stable_physics=args.stable_physics)
+    elif args.command == "derive-workspace200":
+        if not asset_path(spec.object_id, stable_physics=True).is_dir():
+            raise FileNotFoundError(
+                "derive the stable grasp-anything asset before workspace200"
+            )
+        result = derive_workspace200(spec)
     elif args.command == "verify":
         result = verify(spec, args.molmo_root, stable_physics=args.stable_physics)
     elif args.command == "evaluate":
@@ -831,11 +1029,17 @@ def main(argv: list[str] | None = None) -> int:
                     goal_potential_scale=args.goal_potential_scale,
                     goal_potential_negative_clip=args.goal_potential_negative_clip,
                     success_bonus=args.success_bonus,
+                    overhead_approach_clearance_m=(
+                        args.overhead_approach_clearance_m
+                    ),
                     reference_reward_weight=args.reference_reward_weight,
                     max_reference_action_deviation=(
                         args.max_reference_action_deviation
                     ),
                     stable_physics=args.stable_physics,
+                    reference_contact_reward_gate=(
+                        not args.disable_reference_contact_reward_gate
+                    ),
                     target_focus_regions=tuple(
                         tuple(region) for region in args.target_focus_region
                     ),
@@ -869,6 +1073,9 @@ def main(argv: list[str] | None = None) -> int:
                     goal_potential_scale=args.goal_potential_scale,
                     goal_potential_negative_clip=args.goal_potential_negative_clip,
                     success_bonus=args.success_bonus,
+                    overhead_approach_clearance_m=(
+                        args.overhead_approach_clearance_m
+                    ),
                     reference_reward_weight=args.reference_reward_weight,
                     max_reference_action_deviation=(
                         args.max_reference_action_deviation
@@ -879,6 +1086,24 @@ def main(argv: list[str] | None = None) -> int:
                     target_focus_regions=tuple(
                         tuple(region) for region in args.target_focus_region
                     ),
+                    exploration_group_stds=tuple(
+                        (group, float(std))
+                        for group, std in args.exploration_group_std
+                    ),
+                    residual_action_groups=tuple(args.residual_action_groups),
+                    learn_exploration_std=args.learn_exploration_std,
+                    ppo_entropy_coef=args.ppo_entropy_coef,
+                    reference_contact_reward_gate=(
+                        not args.disable_reference_contact_reward_gate
+                    ),
+                    scale_target_center_with_dr_strength=(
+                        not args.keep_target_position_center_during_curriculum
+                    ),
+                    bootstrap_gate_episodes=args.bootstrap_gate_episodes,
+                    bootstrap_gate_min_success_rate=(
+                        args.bootstrap_gate_min_success_rate
+                    ),
+                    bootstrap_gate_mode=args.bootstrap_gate_mode,
                 )
             )
         }
@@ -898,6 +1123,9 @@ def main(argv: list[str] | None = None) -> int:
                     goal_potential_scale=args.goal_potential_scale,
                     goal_potential_negative_clip=args.goal_potential_negative_clip,
                     success_bonus=args.success_bonus,
+                    overhead_approach_clearance_m=(
+                        args.overhead_approach_clearance_m
+                    ),
                     reference_reward_weight=args.reference_reward_weight,
                     max_reference_action_deviation=(
                         args.max_reference_action_deviation

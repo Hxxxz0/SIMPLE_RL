@@ -17,7 +17,10 @@ from simple.grasp_rl.data_v2 import (
     repair_cross_table_actions,
 )
 from simple.grasp_rl.diffusion import DDPMScheduler, DiffusionDenoiser, _loss
-from simple.grasp_rl.distribution import TemporallyCorrelatedGaussianDistribution
+from simple.grasp_rl.distribution import (
+    ActionGroupedGaussianDistribution,
+    TemporallyCorrelatedGaussianDistribution,
+)
 from simple.grasp_rl.evaluate import (
     _filter_evaluation_split,
     reference_action_from_observation,
@@ -734,6 +737,20 @@ def test_temporally_correlated_exploration_holds_standardized_noise() -> None:
     torch.testing.assert_close(normalized[0], normalized[1])
     torch.testing.assert_close(normalized[1], normalized[2])
     assert not torch.equal(normalized[2], normalized[3])
+
+
+def test_action_grouped_exploration_overrides_only_named_dimensions() -> None:
+    distribution = ActionGroupedGaussianDistribution(
+        output_dim=36,
+        init_std=0.01,
+        learn_std=False,
+        action_group_stds=(("right_hand", 0.08), ("right_arm", 0.12)),
+    )
+
+    expected = torch.full((36,), 0.01)
+    expected[7:14] = 0.08
+    expected[21:28] = 0.12
+    torch.testing.assert_close(distribution.std_param, expected)
 
 
 def test_ppo_learning_schedule_is_configurable() -> None:

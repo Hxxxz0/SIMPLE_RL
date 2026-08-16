@@ -23,6 +23,63 @@ MODEL_FIELDS = (
 )
 
 
+def _target_translation_bounds(
+    config: DomainRandomizationConfig,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Return the full-strength union of every configured target XY region."""
+
+    rectangles = [
+        (
+            config.target_position_offset_center_xy[0],
+            config.target_position_offset_center_xy[1],
+            config.target_position_jitter_xy[0],
+            config.target_position_jitter_xy[1],
+        )
+    ]
+    if config.target_position_focus_probability > 0.0:
+        rectangles.append(
+            (
+                config.target_position_focus_offset_center_xy[0],
+                config.target_position_focus_offset_center_xy[1],
+                config.target_position_focus_jitter_xy[0],
+                config.target_position_focus_jitter_xy[1],
+            )
+        )
+    rectangles.extend(region[:4] for region in config.target_position_focus_regions)
+    return tuple(
+        (
+            min(rectangle[axis] - rectangle[axis + 2] for rectangle in rectangles),
+            max(rectangle[axis] + rectangle[axis + 2] for rectangle in rectangles),
+        )
+        for axis in range(2)
+    )
+
+
+def _validate_workspace_support_contract(
+    config: DomainRandomizationConfig, manifest: dict[str, object]
+) -> None:
+    contract = manifest.get("workspace_support_contract")
+    if contract is None:
+        return
+    if not isinstance(contract, dict):
+        raise TypeError("Workspace support contract is malformed")
+    allowed = contract.get("translation_bounds_xy_m")
+    if (
+        not isinstance(allowed, list)
+        or len(allowed) != 2
+        or any(not isinstance(axis, list) or len(axis) != 2 for axis in allowed)
+    ):
+        raise ValueError("Workspace support contract translation bounds are malformed")
+    requested = _target_translation_bounds(config)
+    for axis, name in enumerate(("X", "Y")):
+        low, high = (float(value) for value in allowed[axis])
+        if requested[axis][0] < low - 1e-9 or requested[axis][1] > high + 1e-9:
+            raise ValueError(
+                f"Target {name} DR range {requested[axis]} exceeds audited support "
+                f"range {(low, high)}"
+            )
+
+
 class _GpuController(Protocol):
     logical_actuator_indices: torch.Tensor
     actuator_strength_scale: torch.Tensor
@@ -39,6 +96,67 @@ def _uniform(
     return torch.empty(shape, device=device).uniform_(
         float(low), float(high), generator=generator
     )
+
+
+def _sample_stratified_positions(
+    count: int,
+    *,
+    jitter_xy: tuple[float, float],
+    offset_center_xy: tuple[float, float],
+    grid: tuple[int, int],
+    scale: float,
+    cursor: int,
+    device: str,
+    generator: torch.Generator,
+    assigned_cell_ids: torch.Tensor | None = None,
+    scale_offset_center: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """Round-robin over workspace cells and jitter uniformly inside each cell."""
+
+    x_bins, y_bins = grid
+    cell_count = x_bins * y_bins
+    if assigned_cell_ids is None:
+        cell_ids = (
+            torch.arange(count, dtype=torch.long, device=device) + int(cursor)
+        ) % cell_count
+        next_cursor = (int(cursor) + count) % cell_count
+    else:
+        if assigned_cell_ids.shape != (count,):
+            raise ValueError("assigned stratified cell IDs have the wrong shape")
+        cell_ids = assigned_cell_ids.to(device=device, dtype=torch.long)
+        if torch.any((cell_ids < 0) | (cell_ids >= cell_count)):
+            raise ValueError("assigned stratified cell IDs are out of range")
+        next_cursor = int(cursor)
+    x_ids = torch.div(cell_ids, y_bins, rounding_mode="floor")
+    y_ids = cell_ids % y_bins
+    samples = torch.rand(
+        count, 2, dtype=torch.float32, device=device, generator=generator
+    )
+    bins = torch.tensor((x_bins, y_bins), dtype=torch.float32, device=device)
+    indices = torch.stack((x_ids, y_ids), dim=-1).to(torch.float32)
+    normalized = -1.0 + 2.0 * (indices + samples) / bins
+    half_extent = torch.tensor(jitter_xy, dtype=torch.float32, device=device)
+    center = torch.tensor(offset_center_xy, dtype=torch.float32, device=device)
+    translation = center * (scale if scale_offset_center else 1.0)
+    translation = translation + scale * normalized * half_extent
+    return translation, cell_ids, next_cursor
+
+
+def _stratified_cell_assignments(
+    env_ids: torch.Tensor,
+    *,
+    grid: tuple[int, int],
+    focus_cell_ids: tuple[int, ...],
+) -> torch.Tensor:
+    """Keep full-grid coverage while assigning remaining worlds to focus cells."""
+
+    cell_count = grid[0] * grid[1]
+    assignments = env_ids % cell_count
+    if not focus_cell_ids:
+        return assignments
+    focus = torch.tensor(focus_cell_ids, dtype=torch.long, device=env_ids.device)
+    focused = focus[(env_ids - cell_count).clamp_min(0) % focus.numel()]
+    return torch.where(env_ids < cell_count, assignments, focused)
 
 
 def _apply_position_focus_mixture(
@@ -171,6 +289,7 @@ class GpuDomainRandomizer:
         self.sim = gpu.sim
         self.controller = controller
         self.config = config
+        _validate_workspace_support_contract(config, gpu.bundle.manifest)
         self.device = self.sim.device
         self.generator = torch.Generator(device=self.device).manual_seed(seed)
         model = self.sim.mj_model
@@ -310,6 +429,10 @@ class GpuDomainRandomizer:
             self.sim.num_envs, 2, device=self.device
         )
         self.robot_base_yaw = torch.zeros(self.sim.num_envs, device=self.device)
+        self.target_position_cell_ids = torch.full(
+            (self.sim.num_envs,), -1, dtype=torch.long, device=self.device
+        )
+        self._stratified_grid_cursor = 0
 
     def state_dict(self) -> dict[str, torch.Tensor]:
         return {
@@ -327,6 +450,8 @@ class GpuDomainRandomizer:
             "distractor_yaw": self.distractor_yaw.clone(),
             "robot_base_translation_xy": self.robot_base_translation_xy.clone(),
             "robot_base_yaw": self.robot_base_yaw.clone(),
+            "target_position_cell_ids": self.target_position_cell_ids.clone(),
+            "stratified_grid_cursor": torch.tensor(self._stratified_grid_cursor),
         }
 
     def load_state_dict(self, state: dict[str, torch.Tensor]) -> None:
@@ -342,6 +467,14 @@ class GpuDomainRandomizer:
                 getattr(self, name).fill_(1.0)
             else:
                 getattr(self, name).copy_(value.to(self.device))
+        cell_ids = state.get("target_position_cell_ids")
+        if cell_ids is None:
+            self.target_position_cell_ids.fill_(-1)
+        else:
+            self.target_position_cell_ids.copy_(cell_ids.to(self.device))
+        self._stratified_grid_cursor = int(
+            state.get("stratified_grid_cursor", torch.tensor(0)).item()
+        )
         for name in (
             "action_delay_steps",
             "target_translation_xy",
@@ -374,6 +507,7 @@ class GpuDomainRandomizer:
             yaw_jitter: float,
             slots: int = 1,
             position_offset_center_xy: tuple[float, float] = (0.0, 0.0),
+            scale_offset_center: bool = True,
         ) -> tuple[torch.Tensor, torch.Tensor]:
             translation_shape = (count, 2) if slots == 1 else (count, slots, 2)
             yaw_shape = (count,) if slots == 1 else (count, slots)
@@ -414,7 +548,7 @@ class GpuDomainRandomizer:
                     dtype=translation.dtype,
                     device=self.device,
                 )
-                translation.add_(center * scale)
+                translation.add_(center * (scale if scale_offset_center else 1.0))
             yaw = _uniform(
                 -scale * yaw_jitter,
                 scale * yaw_jitter,
@@ -460,7 +594,33 @@ class GpuDomainRandomizer:
                 cfg.target_position_jitter_xy,
                 cfg.target_yaw_jitter,
                 position_offset_center_xy=cfg.target_position_offset_center_xy,
+                scale_offset_center=cfg.target_position_scale_offset_center,
             )
+            if cfg.target_position_stratified_grid is not None:
+                translation, cell_ids, self._stratified_grid_cursor = (
+                    _sample_stratified_positions(
+                        count,
+                        jitter_xy=cfg.target_position_jitter_xy,
+                        offset_center_xy=cfg.target_position_offset_center_xy,
+                        grid=cfg.target_position_stratified_grid,
+                        scale=scale,
+                        cursor=self._stratified_grid_cursor,
+                        device=self.device,
+                        generator=self.generator,
+                        assigned_cell_ids=_stratified_cell_assignments(
+                            env_ids,
+                            grid=cfg.target_position_stratified_grid,
+                            focus_cell_ids=(
+                                cfg.target_position_stratified_focus_cell_ids
+                            ),
+                        ),
+                        scale_offset_center=cfg.target_position_scale_offset_center,
+                    )
+                )
+            else:
+                cell_ids = torch.full(
+                    (count,), -1, dtype=torch.long, device=self.device
+                )
             translation = _apply_position_focus_mixture(
                 translation,
                 probability=cfg.target_position_focus_probability,
@@ -492,6 +652,7 @@ class GpuDomainRandomizer:
             translation = torch.zeros(count, 2, device=self.device)
             yaw = torch.zeros(count, device=self.device)
             delay = torch.zeros(count, dtype=torch.long, device=self.device)
+            cell_ids = torch.full((count,), -1, dtype=torch.long, device=self.device)
 
         destination_translation, destination_yaw = sample_pose(
             cfg.destination_position_jitter_xy, cfg.destination_yaw_jitter
@@ -540,6 +701,7 @@ class GpuDomainRandomizer:
         self.joint_damping_scale[env_ids] = damping_scale
         self.actuator_strength_scale[env_ids] = strength_scale
         self.target_translation_xy[env_ids] = translation
+        self.target_position_cell_ids[env_ids] = cell_ids
         self.target_yaw[env_ids] = yaw
         self.destination_translation_xy[env_ids] = destination_translation
         self.destination_yaw[env_ids] = destination_yaw
